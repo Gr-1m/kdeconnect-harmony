@@ -1,0 +1,545 @@
+#include "payload/payload.h"
+
+#include <arpa/inet.h>
+#include <sys/epoll.h>
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include "../json/cJSON.h"
+#include "../net/net_log.h"
+
+namespace kdeconnect {
+
+namespace {
+
+int64_t fileSizeOf(int fd)
+{
+    struct stat st {};
+    if (fstat(fd, &st) != 0) {
+        return -1;
+    }
+    return static_cast<int64_t>(st.st_size);
+}
+
+// 从 packet body 提取 filename（展示用；spool 名用 transferId，防路径注入）
+std::string bodyFileName(const std::string &bodyJson)
+{
+    std::string out;
+    cJSON *body = cJSON_Parse(bodyJson.c_str());
+    if (body != nullptr) {
+        cJSON *name = cJSON_GetObjectItemCaseSensitive(body, "filename");
+        if (cJSON_IsString(name) && name->valuestring != nullptr) {
+            out = name->valuestring;
+        }
+        cJSON_Delete(body);
+    }
+    return out;
+}
+
+bool writeAll(int fd, const uint8_t *data, size_t len)
+{
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = ::write(fd, data + off, len - off);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        off += static_cast<size_t>(n);
+    }
+    return true;
+}
+
+} // namespace
+
+PayloadManager::PayloadManager(PayloadHost *host, std::string spoolDir)
+    : host_(host), spoolDir_(std::move(spoolDir))
+{
+    // 确保多级目录存在（mkdir 逐级，已存在则忽略）
+    std::string p = spoolDir_;
+    for (size_t i = 1; i < p.size(); ++i) {
+        if (p[i] == '/') {
+            p[i] = '\0';
+            ::mkdir(p.c_str(), 0755);
+            p[i] = '/';
+        }
+    }
+    ::mkdir(p.c_str(), 0755);
+}
+
+uint64_t PayloadManager::allocIdLocked()
+{
+    return nextId_++;
+}
+
+void PayloadManager::closeSocketsLocked(PayloadJob &job)
+{
+    auto delFd = [this](int fd) {
+        if (fd >= 0) {
+            host_->epollDel(fd);
+            ::close(fd);
+            fdIndex_.erase(fd);
+        }
+    };
+    delFd(job.listenFd);
+    job.listenFd = -1;
+    delFd(job.sockFd);
+    job.sockFd = -1;
+    job.tls.reset();
+    if (job.fileFd >= 0) {
+        ::close(job.fileFd);
+        job.fileFd = -1;
+    }
+}
+
+void PayloadManager::emitLocked(const PayloadJob &job, const char *state,
+                                int code, const char *msg)
+{
+    NetEvent ev {};
+    ev.type = EventType::PayloadTransfer;
+    ev.deviceId = job.deviceId;
+    ev.payloadTransferId = job.id;
+    ev.payloadDirectionSend = job.send;
+    ev.payloadState = state;
+    ev.payloadFileName = job.fileName;
+    ev.payloadFilePath = job.spoolPath;
+    ev.payloadSize = job.total;
+    ev.payloadBytesDone = job.done;
+    ev.errorCode = code;
+    ev.errorMessage = msg != nullptr ? msg : "";
+    host_->postPayloadEvent(std::move(ev));
+}
+
+void PayloadManager::finishJobLocked(PayloadJob &job, const char *state,
+                                     int code, const char *msg)
+{
+    if (job.finished) {
+        return;
+    }
+    job.finished = true;
+    job.pending.clear();
+    closeSocketsLocked(job);
+    if (!job.send && job.spoolPath.size() > 0 &&
+        (std::strcmp(state, "finished") != 0)) {
+        ::unlink(job.spoolPath.c_str());   // 未完成的接收：清理半成品
+        job.spoolPath.clear();
+    }
+    emitLocked(job, state, code, msg);
+}
+
+void PayloadManager::failJobLocked(PayloadJob &job, int code, const char *msg)
+{
+    finishJobLocked(job, "failed", code, msg);
+}
+
+bool PayloadManager::verifyPeerLocked(PayloadJob &job)
+{
+    // 设计 v0.2 §5：payload 通道对端证书 CN 必须等于期望 deviceId
+    const std::string cn = job.tls != nullptr ? job.tls->peerCommonName() : std::string();
+    if (cn.empty() || cn != job.deviceId) {
+        LOGE("payload peer CN mismatch: got '%s', expect '%s'",
+             cn.c_str(), job.deviceId.c_str());
+        return false;
+    }
+    return true;
+}
+
+uint64_t PayloadManager::startSend(const std::string &deviceId, const std::string &type,
+                                   const std::string &bodyJson, const std::string &filePath)
+{
+    if (!PacketIO::isValidDeviceId(deviceId)) {
+        return 0;
+    }
+    int fileFd = ::open(filePath.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fileFd < 0) {
+        return 0;
+    }
+    const int64_t total = fileSizeOf(fileFd);
+    if (total < 0) {
+        ::close(fileFd);
+        return 0;
+    }
+
+    int listenFd = -1;
+    uint16_t bound = 0;
+    if (total != 0) {
+        listenFd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        int one = 1;
+        setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        for (uint16_t p = PAYLOAD_PORT_MIN; p <= TCP_PORT_MAX && listenFd >= 0; ++p) {
+            sockaddr_in addr {};
+            addr.sin_family = AF_INET;
+            addr.sin_addr.s_addr = htonl(INADDR_ANY);
+            addr.sin_port = htons(p);
+            if (::bind(listenFd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0 &&
+                ::listen(listenFd, 1) == 0) {
+                bound = p;
+                break;
+            }
+        }
+        if (bound == 0) {
+            ::close(listenFd);
+            ::close(fileFd);
+            return 0;
+        }
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "id", 0);
+    cJSON_AddStringToObject(root, "type", type.c_str());
+    cJSON *body = cJSON_Parse(bodyJson.c_str());
+    if (body == nullptr) {
+        body = cJSON_CreateObject();
+    }
+    cJSON_AddItemToObject(root, "body", body);
+    cJSON_AddNumberToObject(root, "payloadSize", static_cast<double>(total));
+    if (total != 0) {
+        cJSON *ti = cJSON_CreateObject();
+        cJSON_AddNumberToObject(ti, "port", bound);
+        cJSON_AddItemToObject(root, "payloadTransferInfo", ti);
+    }
+    char *printed = cJSON_PrintUnformatted(root);
+    std::string frame = printed != nullptr ? printed : "{}";
+    cJSON_free(printed);
+    cJSON_Delete(root);
+    frame.push_back('\n');
+
+    std::lock_guard<std::mutex> lk(mu_);
+    PayloadJob job;
+    job.id = allocIdLocked();
+    job.deviceId = deviceId;
+    job.fileName = bodyFileName(bodyJson);
+    job.send = true;
+    job.fileFd = fileFd;
+    job.total = total;
+    job.listenFd = listenFd;
+    job.deadlineMs = host_->nowMs() + PAYLOAD_ACCEPT_TIMEOUT_MS;
+    job.started = true;
+
+    if (!host_->sendControlFrame(deviceId, frame)) {
+        closeSocketsLocked(job);
+        return 0;
+    }
+    if (listenFd >= 0) {
+        host_->epollAdd(listenFd, EPOLLIN);
+        fdIndex_[listenFd] = job.id;
+    }
+    auto *stored = new PayloadJob(std::move(job));
+    jobs_[stored->id].reset(stored);
+    emitLocked(*stored, "started", 0, nullptr);
+    return stored->id;
+}
+
+uint64_t PayloadManager::startReceive(const std::string &deviceId, const std::string &host,
+                                  uint16_t port, int64_t payloadSize,
+                                  const std::string &fileName)
+{
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!PacketIO::isValidDeviceId(deviceId) || spoolDir_.empty()) {
+        return 0;
+    }
+    auto job = std::make_unique<PayloadJob>();
+    job->id = allocIdLocked();
+    job->deviceId = deviceId;
+    job->fileName = bodyFileName(fileName);
+    job->send = false;
+    job->total = payloadSize;
+    job->sockFd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    job->spoolPath = spoolDir_ + "/payload_" + std::to_string(job->id) + ".bin";
+    job->fileFd = ::open(job->spoolPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (job->sockFd < 0 || job->fileFd < 0) {
+        finishJobLocked(*job, "failed", EIO, "payload receive: fd setup failed");
+        return 0;
+    }
+    sockaddr_in addr {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (::inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1 ||
+        ::connect(job->sockFd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
+        if (errno != EINPROGRESS) {
+            failJobLocked(*job, errno, "payload connect failed");
+            return 0;
+        }
+    }
+    host_->epollAdd(job->sockFd, EPOLLIN | EPOLLOUT);
+    fdIndex_[job->sockFd] = job->id;
+    job->deadlineMs = host_->nowMs() + PAYLOAD_ACCEPT_TIMEOUT_MS;
+    job->started = true;
+    
+    uint64_t id = job->id;
+    jobs_[id] = std::move(job);
+    // started 事件带 fileName/total；此处查回引用发送
+    emitLocked(*jobs_[id], "started", 0, nullptr);
+    return id;
+}
+
+void PayloadManager::startHandshakeLocked(PayloadJob &job)
+{
+    job.tls = std::make_unique<TlsEngine>(job.sockFd,
+                                          job.send ? TlsRole::Server : TlsRole::Client);
+    if (!job.tls->init(host_->certPem(), host_->keyPem())) {
+        failJobLocked(job, EIO, "payload tls init failed");
+        return;
+    }
+    // B1（REVIEW §3.2）：payload 角色显式传入，不复用 tlsRole() 推导
+    if (job.tls->doHandshake()) {
+        if (!verifyPeerLocked(job)) {
+            failJobLocked(job, EACCES, "payload peer cert mismatch");
+            return;
+        }
+        job.deadlineMs = 0;
+    }
+}
+
+void PayloadManager::pumpSendLocked(PayloadJob &job)
+{
+    uint8_t buf[PAYLOAD_CHUNK];
+    while (true) {
+        if (!job.pending.empty()) {
+            ssize_t w = job.tls->write(reinterpret_cast<const uint8_t *>(job.pending.data()),
+                                       job.pending.size());
+            if (w < 0) {
+                failJobLocked(job, EIO, "payload tls write failed");
+                return;
+            }
+            if (w == 0) {
+                return;  // 引擎满，等 EPOLLOUT/tick
+            }
+            job.pending.erase(0, static_cast<size_t>(w));
+            job.done += w;
+        }
+        if (job.total >= 0 && job.done >= job.total) {
+            finishJobLocked(job, "finished", 0, nullptr);
+            return;
+        }
+        if (job.pending.empty()) {
+            ssize_t n = ::read(job.fileFd, buf, sizeof(buf));
+            if (n < 0) {
+                failJobLocked(job, errno, "payload source read failed");
+                return;
+            }
+            if (n == 0) {
+                // 源文件比声明短：KDE 接收侧会等 EOF 判定，这里直接失败并断开
+                failJobLocked(job, EIO, "payload source shorter than payloadSize");
+                return;
+            }
+            job.pending.append(reinterpret_cast<const char *>(buf), static_cast<size_t>(n));
+        }
+    }
+}
+
+void PayloadManager::drainReceiveLocked(PayloadJob &job)
+{
+    std::vector<uint8_t> buf(PAYLOAD_CHUNK);
+    while (true) {
+        ssize_t r = job.tls->read(buf);
+        if (r == 0) {
+            return;  // 等更多数据
+        }
+        if (r < 0) {
+            // EOF：流式或足量视为完成
+            if (job.total < 0 || job.done >= job.total) {
+                finishJobLocked(job, "finished", 0, nullptr);
+            } else {
+                failJobLocked(job, ECONNRESET, "payload peer closed early");
+            }
+            return;
+        }
+        if (!writeAll(job.fileFd, buf.data(), static_cast<size_t>(r))) {
+            // 落盘失败：中止并断开（REVIEW §3.4 建议 8）
+            failJobLocked(job, errno, "payload spool write failed");
+            return;
+        }
+        job.done += r;
+        if (job.total >= 0 && job.done >= job.total) {
+            finishJobLocked(job, "finished", 0, nullptr);
+            return;
+        }
+    }
+}
+
+bool PayloadManager::handlesFd(int fd) const
+{
+    std::lock_guard<std::mutex> lk(mu_);
+    return fdIndex_.count(fd) != 0;
+}
+
+void PayloadManager::onReadable(int fd)
+{
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = fdIndex_.find(fd);
+    if (it == fdIndex_.end()) {
+        return;
+    }
+    auto j = jobs_.find(it->second);
+    if (j == jobs_.end() || j->second->finished) {
+        return;
+    }
+    PayloadJob &job = *j->second;
+
+    if (job.send && job.listenFd == fd) {
+        // 对端连入：只接受一个连接（KDE CompositeUploadJob 同语义）
+        int cfd = ::accept4(fd, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
+        if (cfd < 0) {
+            return;
+        }
+        host_->epollDel(fd);
+        ::close(fd);
+        fdIndex_.erase(fd);
+        job.listenFd = -1;
+        job.sockFd = cfd;
+        fdIndex_[cfd] = job.id;
+        startHandshakeLocked(job);
+        return;
+    }
+    if (job.sockFd != fd || job.tls == nullptr) {
+        return;
+    }
+    if (!job.tls->handshakeDone()) {
+        if (job.tls->doHandshake()) {
+            if (!verifyPeerLocked(job)) {
+                failJobLocked(job, EACCES, "payload peer cert mismatch");
+                return;
+            }
+            job.deadlineMs = 0;
+            if (job.send) {
+                pumpSendLocked(job);
+            }
+        }
+        return;
+    }
+    if (job.send) {
+        // 引擎可能带出对端关闭信号：读侧排空，驱动完成/失败判定
+        std::vector<uint8_t> sink(PAYLOAD_CHUNK);
+        ssize_t r = job.tls->read(sink);
+        if (r < 0 && job.done < job.total) {
+            failJobLocked(job, ECONNRESET, "payload peer closed during send");
+            return;
+        }
+        pumpSendLocked(job);
+    } else {
+        drainReceiveLocked(job);
+    }
+}
+
+void PayloadManager::onWritable(int fd)
+{
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = fdIndex_.find(fd);
+    if (it == fdIndex_.end()) {
+        return;
+    }
+    auto j = jobs_.find(it->second);
+    if (j == jobs_.end() || j->second->finished) {
+        return;
+    }
+    PayloadJob &job = *j->second;
+    if (job.sockFd != fd) {
+        return;
+    }
+    if (job.tls == nullptr) {
+        // 非阻塞 connect 完成：查 SO_ERROR 后进入握手
+        int err = 0;
+        socklen_t len = sizeof(err);
+        getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
+        if (err != 0) {
+            failJobLocked(job, err, "payload connect failed");
+            return;
+        }
+        startHandshakeLocked(job);
+        return;
+    }
+    if (!job.tls->handshakeDone()) {
+        if (job.tls->doHandshake()) {
+            if (!verifyPeerLocked(job)) {
+                failJobLocked(job, EACCES, "payload peer cert mismatch");
+                return;
+            }
+            job.deadlineMs = 0;
+            if (job.send) {
+                pumpSendLocked(job);
+            }
+        }
+        return;
+    }
+    if (job.send && !job.pending.empty()) {
+        pumpSendLocked(job);
+    }
+}
+
+void PayloadManager::onTick(int64_t nowMs)
+{
+    std::lock_guard<std::mutex> lk(mu_);
+    for (auto &p : jobs_) {
+        PayloadJob &job = *p.second;
+        if (job.finished) {
+            continue;
+        }
+        if (job.deadlineMs > 0 && nowMs > job.deadlineMs) {
+            failJobLocked(job, ETIMEDOUT, "payload handshake/accept timeout");
+            continue;
+        }
+        if (job.tls != nullptr && job.tls->handshakeDone() && job.done > 0 &&
+            nowMs - job.lastProgressMs >= PAYLOAD_PROGRESS_INTERVAL_MS) {
+            job.lastProgressMs = nowMs;
+            emitLocked(job, "progress", 0, nullptr);
+        }
+        // TX 滞留兜底：引擎可写但无边沿时由 tick 推动（与控制连接 tick 同思路）
+        if (job.send && job.tls != nullptr && job.tls->handshakeDone() &&
+            !job.pending.empty()) {
+            pumpSendLocked(job);
+        }
+    }
+}
+
+void PayloadManager::onDeviceDown(const std::string &deviceId)
+{
+    std::lock_guard<std::mutex> lk(mu_);
+    for (auto &p : jobs_) {
+        PayloadJob &job = *p.second;
+        if (!job.finished && job.deviceId == deviceId) {
+            failJobLocked(job, ECONNRESET, "control connection closed");
+        }
+    }
+}
+
+bool PayloadManager::settle(uint64_t id, const std::string &destPath, bool keep)
+{
+    std::lock_guard<std::mutex> lk(mu_);
+    auto j = jobs_.find(id);
+    if (j == jobs_.end() || !j->second->finished || j->second->send) {
+        return false;
+    }
+    bool ok = true;
+    if (keep) {
+        if (!destPath.empty() && destPath.find("..") == std::string::npos) {
+            ok = ::rename(j->second->spoolPath.c_str(), destPath.c_str()) == 0;
+        } else {
+            ok = false;
+        }
+    } else {
+        ok = ::unlink(j->second->spoolPath.c_str()) == 0;
+    }
+    jobs_.erase(j);
+    return ok;
+}
+
+void PayloadManager::cancel(uint64_t id)
+{
+    std::lock_guard<std::mutex> lk(mu_);
+    auto j = jobs_.find(id);
+    if (j == jobs_.end() || j->second->finished) {
+        return;
+    }
+    // 关闭 payload socket 即对端可见的取消信号（REVIEW §3.4 建议 9）
+    finishJobLocked(*j->second, "cancelled", ECONNABORTED, "cancelled by local user");
+}
+
+} // namespace kdeconnect

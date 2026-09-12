@@ -1,0 +1,184 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "KDE-H Connect"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "KDE-H Connect"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "KDE-H Connect"
+    },
+    {
+      "name": "status_running",
+      "value": "Running"
+    },
+    {
+      "name": "manual_connect",
+      "value": "Manual Connect"
+    },
+    {
+      "name": "manual_connect_optional",
+      "value": "Manual Connect (optional)"
+    },
+    {
+      "name": "connect",
+      "value": "Connect"
+    },
+    {
+      "name": "discovered_devices",
+      "value": "Discovered Devices"
+    },
+    {
+      "name": "discovered_hint",
+      "value": "Listening for LAN broadcasts…"
+    },
+    {
+      "name": "address_pending",
+      "value": "waiting for address…"
+    },
+    {
+      "name": "log_title",
+      "value": "Log"
+    },
+    {
+      "name": "logs_clear",
+      "value": "Clear"
+    },
+    {
+      "name": "connected_devices",
+      "value": "Connected Devices"
+    },
+    {
+      "name": "disconnect",
+      "value": "Disconnect"
+    },
+    {
+      "name": "remembered_devices",
+      "value": "Remembered Devices"
+    },
+    {
+      "name": "remembered_hint",
+      "value": "Paired"
+    },
+    {
+      "name": "remembered_hint_empty",
+      "value": "Paired devices will appear here"
+    },
+    {
+      "name": "group_empty",
+      "value": "None yet"
+    },
+    {
+      "name": "tab_devices",
+      "value": "Devices"
+    },
+    {
+      "name": "tab_files",
+      "value": "Files"
+    },
+    {
+      "name": "tab_settings",
+      "value": "Settings"
+    },
+    {
+      "name": "tab_logs",
+      "value": "Logs"
+    },
+    {
+      "name": "files_hint_no_device",
+      "value": "Connect a device to send and receive files"
+    },
+    {
+      "name": "files_hint_pending",
+      "value": "File transfer is under development (payload channel pending)"
+    },
+    {
+      "name": "files_received",
+      "value": "Received Files"
+    },
+    {
+      "name": "files_save_path",
+      "value": "Received files will be saved to: app sandbox files/kdeconnect/"
+    },
+    {
+      "name": "settings_app_name",
+      "value": "App Name"
+    },
+    {
+      "name": "settings_app_version",
+      "value": "App Version"
+    },
+    {
+      "name": "settings_device_name",
+      "value": "Device Name"
+    },
+    {
+      "name": "settings_device_id",
+      "value": "Device ID"
+    },
+    {
+      "name": "settings_protocol_version",
+      "value": "Protocol Version"
+    },
+    {
+      "name": "settings_ports",
+      "value": "Ports"
+    },
+    {
+      "name": "settings_status",
+      "value": "Status"
+    },
+    {
+      "name": "settings_save",
+      "value": "Save"
+    },
+    {
+      "name": "settings_theme",
+      "value": "Theme"
+    },
+    {
+      "name": "settings_language",
+      "value": "Language"
+    },
+    {
+      "name": "follow_system",
+      "value": "Follow system"
+    },
+    {
+      "name": "theme_light",
+      "value": "Light"
+    },
+    {
+      "name": "theme_dark",
+      "value": "Dark"
+    },
+    {
+      "name": "lang_zh",
+      "value": "简体中文"
+    },
+    {
+      "name": "lang_en",
+      "value": "English"
+    },
+    {
+      "name": "rail_manual_short",
+      "value": "M"
+    },
+    {
+      "name": "rail_connected_short",
+      "value": "On"
+    },
+    {
+      "name": "rail_discovered_short",
+      "value": "New"
+    },
+    {
+      "name": "rail_remembered_short",
+      "value": "Mem"
+    }
+  ]
+}

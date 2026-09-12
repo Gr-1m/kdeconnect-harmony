@@ -1,0 +1,172 @@
+{
+  "string": [
+    {
+      "name": "status_running",
+      "value": "运行中"
+    },
+    {
+      "name": "manual_connect",
+      "value": "手动连接"
+    },
+    {
+      "name": "manual_connect_optional",
+      "value": "手动连接（可选）"
+    },
+    {
+      "name": "connect",
+      "value": "连接"
+    },
+    {
+      "name": "discovered_devices",
+      "value": "发现设备"
+    },
+    {
+      "name": "discovered_hint",
+      "value": "正在监听局域网广播…"
+    },
+    {
+      "name": "address_pending",
+      "value": "等待地址…"
+    },
+    {
+      "name": "log_title",
+      "value": "日志"
+    },
+    {
+      "name": "logs_clear",
+      "value": "清空"
+    },
+    {
+      "name": "connected_devices",
+      "value": "已连接设备"
+    },
+    {
+      "name": "disconnect",
+      "value": "断开"
+    },
+    {
+      "name": "remembered_devices",
+      "value": "记住的设备"
+    },
+    {
+      "name": "remembered_hint",
+      "value": "已配对"
+    },
+    {
+      "name": "remembered_hint_empty",
+      "value": "配对过的设备会出现在这里"
+    },
+    {
+      "name": "group_empty",
+      "value": "暂无"
+    },
+    {
+      "name": "tab_devices",
+      "value": "设备"
+    },
+    {
+      "name": "tab_files",
+      "value": "文件"
+    },
+    {
+      "name": "tab_settings",
+      "value": "设置"
+    },
+    {
+      "name": "tab_logs",
+      "value": "日志"
+    },
+    {
+      "name": "files_hint_no_device",
+      "value": "连接设备后即可收发文件"
+    },
+    {
+      "name": "files_hint_pending",
+      "value": "文件传输功能开发中（等待 payload 通道）"
+    },
+    {
+      "name": "files_received",
+      "value": "收到的文件"
+    },
+    {
+      "name": "files_save_path",
+      "value": "接收的文件将保存到：应用沙箱 files/kdeconnect/"
+    },
+    {
+      "name": "settings_app_name",
+      "value": "应用名称"
+    },
+    {
+      "name": "settings_app_version",
+      "value": "应用版本"
+    },
+    {
+      "name": "settings_device_name",
+      "value": "设备名称"
+    },
+    {
+      "name": "settings_device_id",
+      "value": "设备 ID"
+    },
+    {
+      "name": "settings_protocol_version",
+      "value": "协议版本"
+    },
+    {
+      "name": "settings_ports",
+      "value": "端口"
+    },
+    {
+      "name": "settings_status",
+      "value": "运行状态"
+    },
+    {
+      "name": "settings_save",
+      "value": "保存"
+    },
+    {
+      "name": "settings_theme",
+      "value": "主题"
+    },
+    {
+      "name": "settings_language",
+      "value": "语言"
+    },
+    {
+      "name": "follow_system",
+      "value": "跟随系统"
+    },
+    {
+      "name": "theme_light",
+      "value": "亮"
+    },
+    {
+      "name": "theme_dark",
+      "value": "暗"
+    },
+    {
+      "name": "lang_zh",
+      "value": "简体中文"
+    },
+    {
+      "name": "lang_en",
+      "value": "English"
+    },
+    {
+      "name": "rail_manual_short",
+      "value": "手"
+    },
+    {
+      "name": "rail_connected_short",
+      "value": "连"
+    },
+    {
+      "name": "rail_discovered_short",
+      "value": "发"
+    },
+    {
+      "name": "rail_remembered_short",
+      "value": "记"
+    }
+  ]
+}

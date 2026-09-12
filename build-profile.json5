@@ -1,0 +1,54 @@
+{
+  "app": {
+    "signingConfigs": [
+      {
+        "name": "default",
+        "material": {
+          "certpath": "C:/Users/<user>/.ohos/config/openharmony/default_kdeconnect-harmony_2YoDoHPdMjII0RZBVPMLrbMTu7E3JgF0H2py5jcZCzQ=.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "0000001BE908D2561C7AE231D58A201C3D9E288C09D7E867DA0B04DDCAE7737FFEC6AB72A2B358FE6A5CB2",
+          "profile": "C:/Users/<user>/.ohos/config/openharmony/default_kdeconnect-harmony_2YoDoHPdMjII0RZBVPMLrbMTu7E3JgF0H2py5jcZCzQ=.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "C:/Users/<user>/.ohos/config/openharmony/default_kdeconnect-harmony_2YoDoHPdMjII0RZBVPMLrbMTu7E3JgF0H2py5jcZCzQ=.p12",
+          "storePassword": "0000001B2B9CDDA8A9CE662D6C709B12C5D811FD70CD88597C316241E656B8B9023E76B06090AA7D22B615"
+        }
+      },
+      {
+        "name": "custom1",
+        "material": {
+          "certpath": "C:/Users/<user>/.ohos/config/openharmony/custom1_kdeconnect-harmony_2YoDoHPdMjII0RZBVPMLrbMTu7E3JgF0H2py5jcZCzQ=.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "0000001B3272BD1E65D7FF8B5BC5FDB03F99F37859AC6726B0A69741491351E8A4091DE963140FCEBE8C60",
+          "profile": "C:/Users/<user>/.ohos/config/openharmony/custom1_kdeconnect-harmony_2YoDoHPdMjII0RZBVPMLrbMTu7E3JgF0H2py5jcZCzQ=.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "C:/Users/<user>/.ohos/config/openharmony/custom1_kdeconnect-harmony_2YoDoHPdMjII0RZBVPMLrbMTu7E3JgF0H2py5jcZCzQ=.p12",
+          "storePassword": "0000001B2AF979234476EC273DC73FD90E7939E9D9EA2A7643FE6A560B94F37822AF15189CC66DD7D79E6F"
+        }
+      }
+    ],
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "compileSdkVersion": "26.0.0",
+        "compatibleSdkVersion": "26.0.0",
+        "targetSdkVersion": "26.0.0",
+        "runtimeOS": "HarmonyOS"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

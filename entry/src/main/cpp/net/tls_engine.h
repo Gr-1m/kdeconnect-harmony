@@ -1,0 +1,94 @@
+#ifndef KDECONNECT_TLS_ENGINE_H
+#define KDECONNECT_TLS_ENGINE_H
+
+#include "net_types.h"
+#include "bearssl.h"
+#include "bearssl_ssl.h"
+#include "bearssl_x509.h"
+#include <string>
+#include <vector>
+#include <cstdint>
+
+namespace kdeconnect {
+
+class TlsEngine;
+
+// X.509 验证上下文包装（REVIEW §8 D2）。br_x509_minimal_context 必须是首成员：
+// BearSSL 的 vtable 回调只收到「上下文地址」，其约定就是 vtable 字段的地址 == 上下文地址
+// （见 x509_minimal.c 的 container 转换），故可用同一地址反推本包装体，从而携带额外状态。
+// 仅前段 x509 会被 br_x509_minimal_init 的 memset 清零（约定：附加字段一律我们自己初始化）。
+struct X509Ctx {
+    br_x509_minimal_context x509;
+    // 对端证书链首个证书（TLS 顺序下即 EE 证书）的原始 DER
+    uint8_t leafDer[4096];
+    uint32_t leafLen = 0;
+    uint32_t curLen = 0;      // 当前证书已累积字节
+    uint32_t certIndex = 0;   // 证书序号：0 = EE（只捕获它）
+    bool overflow = false;
+};
+
+class TlsEngine {
+public:
+    TlsEngine(int fd, TlsRole role);
+    ~TlsEngine();
+
+    TlsEngine(const TlsEngine &) = delete;
+    TlsEngine &operator=(const TlsEngine &) = delete;
+
+    bool init(const std::string &certPem, const std::string &keyPem);
+    // 推进握手。返回 true 表示完成；false 表示需要更多 socket 数据（EAGAIN）。
+    bool doHandshake();
+    bool handshakeDone() const { return handshakeDone_; }
+
+    // 对端 EE 证书原始 DER（握手后有效；空 = 未捕获）。
+    // WP-2 证书钉扎 / payload 通道「CN == deviceId」校验的取数据口（REVIEW §8 D2）。
+    std::vector<uint8_t> peerLeafCertDer() const;
+    // 对端 EE 证书 subject CN（握手后有效；空 = 未取到）
+    std::string peerCommonName() const;
+
+    // 返回 >0：读到的字节数；0：需要更多 socket 数据；-1：错误
+    ssize_t read(std::vector<uint8_t> &buf);
+    // 非阻塞尽力写：把数据交给引擎并尽力泵到 socket。
+    //   返回 >0：已接收 N 字节（可能仍留在引擎输出缓冲，待 EPOLLOUT 续传）；
+    //   返回  0：引擎暂不可写（输出缓冲满 / socket 不可写）→ 调用方稍后重试；
+    //   返回 -1：错误。
+    // 语义要求：调用方（网络线程）是唯一写者，未接收的字节由上层 TX 队列保留。
+    ssize_t write(const uint8_t *data, size_t len);
+    // 把引擎里残留的记录尽力发出（TX 队列已空时用于续传）。false = 错误。
+    bool pump();
+    int lastError() const { return lastError_; }
+    // 当前 BearSSL 引擎状态位（BR_SSL_* 组合），诊断用
+    unsigned state() const { return engine_ ? br_ssl_engine_current_state(engine_) : 0; }
+
+private:
+    int fd_ = -1;
+    TlsRole role_;
+    bool handshakeDone_ = false;
+    int lastError_ = 0;
+
+    br_ssl_server_context serverCtx_;
+    br_ssl_client_context clientCtx_;
+    X509Ctx x509Ctx_{};
+    unsigned char iobuf_[BR_SSL_BUFSIZE_BIDI];
+    br_ssl_engine_context *engine_ = nullptr;
+
+    std::vector<uint8_t> certDer_;
+    std::vector<uint8_t> keyDer_;
+    std::vector<uint8_t> ecKeyData_;
+    br_ec_private_key ecKey_{};
+    // 引擎持有此结构指针（ssl_hs_server 发证书时读），必须是成员而非 init() 局部变量
+    br_x509_certificate certChain_{};
+    // 对端 EE 证书的 subject CN 收集槽（由 BearSSL 在解析 EE 证书时填充）
+    br_name_element peerCnName_{};
+    char peerCnBuf_[128] = {0};
+    // write 路径路过 RECVAPP 时暂存的应用数据（SENDAPP/RECVAPP 互斥，无法原地继续），read() 后续取出
+    std::vector<uint8_t> pendingApp_;
+
+    bool loadCertAndKey(const std::string &certPem, const std::string &keyPem);
+    // 返回 1：达到 target 状态；0：EAGAIN；-1：错误
+    int runUntil(unsigned target);
+};
+
+} // namespace kdeconnect
+
+#endif

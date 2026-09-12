@@ -1,43 +1,48 @@
 # C++ objects and libs
-*.slo
-*.lo
-*.o
-*.a
-*.la
-*.lai
-*.so
-*.dll
-*.dylib
 
 # Qt-es
-object_script.*.Release
-object_script.*.Debug
-*_plugin_import.cpp
-/.qmake.cache
-/.qmake.stash
-*.pro.user
-*.pro.user.*
-*.qbs.user
-*.qbs.user.*
-*.moc
-moc_*.cpp
-moc_*.h
-qrc_*.cpp
-ui_*.h
-*.qmlc
-*.jsc
-Makefile*
-*build-*
-
 # Qt unit tests
-target_wrapper.*
 
 # QtCreator
-*.autosave
 
 # QtCreator Qml
-*.qmlproject.user
-*.qmlproject.user.*
 
 # QtCreator CMake
-CMakeLists.txt.user*
+
+
+# Agent-Temp-Use MarkDown
+AGENTS1.md
+EMULATOR_NOTES.md
+KICKOFF_PROMPT.md
+docs/
+.idea/
+
+# syncthing
+.stfolder/
+
+# HarmonyOS / OpenHarmony 工程产物与机器本地文件（跨机排除清单见 .stignore）
+build/
+oh_modules/
+.cxx/
+.hvigor/
+.preview/
+.clangd
+.clang-tidy
+local.properties
+sign/
+*.log
+
+# 多 agent 协作消息（随 Syncthing 同步给 Win10，不入 git）
+AgentsConversion/
+
+# 本机缓存与工具状态（AtomCode REVIEW §1.3，机器本地）
+.cache/
+.codeartsdoer/
+.appanalyzer/
+wecode-cpp.db
+
+# 临时参考快照（会随演进过期，正本保留在旧工作区 PreDev）
+devdocs/reference/
+
+# Syncthing 本机忽略配置（机器本地，Win10 侧手动镜像）
+.stignore
