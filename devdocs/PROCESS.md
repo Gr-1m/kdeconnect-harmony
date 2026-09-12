@@ -16,13 +16,16 @@
 
 ### 1.2 Commit 时机规则
 
-| 条件 | CodeArts 动作 |
+**2026-09-13 用户授权变更 → 2026-09-13 CodeArts 裁决修订**：**commit 仅由 Linux 侧 ZCode 执行**，Win10 侧 DevEco Code 只改工作区不 commit。ZCode 按任务粒度统一提交（内容经 Syncthing 已实时一致）。CodeArts 保留 push 门禁与验收评审。
+
+| 条件 | 规则 |
 |---|---|
-| WP 交付完成 + 构建通过 + 评审通过 | 发 commit 指令给负责 agent |
-| 未经评审的代码 | **不发** commit 指令 |
-| 用户明确要求 commit | 立即执行用户指令，不走评审流程 |
-| 跨层改动（d.ts + C++ + ArkTS） | 三层都就绪后统一 commit，不拆分 |
-| 单层改动（仅 C++ 或仅 ArkTS） | 该层就绪即可 commit |
+| 任务完成 + 构建通过 | **仅 ZCode（Linux 侧）执行 commit**；DevEco Code 只改工作区，不 commit |
+| 未经评审的代码 | 仍需评审后才能进入里程碑验收 |
+| 用户明确要求 commit | 立即执行 |
+| 跨层改动（d.ts + C++ + ArkTS） | 三层都就绪后统一 commit |
+| commit 范围 | **只 `git add` 自己改动范围内的明确路径**，禁止 `git add -A`（避免卷入其他 agent 的半成品） |
+| push | **仍需用户明确要求**（CodeArts 门禁） |
 
 ### 1.3 Commit 粒度规则
 
@@ -31,26 +34,28 @@
 - **commit message 格式**：`[WP-N] <简述>` 或 `[fix] <简述>` 或 `[review] <简述>`
 - **示例**：`[WP-0] baseline: C++ native stack migrated from PreDev` / `[WP-1] payload: add payloadReceived event to d.ts v2`
 
-### 1.4 首个 Commit 切分建议
+### 1.4 首个 Commit 记录
 
-当前仓库尚无任何本地 commit（仅远端 Initial commit）。建议首个 commit 切分：
+**C1 已完成**（2026-09-13 凌晨，ZCode 执行）：
+- commit hash: `9f9635b`
+- message: `feat: C1 全量入库——工程骨架+ArkTS 基线+C++ 基线+WP-1a+WP-1b`
+- 内容：工程骨架 + ArkTS 基线 + C++ native 基线 + WP-1a（读写路径修复） + WP-1b（payload 模块）
+- commit 身份: `zcode <zcode@local>`
+
+**后续 commit 切分**：
 
 | 序号 | 内容 | 负责 | 条件 |
 |---|---|---|---|
-| C1 | 工程骨架 + ArkTS 基线 + C++ native 基线（全量，构建通过） | DevEco Code + ZCode | DevEco 骨架落地 + `hvigorw assembleHap` 通过 + 模拟器冒烟通过 + **.gitignore 修复** + `git add -A` 复核无机器本地文件 |
-| C2 | `.gitcode/workflows/` CI 流水线初版 | CodeArts 出规格 + 代码 owner 落地 | C1 之后 |
-| C3+ | 按 WP 进度逐个 commit | 各 WP owner | 评审通过后 |
+| C2 | d.ts v2 契约定稿（payload 事件 + caps） | DevEco Code | AP-2 提案评审通过 |
+| C3 | ArkTS payload UI + 配对确认 UI | DevEco Code | AP-1/AP-2 完成 |
+| C4+ | 按 WP 进度逐个 commit | 各 WP owner | 任务完成即 commit |
 
-**C1 是关键里程碑**——标志着新仓库从空壳变为可构建可运行的工程。C1 之前不 commit 任何零散改动。
+### 1.7 构建门禁口径（2026-09-13 CodeArts 裁决）
 
-**C1 硬前置条件**（全部满足才发 commit 指令）：
-1. `hvigorw assembleHap` 构建通过 ✅（DevEco Code Win10 首验已确认）
-2. 模拟器冒烟通过 ✅（DevEco Code 首验②已确认）
-3. lint 通过 ✅（DevEco Code 首验③已确认）
-4. `.gitignore` 修复完成（`.cache/`、`.codeartsdoer/`、`.appanalyzer/`、`wecode-cpp.db`、`devdocs/reference/` 追加）⏳
-5. `git add -A --dry-run` 复核无机器本地文件 ⏳
-6. `build-profile.json5` 签名配置不阻塞 Linux 侧构建 ⏳
-7. AtomCode 流程文档交叉核对完成 ⏳
+- **最终构建门禁 = Linux `hvigorw assembleHap`（hms SDK）**
+- Win10 侧 DevEco 构建结论仅用于 UI/IDE 层验证
+- 跨工具链 lint 差异以 Linux CLT 编译器为准（如 `arkts-no-implicit-return-types` Linux 强制报错、Win10 DevEco 不报）
+- ArkTS 代码须确保箭头函数都有显式返回类型，避免跨工具链差异导致 Linux 构建失败
 
 ### 1.5 Push 规则
 

@@ -1,14 +1,18 @@
 // Packet 路由层：从 packetReceived 事件的原始数据中切分 NetworkPacket 帧，
-// 处理基础握手包（kdeconnect.pair / identity / ping）。
+// 处理核心握手包（kdeconnect.pair / identity），其余 packet 交给插件宿主（AP-4）。
 // 帧约定（kdeconnect-meta protocol.md：换行分隔 JSON）：
-//   发送方（本侧）组帧后自带 '\n'；接收方（本侧）按设备缓冲、按 '\n' 切分，
-//   末尾不完整帧留到下次。packetReceived 的 packet 字段是原始 TLS 读数据，
-//   可能含多帧或半帧，不能当单帧直接 parse。
+//   发送方（本侧）组帧后自带 '\n'；native 自 WP-1a 起保证「一个 packetReceived 事件 = 一个完整帧」，
+//   本层仍保留「缓冲 + 按 '\n' 切分 + 尾段留待下次」的容错逻辑（两种派发粒度都正确）。
+// 配对语义（AP-1）：请求不再自动接受，交由 UI 弹窗确认（用户裁决：与 iOS 一致）。
 import native from 'libkdeconnect_napi.so';
 
 const PROTOCOL_VERSION = 8;
 // Android 参考（PairingHandler）：时钟偏差超 30 分钟则拒绝配对请求。
 const MAX_TIMESTAMP_DIFF_SECONDS = 1800;
+
+// 核心包类型（由本层处理，不进插件）
+const PACKET_PAIR = 'kdeconnect.pair';
+const PACKET_IDENTITY = 'kdeconnect.identity';
 
 interface InPacket {
   id: number;
@@ -36,33 +40,65 @@ interface IdentityBody {
   outgoingCapabilities?: string[];
 }
 
-interface PingBody {
-  message?: string;
+// 宿主回调：配对动作、对端能力、插件分发（UI/插件层注入，net 层不依赖插件实现）
+export interface RouterCallbacks {
+  onPairRequest: (deviceId: string, timestamp: number) => void;
+  onPaired: (deviceId: string) => void;
+  onUnpaired: (deviceId: string) => void;
+  onPeerCapabilities: (deviceId: string, incoming: string[], outgoing: string[]) => void;
+  // 返回 true 表示某插件已处理
+  onPluginPacket: (deviceId: string, packetType: string, body: Object) => boolean;
 }
 
 export class PacketRouter {
   private selfDeviceId: string;
   private selfDeviceName: string;
   private selfDeviceType: string;
-  private incomingCaps: string[];
-  private outgoingCaps: string[];
   private frameBuffers: Map<string, string> = new Map();
   private logFn: (msg: string) => void;
-  private onPaired: ((deviceId: string) => void) | undefined;
-  private onUnpaired: ((deviceId: string) => void) | undefined;
+  private callbacks: RouterCallbacks;
+  // 本侧已发起、等待对端确认的配对请求：用于区分「对端确认」与「对端请求」
+  private requestedPeers: Set<string> = new Set();
 
   constructor(selfDeviceId: string, selfDeviceName: string, selfDeviceType: string,
-              logFn: (msg: string) => void,
-              onPaired?: (deviceId: string) => void,
-              onUnpaired?: (deviceId: string) => void) {
+              logFn: (msg: string) => void, callbacks: RouterCallbacks) {
     this.selfDeviceId = selfDeviceId;
     this.selfDeviceName = selfDeviceName;
     this.selfDeviceType = selfDeviceType;
-    this.incomingCaps = ['kdeconnect.ping', 'kdeconnect.identity', 'kdeconnect.pair'];
-    this.outgoingCaps = ['kdeconnect.ping'];
     this.logFn = logFn;
-    this.onPaired = onPaired;
-    this.onUnpaired = onUnpaired;
+    this.callbacks = callbacks;
+  }
+
+  // ---- 供 UI 调用的配对动作 ----
+
+  // 本侧发起配对请求（UI：已连接设备行的「配对」按钮）
+  requestPair(deviceId: string): void {
+    this.requestedPeers.add(deviceId);
+    const body: PairBody = { pair: true, timestamp: Math.floor(Date.now() / 1000) };
+    this.sendFrame(deviceId, PACKET_PAIR, body);
+    this.logFn('pair request sent to ' + deviceId);
+  }
+
+  // UI 确认接受对端请求：回 {pair:true} + 重发 identity
+  acceptPair(deviceId: string): void {
+    const body: PairBody = { pair: true, timestamp: Math.floor(Date.now() / 1000) };
+    this.sendFrame(deviceId, PACKET_PAIR, body);
+    this.sendIdentity(deviceId);
+    this.logFn('pairing accepted with ' + deviceId);
+    this.callbacks.onPaired(deviceId);
+  }
+
+  // UI 拒绝对端请求
+  rejectPair(deviceId: string): void {
+    const body: PairBody = { pair: false };
+    this.sendFrame(deviceId, PACKET_PAIR, body);
+    this.logFn('pairing rejected for ' + deviceId);
+  }
+
+  // 断链/主动解除时清理本侧等待态与帧缓冲
+  forgetPeer(deviceId: string): void {
+    this.requestedPeers.delete(deviceId);
+    this.frameBuffers.delete(deviceId);
   }
 
   // packetReceived 事件入口。raw 可能含多帧或半帧。
@@ -93,24 +129,25 @@ export class PacketRouter {
       this.logFn('bad packet frame: ' + (e instanceof Error ? e.message : 'parse error'));
       return;
     }
-    switch (pkt.type) {
-      case 'kdeconnect.pair':
-        this.handlePair(deviceId, pkt.body as PairBody);
-        break;
-      case 'kdeconnect.identity':
-        this.handleIdentity(deviceId, pkt.body as IdentityBody);
-        break;
-      case 'kdeconnect.ping':
-        this.handlePing(deviceId, pkt.body as PingBody);
-        break;
-      default:
-        this.logFn('unhandled packet type: ' + pkt.type);
-        break;
+    if (pkt.type === PACKET_PAIR) {
+      this.handlePair(deviceId, pkt.body as PairBody);
+      return;
+    }
+    if (pkt.type === PACKET_IDENTITY) {
+      this.handleIdentity(deviceId, pkt.body as IdentityBody);
+      return;
+    }
+    // 其余 packet 交插件宿主（AP-4）
+    const handled: boolean = this.callbacks.onPluginPacket(deviceId, pkt.type, pkt.body);
+    if (!handled) {
+      this.logFn('unhandled packet type: ' + pkt.type);
     }
   }
 
-  // 骨架阶段自动接受配对请求（无人工确认 UI）。v8 请求必须带 timestamp（秒），
-  // 时钟偏差超限按 Android 参考拒绝；接受后回 {pair:true} 并主动交换 identity。
+  // AP-1：不再自动接受。区分两种 pair:true ——
+  //   本侧曾发起（requestedPeers 命中）= 对端确认 → onPaired；
+  //   否则 = 对端请求 → onPairRequest（UI 弹窗）。
+  // v8 请求必须带 timestamp（秒），时钟偏差超限直接拒绝（Android 参考）。
   private handlePair(deviceId: string, body: PairBody): void {
     if (body.pair === true) {
       const ts: number = body.timestamp ?? -1;
@@ -121,33 +158,31 @@ export class PacketRouter {
           return;
         }
       }
-      const reply: PairBody = { pair: true };
-      this.sendFrame(deviceId, 'kdeconnect.pair', reply);
-      this.sendIdentity(deviceId);
-      this.logFn('pairing accepted with ' + deviceId);
-      // 通知 UI 层（记住的设备持久化；AP-1 配对确认 UI 将在回调前加确认环节）
-      if (this.onPaired !== undefined) {
-        this.onPaired(deviceId);
+      if (this.requestedPeers.has(deviceId)) {
+        this.requestedPeers.delete(deviceId);
+        this.sendIdentity(deviceId);
+        this.logFn('pairing confirmed by ' + deviceId);
+        this.callbacks.onPaired(deviceId);
+        return;
       }
-    } else {
-      this.logFn('unpair request from ' + deviceId);
-      if (this.onUnpaired !== undefined) {
-        this.onUnpaired(deviceId);
-      }
+      this.logFn('pair request from ' + deviceId + ' (awaiting user confirmation)');
+      this.callbacks.onPairRequest(deviceId, ts);
+      return;
     }
+    // pair:false = 对端解除配对
+    this.requestedPeers.delete(deviceId);
+    this.logFn('unpair request from ' + deviceId);
+    this.callbacks.onUnpaired(deviceId);
   }
 
+  // 对端 identity：记录能力（供插件装载）并回填名称
   private handleIdentity(deviceId: string, body: IdentityBody): void {
+    const incoming: string[] = body.incomingCapabilities ?? [];
+    const outgoing: string[] = body.outgoingCapabilities ?? [];
     this.logFn('identity from ' + deviceId + ': ' +
       (body.deviceName ?? '?') + ' v' + (body.protocolVersion ?? '?') +
-      ' incoming=' + (body.incomingCapabilities?.length ?? 0) +
-      ' outgoing=' + (body.outgoingCapabilities?.length ?? 0));
-  }
-
-  private handlePing(deviceId: string, body: PingBody): void {
-    const reply: PingBody = { message: body.message ?? 'pong' };
-    this.sendFrame(deviceId, 'kdeconnect.ping', reply);
-    this.logFn('ping echoed to ' + deviceId);
+      ' incoming=' + incoming.length + ' outgoing=' + outgoing.length);
+    this.callbacks.onPeerCapabilities(deviceId, incoming, outgoing);
   }
 
   private sendIdentity(deviceId: string): void {
@@ -156,10 +191,12 @@ export class PacketRouter {
       protocolVersion: PROTOCOL_VERSION,
       deviceName: this.selfDeviceName,
       deviceType: this.selfDeviceType,
-      incomingCapabilities: this.incomingCaps,
-      outgoingCapabilities: this.outgoingCaps
+      // 能力由 native 统一持有（d.ts setCapabilities，单一来源）；此处仅发结构占位，
+      // 真实 caps 由 native 在 identity 帧内填充（见 d.ts setCapabilities 注释）。
+      incomingCapabilities: ['kdeconnect.identity', 'kdeconnect.pair'],
+      outgoingCapabilities: ['kdeconnect.identity', 'kdeconnect.pair']
     };
-    this.sendFrame(deviceId, 'kdeconnect.identity', body);
+    this.sendFrame(deviceId, PACKET_IDENTITY, body);
   }
 
   private sendFrame(deviceId: string, type: string, body: Object): void {

@@ -1,5 +1,5 @@
 import uiMaterial from '@ohos.arkui.uiMaterial';
-import { DeviceItem, RememberedDevice } from '../model/DeviceModels';
+import { DeviceItem, RememberedDevice, BatteryItem } from '../model/DeviceModels';
 import { GlassCard } from './GlassCard';
 
 // 设备 Tab：
@@ -12,12 +12,18 @@ export struct DevicesTab {
   @Link rememberedDevices: RememberedDevice[];
   @Prop immersive: boolean = false;
   @Prop isWide: boolean = false;
+  // AP-1：本侧已发起、等待对端确认的设备 id
+  @Prop requestedPairIds: string[] = [];
+  // 插件推来的展示项（电量）
+  @Prop batteryItems: BatteryItem[] = [];
   cardMaterial: uiMaterial.Material | undefined = undefined;
   onDisconnectDevice: (d: DeviceItem) => void = () => {
   };
   onConnectDevice: (d: DeviceItem) => void = () => {
   };
   onManualConnect: (host: string, port: number) => void = () => {
+  };
+  onPairDevice: (d: DeviceItem) => void = () => {
   };
   // 侧栏选中项：0 已连接 / 1 发现 / 2 记住的 / 3 手动连接
   @State selectedSection: number = 0;
@@ -39,6 +45,15 @@ export struct DevicesTab {
     if (!this.isWide) {
       this.drawerOpen = false;
     }
+  }
+
+  private isPaired(deviceId: string): boolean {
+    return this.rememberedDevices.some((r: RememberedDevice) => r.id === deviceId);
+  }
+
+  private batteryOf(deviceId: string): string {
+    const item: BatteryItem | undefined = this.batteryItems.find((b: BatteryItem) => b.deviceId === deviceId);
+    return item === undefined ? '' : item.text;
   }
 
   private sectionTitleOf(index: number): ResourceStr {
@@ -125,7 +140,7 @@ export struct DevicesTab {
 
   @Builder
   connectedRow(d: DeviceItem) {
-    Row({ space: 10 }) {
+    Row({ space: 8 }) {
       Circle({ width: 8, height: 8 })
         .fill($r('app.color.dot_connected'))
       Column({ space: 2 }) {
@@ -139,9 +154,40 @@ export struct DevicesTab {
           .fontColor($r('app.color.text_muted'))
           .fontFamily('monospace')
           .maxLines(1)
+        if (this.batteryOf(d.id).length > 0) {
+          Text(this.batteryOf(d.id))
+            .fontSize(10)
+            .fontColor($r('app.color.dot_connected'))
+        }
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
+      // AP-1 配对状态：已配对 → 徽标；已发起等待确认 → 提示；否则 → 配对按钮
+      if (this.isPaired(d.id)) {
+        Text($r('app.string.remembered_hint'))
+          .fontSize(10)
+          .fontColor($r('app.color.dot_remembered'))
+          .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+          .borderRadius(999)
+          .backgroundColor($r('app.color.chip_bg'))
+      } else if (this.requestedPairIds.includes(d.id)) {
+        Text($r('app.string.pair_pending'))
+          .fontSize(10)
+          .fontColor($r('app.color.accent_text'))
+          .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+          .borderRadius(999)
+          .backgroundColor($r('app.color.accent_soft'))
+      } else {
+        Button($r('app.string.pair_action'))
+          .fontSize(12)
+          .height(32)
+          .backgroundColor($r('app.color.accent_soft'))
+          .fontColor($r('app.color.accent_text'))
+          .borderRadius(8)
+          .onClick(() => {
+            this.onPairDevice(d);
+          })
+      }
       Button($r('app.string.disconnect'))
         .fontSize(12)
         .height(32)

@@ -72,10 +72,10 @@ UI 结构（对齐 iOS 端 Devices+Settings 两 Tab，鸿蒙扩展为四 Tab）�
 | AP | 内容 | 对齐 | 交付 / 验收 |
 |---|---|---|---|
 | AP-0 | 骨架 + 基线移植 + Win10 构建首验 | WP-0 | ✅ 完成（§1 表） |
-| AP-1 | **设备页 UI 重构（部分完成）+ 配对确认 UI**：已完成底部悬浮胶囊栏（设备/文件/设置/日志[开发期]，接入沉浸光感 `systemMaterial`）、设备页左侧收纳/展开栏 + 右侧主区（已连接/发现/记住的/手动连接，记住的走 Preferences 持久化 `rememberedDevices`）、设置页（设备改名/主题/语言/本机信息，颜色走 color.json 双份资源）；**待做**：`kdeconnect.pair` 请求到达 → 验证码确认框（接受/拒绝）替代 PacketRouter 骨架自动接受，发现列表「连接」→ 主动发 pair，`pairingRequest`（TLS identity 帧）只回填设备名 | M1 | 连桌面 KDE：桌面发起配对 → 鸿蒙弹验证码 → 双端一致 → 配对成功；拒绝路径可用；记住列表重启后仍在 |
+| AP-1 | **配对确认（1a/1b 均已完成）**：状态机（不再自动接受；`requestPair/acceptPair/rejectPair/forgetPeer`，区分「本侧发起被确认」与「对端请求」）+ 配对确认模态弹窗 + 设备行配对状态（已配对徽标/等待确认/配对按钮）；**验证码已接真值**（native `getPairVerificationCode(deviceId, timestamp)`，公钥 SPKI DER 算法在 native，ArkTS 只格式化 `AB CD EF 12`，无链路显示占位） | M1 | 连桌面 KDE：桌面发起配对 → 鸿蒙弹验证码 → 双端一致 → 接受 → 配对成功；拒绝路径可用；重启后记住列表仍在 |
 | AP-2 | **d.ts v2 payload 契约共定**：与 zcode WP-1 逐字对齐（方法名/事件名/字段名），ArkTS 侧先出提案草案 → 双方定稿 → zcode 实现。方向：`payloadReceived`（含 `payloadTransferInfo`/`payloadSize`）、`payloadProgress`（bytes/total）、接收落盘路径约定（沙箱 `files/kdeconnect/`）、发送侧 `sendPayload` 排队语义 | WP-1 | d.ts v2 定稿并经 CodeArts 评审 |
-| AP-3 | 信任设备存储 ArkTS 侧：Preferences schema（每设备：deviceId/证书指纹/设备名/已配对标记）、存取封装；为 AP-7 改名迁移预留版本字段 | WP-2 | 配对过的设备重连免确认（依赖 WP-2 native 钉扎） |
-| AP-4 | **插件框架**（M2 地基）：`PluginBase`（displayName/supportedPacketTypes/onPacketReceived/onDestroy 必达）、`PluginRegistry`（注册表驱动 + 能力交集装载 + **每设备一份实例**）、发送走单写者队列封装 | M2 | 注册新插件零改动框架代码；identity 能力协商随插件清单自动更新 |
+| AP-3 | **信任设备存储（Preferences 侧完成）**：`TrustStore`（键 `trustedDevices`，JSON 带 `schemaVersion=2`）+ 旧 `rememberedDevices` 自动迁移 + 配对时存对端证书 PEM + 解除配对移除；**已与 WP-2 钉扎对接**（配对登记 `setTrustedCertificate` / 启动回灌 / unpair 先 `removeTrustedCertificate`） | WP-2 | 匹配 WP-2 钉扎：证书变更拒连、限流 error 文案可读化 |
+| AP-4 | **插件框架（M2 地基）已完成**：`PluginBase`（能力声明/生命周期/收包回调，`onDestroy` 必达）+ `PluginRegistry`（注册表驱动，禁硬编码 switch）+ `PluginHost`（每设备一份实例、能力交集装载、逐个 try/catch 分发、插件→UI 事件通道 `uiFn`）+ 已落地 `PingPlugin` / `SharePlugin` / `BatteryPlugin`；capabilities 由注册表汇总喂 `native.setCapabilities`（单一来源） | M2 | 注册新插件零改动框架代码；identity 能力协商随插件清单自动更新 |
 | AP-5 | iOS 功能集 8 类插件逐个实现（KICKOFF §5 表：ping/battery/clipboard/findmyphone/runcommand/share(+payload)/mousepad/presenter），每个独立验收（连桌面实测） | M2 | 8 类逐一通过；share 依赖 WP-1/AP-2 |
 | AP-6 | 多设备管理、前后台/保活策略、错误恢复重连、全量中文文案、图标与界面打磨 | M3 | 真机/模拟器体验验收 |
 | AP-7 | **上架前置**：bundleName 改最终标识（用户定名后一次改 `AppScope/app.json5` + 两处 label）、**改名后 Preferences 迁移逻辑 + 单元测试**（用户要求：开发期保持、上架前改动能正常——迁移代码我写，测试计划按 CodeArts 单测指导，测试代码可由 CodeArts/我分工）、Release 混淆启用评估、隐私政策/权限用途文案（正式前用户确认） | M4/WP-6 | Release HAP 可安装且老用户数据不丢（模拟改名演练） |
@@ -154,6 +154,8 @@ protocolVersion=8；UDP 1716；TCP 1716–1764；payload 端口 ≥1739；单包
 - lint 面板：Linux 侧 codelinter 被商用 CLT 类型门禁卡死（假象），**lint 结论以 Win10 DevEco 实测为准**（首验③，进行中）。
 - 模拟器/真机：装设备优先在用户终端执行（历史约定）；本侧 HAP 未配置签名（`signingConfigs` 空）——模拟器安装运行前需用户在 DevEco 配置自动签名（首验②阻塞项，见 WIN10_LOG）。
 - 沉浸光感材质：`uiMaterial` 探测失败静默降级毛玻璃，勿写屏幕日志（QEMU 已知不支持）。
+- **两个编译器口径不同（重要）**：Win10 DevEco 编译器宽松，**Linux CLT 会额外报 `arkts-no-implicit-return-types`**——凡作为**函数类型参数**传入的箭头函数（`RouterCallbacks` 字段、`SendFrameFn`/`uiFn`、`native.init` 回调、组件回调 prop）**必须显式标注返回类型**（`(): void => { ... }` / `(): boolean => ...`）。Win10 绿 ≠ Linux 绿：UI 预览用 Win10，**最终构建门禁以 Linux 侧为准**（ZCode MSG49）。
+- **工具约定（血泪教训）**：不要用 PowerShell `Get-Content`/`Set-Content`/`-replace` 批量改 `.ets`/`.md`（PS 5.1 按 ANSI 读 UTF-8 → 中文变 `鈥?` 且丢失字节，导致 `Unterminated string literal` 或文档损坏）；一律用编辑工具逐处改，改完先 `arkts_check` 再 `build_project`，改 `.md` 后用 grep 复核中文。
 - 每次交付前冒烟：`arkts_check` → `assembleHap` →（有设备时）安装启动看 hilog 关键行（deviceId / packet type / 错误码）。
 
 ## 8. 协作纪律（ArkTS 侧执行细则）

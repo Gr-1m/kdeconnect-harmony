@@ -14,3 +14,9 @@ export interface RememberedDevice {
   id: string;
   name: string;
 }
+
+// 插件推给 UI 的展示项（如电量）；由 Index 维护、DevicesTab 渲染
+export interface BatteryItem {
+  deviceId: string;
+  text: string;
+}
