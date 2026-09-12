@@ -477,9 +477,15 @@ void NetStack::closeConnection(int fd, const char *reason)
 
 void NetStack::sendIdentityOverTls(TcpConnection &conn)
 {
+    std::vector<std::string> inC, outC;
+    {
+        std::lock_guard<std::mutex> lk(capsMutex_);
+        inC = capsIncoming_;
+        outC = capsOutgoing_;
+    }
     std::string identity = PacketIO::buildIdentity(
         config_.deviceId, config_.deviceName, config_.deviceType,
-        tcpServer_ ? tcpServer_->port() : 0);
+        tcpServer_ ? tcpServer_->port() : 0, PROTOCOL_VERSION, inC, outC);
     // 入队 + 立即 flush（本函数只由网络线程调用，是唯一写者）
     if (!conn.enqueueTx(identity)) {
         dispatchError(conn.deviceId(), ENOBUFS, "identity: tx queue full");
@@ -689,9 +695,15 @@ void NetStack::onConnectionWritable(int fd)
 
     if (conn.state() == ConnectionState::Idle && !conn.isIncoming()) {
         // TCP 已连上（EPOLLOUT 就绪）：发明文 identity，然后立刻起 TLS server 握手
+        std::vector<std::string> inC, outC;
+        {
+            std::lock_guard<std::mutex> lk(capsMutex_);
+            inC = capsIncoming_;
+            outC = capsOutgoing_;
+        }
         std::string identity = PacketIO::buildIdentity(
             config_.deviceId, config_.deviceName, config_.deviceType,
-            tcpServer_ ? tcpServer_->port() : 0);
+            tcpServer_ ? tcpServer_->port() : 0, PROTOCOL_VERSION, inC, outC);
         if (!conn.writePlainAll(reinterpret_cast<const uint8_t *>(identity.data()),
                                 identity.size())) {
             dispatchError(conn.deviceId(), EIO, "plain identity write failed");
@@ -790,5 +802,27 @@ void NetStack::payloadCancel(uint64_t id)
         payload_->cancel(id);
     }
 }
+
+void NetStack::setCapabilities(const std::vector<std::string> &incomingCaps,
+                               const std::vector<std::string> &outgoingCaps)
+{
+    {
+        std::lock_guard<std::mutex> lk(capsMutex_);
+        capsIncoming_ = incomingCaps;
+        capsOutgoing_ = outgoingCaps;
+    }
+    if (udp_) {
+        udp_->setCapabilities(incomingCaps, outgoingCaps);
+    }
+    // 向已建加密链路重发 identity（对端据此重算插件装载；d.ts v2 语义）
+    std::lock_guard<std::mutex> lk(connMutex_);
+    for (auto &p : connections_) {
+        TcpConnection &c = *p.second;
+        if (c.state() == ConnectionState::Encrypted && !c.deviceId().empty()) {
+            sendIdentityOverTls(c);
+        }
+    }
+}
+
 
 } // namespace kdeconnect

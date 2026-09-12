@@ -38,6 +38,10 @@ bool UdpDiscovery::init(const std::string &deviceId, const std::string &deviceNa
         return false;
     }
 
+    identityFields_[0] = deviceId;
+    identityFields_[1] = deviceName;
+    identityFields_[2] = deviceType;
+    identityPort_ = tcpPort;
     identityJson_ = PacketIO::buildIdentity(deviceId, deviceName, deviceType, tcpPort);
     LOGI("udp discovery init on port %u", UDP_PORT);
     return true;
@@ -51,6 +55,15 @@ void UdpDiscovery::close()
     }
 }
 
+void UdpDiscovery::setCapabilities(const std::vector<std::string> &incomingCaps,
+                                   const std::vector<std::string> &outgoingCaps)
+{
+    std::lock_guard<std::mutex> lk(capsMutex_);
+    identityJson_ = PacketIO::buildIdentity(identityFields_[0], identityFields_[1],
+                                            identityFields_[2], identityPort_,
+                                            PROTOCOL_VERSION, incomingCaps, outgoingCaps);
+}
+
 bool UdpDiscovery::broadcast()
 {
     struct sockaddr_in addr {};
@@ -58,13 +71,18 @@ bool UdpDiscovery::broadcast()
     addr.sin_addr.s_addr = htonl(0xFFFFFFFF);
     addr.sin_port = htons(UDP_PORT);
 
-    ssize_t n = sendto(fd_, identityJson_.data(), identityJson_.size(), 0,
+    std::string identity;
+    {
+        std::lock_guard<std::mutex> lk(capsMutex_);
+        identity = identityJson_;
+    }
+    ssize_t n = sendto(fd_, identity.data(), identity.size(), 0,
                        reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr));
     if (n < 0) {
         LOGE("udp broadcast: %s", strerror(errno));
         return false;
     }
-    LOGI("udp broadcast sent (%zu bytes)", identityJson_.size());
+    LOGI("udp broadcast sent (%zu bytes)", identity.size());
     return true;
 }
 

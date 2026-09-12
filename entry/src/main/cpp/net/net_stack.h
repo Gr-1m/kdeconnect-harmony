@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <cstdint>
+#include <vector>
 
 namespace kdeconnect {
 
@@ -34,6 +35,10 @@ public:
     bool connectToPeer(const std::string &host, uint16_t port);
     bool sendPacket(const std::string &deviceId, const std::string &packetJson);
     void disconnectDevice(const std::string &deviceId);
+
+    // caps 单一来源（d.ts v2 setCapabilities）：更新后向已建 TLS 链路重发 identity
+    void setCapabilities(const std::vector<std::string> &incomingCaps,
+                         const std::vector<std::string> &outgoingCaps);
 
     // —— WP-1b payload ——
     uint64_t sendPayload(const std::string &deviceId, const std::string &type,
@@ -85,6 +90,12 @@ private:
     std::unordered_map<std::string, int64_t> lastSeenMs_;
 
     int wakeFd_ = -1;
+
+    // caps 单一来源（REVIEW §3.3）：UDP 与 TLS 两条 identity 路径共用
+    std::mutex capsMutex_;
+    std::vector<std::string> capsIncoming_{"kdeconnect.ping", "kdeconnect.identity",
+                                           "kdeconnect.pair"};
+    std::vector<std::string> capsOutgoing_{"kdeconnect.ping"};
 
     std::unique_ptr<PayloadManager> payload_;
 };

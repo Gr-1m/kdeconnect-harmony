@@ -243,3 +243,41 @@ napi_value JsCancelPayload(napi_env env, napi_callback_info info)
     napi_get_undefined(env, &out);
     return out;
 }
+
+napi_value JsSetCapabilities(napi_env env, napi_callback_info info)
+{
+    // d.ts v2：setCapabilities(incoming: string[], outgoing: string[])
+    size_t argc = 2;
+    napi_value args[2] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc >= 2) {
+        std::vector<std::string> caps[2];
+        bool ok = true;
+        for (int i = 0; i < 2 && ok; ++i) {
+            uint32_t len = 0;
+            if (napi_get_array_length(env, args[i], &len) != napi_ok) {
+                ok = false;
+                break;
+            }
+            for (uint32_t k = 0; k < len && ok; ++k) {
+                napi_value item = nullptr;
+                if (napi_get_element(env, args[i], k, &item) != napi_ok) {
+                    ok = false;
+                    break;
+                }
+                std::string cap;
+                if (!jsGetString(env, item, cap)) {
+                    ok = false;
+                    break;
+                }
+                caps[i].push_back(std::move(cap));
+            }
+        }
+        if (ok) {
+            netStack().setCapabilities(caps[0], caps[1]);
+        }
+    }
+    napi_value out = nullptr;
+    napi_get_undefined(env, &out);
+    return out;
+}
