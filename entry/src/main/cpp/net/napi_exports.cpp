@@ -325,3 +325,36 @@ napi_value JsGetOwnCertificate(napi_env env, napi_callback_info info)
     napi_create_string_utf8(env, pem.c_str(), pem.size(), &out);
     return out;
 }
+
+// —— WP-2 信任设备证书钉扎（持久化在 ArkTS TrustStore/Preferences，启动时回灌）——
+napi_value JsSetTrustedCertificate(napi_env env, napi_callback_info info)
+{
+    size_t argc = 2;
+    napi_value args[2] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc >= 2) {
+        std::string deviceId, pem;
+        if (jsGetString(env, args[0], deviceId) && jsGetString(env, args[1], pem)) {
+            netStack().setTrustedCertificate(deviceId, pem);
+        }
+    }
+    napi_value out = nullptr;
+    napi_get_undefined(env, &out);
+    return out;
+}
+
+napi_value JsRemoveTrustedCertificate(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc >= 1) {
+        std::string deviceId;
+        if (jsGetString(env, args[0], deviceId)) {
+            netStack().removeTrustedCertificate(deviceId);
+        }
+    }
+    napi_value out = nullptr;
+    napi_get_undefined(env, &out);
+    return out;
+}

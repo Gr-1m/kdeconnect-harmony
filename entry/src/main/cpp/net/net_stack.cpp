@@ -27,6 +27,25 @@ int64_t nowMs()
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
+// 仅接受私网地址直连（WP-2；公网/非法来源直接拒绝）
+bool isPrivateIpv4(const std::string &host)
+{
+    unsigned a[4] = {0, 0, 0, 0};
+    if (::sscanf(host.c_str(), "%u.%u.%u.%u", &a[0], &a[1], &a[2], &a[3]) != 4) {
+        return false;
+    }
+    for (int i = 0; i < 4; ++i) {
+        if (a[i] > 255) {
+            return false;
+        }
+    }
+    const unsigned ip = (a[0] << 24) | (a[1] << 16) | (a[2] << 8) | a[3];
+    const unsigned t = ip >> 24, t2 = ip >> 20;
+    return t == 10 || t == 127 || (t == 172 && t2 >= 0x171 && t2 <= 0x17F) ||
+           (t == 192 && ((ip >> 16) & 0xFF) == 168) ||
+           (t == 169 && ((ip >> 16) & 0xFF) == 254);
+}
+
 // 对端地址取自 socket（identity JSON 无 host 字段；REVIEW §3.4 建议 11）
 std::string peerHostOf(int fd)
 {
@@ -426,6 +445,27 @@ void NetStack::onTcpServerReadable()
     int fd = tcpServer_->accept();
     if (fd < 0) return;
 
+    // WP-2：仅接受私网地址（公网/非法来源直接拒绝）
+    const std::string host = peerHostOf(fd);
+    if (!isPrivateIpv4(host)) {
+        LOGE("reject non-private peer %s fd=%d", host.c_str(), fd);
+        ::close(fd);
+        return;
+    }
+    // WP-2：同 IP 1000ms 连接限流（KDE/Android 同款语义）
+    {
+        std::lock_guard<std::mutex> lk(trustMutex_);
+        const int64_t now = nowMs();
+        auto it = lastAcceptByIp_.find(host);
+        if (it != lastAcceptByIp_.end() && now - it->second < CONN_RATE_LIMIT_MS) {
+            LOGE("rate limit: %s within %dms, rejecting fd=%d", host.c_str(),
+                 CONN_RATE_LIMIT_MS, fd);
+            ::close(fd);
+            return;
+        }
+        lastAcceptByIp_[host] = now;
+    }
+
     // 未配对连接数上限（此前该常量只用作 listen backlog，非语义本意）
     {
         std::lock_guard<std::mutex> lk(connMutex_);
@@ -547,6 +587,9 @@ bool NetStack::handlePlainIdentity(TcpConnection &conn, const std::string &frame
 void NetStack::dispatchFrames(TcpConnection &conn)
 {
     std::string frame;
+    // 帧循环内不得销毁 conn（引用悬垂）：标记后出循环统一关闭
+    bool dropConn = false;
+    const char *dropReason = nullptr;
     while (PacketIO::extractFrame(conn.rxBuf(), frame)) {
         if (frame.empty()) {
             continue;  // 超限帧已丢弃
@@ -569,6 +612,41 @@ void NetStack::dispatchFrames(TcpConnection &conn)
             DeviceInfo info;
             if (PacketIO::parseIdentity(json, info) && !info.deviceId.empty()) {
                 if (conn.deviceId().empty()) {
+                    // WP-2：证书钉扎——已登记设备出现证书变更立即断链（TOFU + 钉扎）
+                    std::string trustedPem;
+                    {
+                        std::lock_guard<std::mutex> lk(trustMutex_);
+                        auto it = trustedCertPem_.find(info.deviceId);
+                        if (it != trustedCertPem_.end()) {
+                            trustedPem = it->second;
+                        }
+                        // 同 deviceId 1000ms 连接限流（identity 阶段判定）
+                        auto lit = lastConnByDevice_.find(info.deviceId);
+                        if (lit != lastConnByDevice_.end() &&
+                            nowMs() - lit->second < CONN_RATE_LIMIT_MS) {
+                            LOGE("rate limit: device %s reconnect within %dms",
+                                 info.deviceId.c_str(), CONN_RATE_LIMIT_MS);
+                            dispatchError(info.deviceId, ECONNREFUSED,
+                                          "connection rate limited");
+                            dropConn = true;
+                            dropReason = "device rate limited";
+                            break;
+                        }
+                        lastConnByDevice_[info.deviceId] = nowMs();
+                    }
+                    if (!trustedPem.empty() && conn.tlsEngine() != nullptr) {
+                        std::vector<uint8_t> leaf = conn.tlsEngine()->peerLeafCertDer();
+                        const std::string trustedDer = pemToDer(trustedPem, "CERTIFICATE");
+                        const std::string leafStr(leaf.begin(), leaf.end());
+                        if (leafStr.empty() || leafStr != trustedDer) {
+                            LOGE("certificate mismatch for %s, dropping", info.deviceId.c_str());
+                            dispatchError(info.deviceId, EACCES,
+                                          "certificate mismatch (device re-pair required)");
+                            dropConn = true;
+                            dropReason = "certificate mismatch";
+                            break;
+                        }
+                    }
                     conn.setDeviceId(info.deviceId);
                 }
                 conn.setPeerInfo(conn.peerHost(), conn.peerPort(), info.deviceName, info.deviceType);
@@ -613,6 +691,9 @@ void NetStack::dispatchFrames(TcpConnection &conn)
         ev.payloadSize = payloadSize;
         ev.payloadTransferPort = payloadPort;
         dispatchEvent(ev);
+    }
+    if (dropConn) {
+        closeConnection(conn.fd(), dropReason);
     }
 }
 
@@ -802,6 +883,20 @@ void NetStack::payloadCancel(uint64_t id)
     if (payload_ != nullptr) {
         payload_->cancel(id);
     }
+}
+
+// —— WP-2 安全加固 ——
+
+void NetStack::setTrustedCertificate(const std::string &deviceId, const std::string &certPem)
+{
+    std::lock_guard<std::mutex> lk(trustMutex_);
+    trustedCertPem_[deviceId] = certPem;
+}
+
+void NetStack::removeTrustedCertificate(const std::string &deviceId)
+{
+    std::lock_guard<std::mutex> lk(trustMutex_);
+    trustedCertPem_.erase(deviceId);
 }
 
 
