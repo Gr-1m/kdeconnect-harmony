@@ -57,6 +57,8 @@ static napi_value RegisterModule(napi_env env, napi_value exports)
          nullptr},
         {"getPeerCertificate", nullptr, JsGetPeerCertificate, nullptr, nullptr, nullptr,
          napi_default, nullptr},
+        {"getOwnCertificate", nullptr, JsGetOwnCertificate, nullptr, nullptr, nullptr,
+         napi_default, nullptr},
         {"getPairVerificationCode", nullptr, JsGetPairVerificationCode, nullptr, nullptr,
          nullptr, napi_default, nullptr},
     };

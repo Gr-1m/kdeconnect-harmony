@@ -42,6 +42,7 @@ public:
 
     // AP-1b：对端证书 PEM（空 = 无加密链路）；配对验证码（KDE verificationKey 等价）
     std::string getPeerCertificate(const std::string &deviceId);
+    std::string getOwnCertificate();
     std::string getPairVerificationCode(const std::string &deviceId, int64_t pairingTimestamp);
 
     // —— WP-1b payload ——
@@ -104,6 +105,8 @@ private:
     // 本机证书 SPKI DER 惰性缓存（验证码用）
     std::string ownSpkiDer_;
     bool ownSpkiDone_ = false;
+    // 对端证书 PEM 缓存（按 deviceId，掉线后保留至下次连接覆盖；AP-1b「记住的设备」展示用）
+    std::unordered_map<std::string, std::string> peerCertPemCache_;
 
     std::unique_ptr<PayloadManager> payload_;
 };

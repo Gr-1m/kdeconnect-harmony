@@ -807,24 +807,6 @@ void NetStack::payloadCancel(uint64_t id)
 
 std::string NetStack::getPeerCertificate(const std::string &deviceId)
 {
-    std::lock_guard<std::mutex> lk(connMutex_);
-    for (auto &p : connections_) {
-        TcpConnection &c = *p.second;
-        if (c.deviceId() == deviceId && c.state() == ConnectionState::Encrypted &&
-            c.tlsEngine() != nullptr) {
-            std::vector<uint8_t> der = c.tlsEngine()->peerLeafCertDer();
-            if (!der.empty()) {
-                return derToPem("CERTIFICATE", der.data(), der.size());
-            }
-        }
-    }
-    return std::string();
-}
-
-std::string NetStack::getPairVerificationCode(const std::string &deviceId,
-                                              int64_t pairingTimestamp)
-{
-    std::string peerSpki;
     {
         std::lock_guard<std::mutex> lk(connMutex_);
         for (auto &p : connections_) {
@@ -833,11 +815,51 @@ std::string NetStack::getPairVerificationCode(const std::string &deviceId,
                 c.tlsEngine() != nullptr) {
                 std::vector<uint8_t> der = c.tlsEngine()->peerLeafCertDer();
                 if (!der.empty()) {
-                    peerSpki = extractSpkiDer(der.data(), der.size());
+                    std::string pem = derToPem("CERTIFICATE", der.data(), der.size());
+                    peerCertPemCache_[deviceId] = pem;
+                    return pem;
                 }
+            }
+        }
+    }
+    // 掉线后保留（MSG43_TO_ZCODE §1.4）：命中缓存则返回，否则空串
+    auto it = peerCertPemCache_.find(deviceId);
+    return it != peerCertPemCache_.end() ? it->second : std::string();
+}
+
+std::string NetStack::getOwnCertificate()
+{
+    // 与 generateCert 产出的同一份（d.ts v2 语义：两端一致才能算对验证码）
+    return config_.certPem;
+}
+
+std::string NetStack::getPairVerificationCode(const std::string &deviceId,
+                                              int64_t pairingTimestamp)
+{
+    std::string peerCertDer;
+    {
+        std::lock_guard<std::mutex> lk(connMutex_);
+        for (auto &p : connections_) {
+            TcpConnection &c = *p.second;
+            if (c.deviceId() == deviceId && c.state() == ConnectionState::Encrypted &&
+                c.tlsEngine() != nullptr) {
+                std::vector<uint8_t> der = c.tlsEngine()->peerLeafCertDer();
+                peerCertDer.assign(der.begin(), der.end());
                 break;
             }
         }
+        if (peerCertDer.empty()) {
+            // 掉线后仍可查询验证码（与 getPeerCertificate 同一缓存策略）
+            auto it = peerCertPemCache_.find(deviceId);
+            if (it != peerCertPemCache_.end()) {
+                peerCertDer = pemToDer(it->second, "CERTIFICATE");
+            }
+        }
+    }
+    std::string peerSpki;
+    if (!peerCertDer.empty()) {
+        peerSpki = extractSpkiDer(reinterpret_cast<const uint8_t *>(peerCertDer.data()),
+                                  peerCertDer.size());
     }
     if (peerSpki.empty()) {
         return std::string();
