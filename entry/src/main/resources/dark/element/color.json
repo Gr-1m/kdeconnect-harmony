@@ -1,0 +1,108 @@
+{
+  "color": [
+    {
+      "name": "start_window_background",
+      "value": "#000000"
+    },
+    {
+      "name": "bg_grad_top",
+      "value": "#0B1026"
+    },
+    {
+      "name": "bg_grad_mid",
+      "value": "#111C3E"
+    },
+    {
+      "name": "bg_grad_bottom",
+      "value": "#0D2B4D"
+    },
+    {
+      "name": "glow_primary",
+      "value": "#5256BDF8"
+    },
+    {
+      "name": "glow_secondary",
+      "value": "#47818CF8"
+    },
+    {
+      "name": "card_bg",
+      "value": "#8C111A36"
+    },
+    {
+      "name": "card_border",
+      "value": "#14FFFFFF"
+    },
+    {
+      "name": "text_primary",
+      "value": "#EAF2FF"
+    },
+    {
+      "name": "text_secondary",
+      "value": "#9FB0CC"
+    },
+    {
+      "name": "text_muted",
+      "value": "#5B6B8C"
+    },
+    {
+      "name": "accent",
+      "value": "#0984E3"
+    },
+    {
+      "name": "accent_soft",
+      "value": "#2956BDF8"
+    },
+    {
+      "name": "accent_text",
+      "value": "#7DD3FC"
+    },
+    {
+      "name": "input_bg",
+      "value": "#14FFFFFF"
+    },
+    {
+      "name": "chip_bg",
+      "value": "#0FFFFFFF"
+    },
+    {
+      "name": "danger_bg",
+      "value": "#2EF87171"
+    },
+    {
+      "name": "danger_text",
+      "value": "#FCA5A5"
+    },
+    {
+      "name": "bar_bg",
+      "value": "#B80D142C"
+    },
+    {
+      "name": "bar_border",
+      "value": "#1AFFFFFF"
+    },
+    {
+      "name": "dot_connected",
+      "value": "#34D399"
+    },
+    {
+      "name": "dot_discovered",
+      "value": "#38BDF8"
+    },
+    {
+      "name": "dot_remembered",
+      "value": "#A78BFA"
+    },
+    {
+      "name": "pill_material",
+      "value": "#33111A36"
+    },
+    {
+      "name": "pill_material_active",
+      "value": "#4056BDF8"
+    },
+    {
+      "name": "mask_fade",
+      "value": "#CC0D2B4D"
+    }
+  ]
+}

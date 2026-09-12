@@ -1,0 +1,6 @@
+{
+  "name": "libkdeconnect_napi.so",
+  "types": "./Index.d.ts",
+  "version": "1.0.0",
+  "description": "KDE Connect native networking stack (BearSSL TLS + UDP discovery + TCP)"
+}

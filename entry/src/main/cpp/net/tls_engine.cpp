@@ -1,0 +1,373 @@
+#include "tls_engine.h"
+#include "net_log.h"
+#include <bearssl_pem.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <cstring>
+#include <cerrno>
+#include <thread>
+#include <chrono>
+
+namespace kdeconnect {
+
+// X.500 name element OID：2.5.4.3 = id-at-commonName
+// （DER 编码 06 03 55 04 03；br_name_element.oid 要求「长度 + 值」，不含 tag 06）
+static const unsigned char kOidCommonName[] = { 0x03, 0x55, 0x04, 0x03 };
+
+// TOFU x509 验证器：复制 br_x509_minimal_vtable 的所有方法，但 end_chain
+// 忽略 NOT_TRUSTED 错误（KDE Connect 首次连接不验证自签证书链）。
+static unsigned tofu_end_chain(const br_x509_class **ctx)
+{
+    unsigned err = br_x509_minimal_vtable.end_chain(ctx);
+    if (err == BR_ERR_X509_NOT_TRUSTED) {
+        auto *cc = reinterpret_cast<br_x509_minimal_context *>(const_cast<br_x509_class **>(ctx));
+        cc->err = BR_ERR_X509_OK;
+        return 0;
+    }
+    return err;
+}
+
+// ——— 对端证书捕获（REVIEW §8 D2）———
+// vtable 回调只拿到「上下文地址」，而 br_x509_minimal_context 是 X509Ctx 的首成员、
+// vtable 又是它的首字段，故该地址即 X509Ctx 地址（BearSSL 内部同款 container 转换）。
+static X509Ctx *x509Wrap(const br_x509_class **ctx)
+{
+    return reinterpret_cast<X509Ctx *>(const_cast<br_x509_class **>(ctx));
+}
+
+static void capture_start_cert(const br_x509_class **ctx, uint32_t length)
+{
+    X509Ctx *w = x509Wrap(ctx);
+    if (w->certIndex == 0) {
+        w->curLen = 0;
+        w->overflow = (length > sizeof(w->leafDer));
+    }
+    br_x509_minimal_vtable.start_cert(ctx, length);
+}
+
+static void capture_append(const br_x509_class **ctx, const unsigned char *buf, size_t len)
+{
+    X509Ctx *w = x509Wrap(ctx);
+    if (w->certIndex == 0 && !w->overflow) {
+        if (static_cast<size_t>(w->curLen) + len <= sizeof(w->leafDer)) {
+            std::memcpy(w->leafDer + w->curLen, buf, len);
+            w->curLen += static_cast<uint32_t>(len);
+        } else {
+            w->overflow = true;
+        }
+    }
+    br_x509_minimal_vtable.append(ctx, buf, len);
+}
+
+static void capture_end_cert(const br_x509_class **ctx)
+{
+    X509Ctx *w = x509Wrap(ctx);
+    if (w->certIndex == 0 && !w->overflow) {
+        w->leafLen = w->curLen;  // 链首 = EE 证书
+    }
+    w->certIndex++;
+    br_x509_minimal_vtable.end_cert(ctx);
+}
+
+// 捕获 + TOFU（忽略 NOT_TRUSTED）：end_chain 复用 tofu 语义，
+// 其余钩子在转发给 minimal 实现的同时把 EE 证书原文留在 X509Ctx。
+static const br_x509_class capture_x509_vtable = {
+    br_x509_minimal_vtable.context_size,
+    br_x509_minimal_vtable.start_chain,
+    capture_start_cert,
+    capture_append,
+    capture_end_cert,
+    tofu_end_chain,
+    br_x509_minimal_vtable.get_pkey,
+};
+
+TlsEngine::TlsEngine(int fd, TlsRole role)
+    : fd_(fd), role_(role)
+{
+}
+
+TlsEngine::~TlsEngine() = default;
+
+// 对端 EE 证书原始 DER（REVIEW §8 D2）。握手完成后由 capture_* 钩子填充；
+// 供 WP-2 证书钉扎与 payload 通道「CN == deviceId」校验使用。
+std::vector<uint8_t> TlsEngine::peerLeafCertDer() const
+{
+    const uint8_t *p = x509Ctx_.leafDer;
+    return std::vector<uint8_t>(p, p + x509Ctx_.leafLen);
+}
+
+// 对端 EE 证书 subject CN（由 BearSSL 在解析 EE 证书时写入 peerCnBuf_）
+std::string TlsEngine::peerCommonName() const
+{
+    if (peerCnName_.status != 1) {
+        return {};
+    }
+    return std::string(peerCnBuf_);
+}
+
+static bool pemToDer(const std::string &pem, const char *label,
+                     std::vector<uint8_t> &out)
+{
+    br_pem_decoder_context dec;
+    br_pem_decoder_init(&dec);
+
+    std::vector<uint8_t> result;
+    auto append = [](void *ctx, const void *buf, size_t len) {
+        auto *v = static_cast<std::vector<uint8_t> *>(ctx);
+        v->insert(v->end(), static_cast<const uint8_t *>(buf),
+                  static_cast<const uint8_t *>(buf) + len);
+    };
+    br_pem_decoder_setdest(&dec, append, &result);
+
+    const char *data = pem.c_str();
+    size_t len = pem.size();
+    while (len > 0) {
+        size_t consumed = br_pem_decoder_push(&dec,
+            reinterpret_cast<const unsigned char *>(data), len);
+        data += consumed;
+        len -= consumed;
+
+        if (br_pem_decoder_event(&dec) == BR_PEM_END_OBJ) {
+            if (std::strcmp(dec.name, label) == 0) {
+                out = std::move(result);
+                return true;
+            }
+            result.clear();
+            br_pem_decoder_init(&dec);
+            br_pem_decoder_setdest(&dec, append, &result);
+        }
+    }
+    return false;
+}
+
+bool TlsEngine::loadCertAndKey(const std::string &certPem, const std::string &keyPem)
+{
+    if (!pemToDer(certPem, "CERTIFICATE", certDer_)) {
+        LOGE("failed to parse CERTIFICATE PEM");
+        return false;
+    }
+    if (!pemToDer(keyPem, "EC PRIVATE KEY", keyDer_)) {
+        if (!pemToDer(keyPem, "PRIVATE KEY", keyDer_)) {
+            LOGE("failed to parse PRIVATE KEY PEM");
+            return false;
+        }
+    }
+
+    br_skey_decoder_context skeyDec;
+    br_skey_decoder_init(&skeyDec);
+    br_skey_decoder_push(&skeyDec, keyDer_.data(), keyDer_.size());
+    int skeyErr = br_skey_decoder_last_error(&skeyDec);
+    if (skeyErr != 0) {
+        LOGE("failed to decode EC private key: %d", skeyErr);
+        return false;
+    }
+    const br_ec_private_key *ec = br_skey_decoder_get_ec(&skeyDec);
+    if (ec == nullptr) {
+        LOGE("private key is not EC");
+        return false;
+    }
+    // ec->x 指向 skeyDec 内部 key_data 缓冲，而 skeyDec 是局部变量，
+    // 本函数返回后即失效；把私钥标量拷入成员 ecKeyData_ 长期持有，
+    // 否则握手做 ECDSA 签名时会 use-after-free（段错误/握手卡死）。
+    ecKeyData_.assign(ec->x, ec->x + ec->xlen);
+    ecKey_ = *ec;
+    ecKey_.x = ecKeyData_.data();
+    return true;
+}
+
+bool TlsEngine::init(const std::string &certPem, const std::string &keyPem)
+{
+    if (!loadCertAndKey(certPem, keyPem)) {
+        return false;
+    }
+
+    // 注意：chain 数据来自 certDer_（成员，长期有效），且结构体本身必须是
+    // 成员 certChain_ —— 引擎只存指针，若用局部变量，init() 返回后
+    // ssl_hs_server 发 ServerHello 时会 use-after-return（ASan 已实锤）。
+    certChain_.data = certDer_.data();
+    certChain_.data_len = certDer_.size();
+
+    if (role_ == TlsRole::Server) {
+        br_ssl_server_init_full_ec(&serverCtx_, &certChain_, 1, BR_KEYTYPE_EC, &ecKey_);
+        engine_ = &serverCtx_.eng;
+    } else {
+        // 客户端：装信任锚（此处为空，TOFU 由 capture_x509_vtable 的 end_chain 兜底）
+        br_ssl_client_init_full(&clientCtx_, &x509Ctx_.x509, nullptr, 0);
+
+        // 对端 EE 证书捕获 + subject CN 收集（REVIEW §8 D2）：
+        // 必须在上面的 init_full 之后设置——init_full 内部会把 vtable 重置成 minimal 版。
+        x509Ctx_.x509.vtable = &capture_x509_vtable;
+        peerCnName_.oid = kOidCommonName;
+        peerCnName_.buf = peerCnBuf_;
+        peerCnName_.len = sizeof(peerCnBuf_);
+        peerCnName_.status = 0;
+        br_x509_minimal_set_name_elements(&x509Ctx_.x509, &peerCnName_, 1);
+
+        // 客户端证书（REVIEW §8 D1）：KDE/Android 的 payload server 用 VerifyPeer，
+        // 会要求本机出示证书；不装则握手被拒。自签证书 issuer = 自身（EC）。
+        br_ssl_client_set_single_ec(&clientCtx_, &certChain_, 1, &ecKey_,
+                                    BR_KEYTYPE_KEYX | BR_KEYTYPE_SIGN, BR_KEYTYPE_EC,
+                                    br_ec_get_default(), br_ecdsa_sign_asn1_get_default());
+        engine_ = &clientCtx_.eng;
+    }
+
+    br_ssl_engine_set_buffer(engine_, iobuf_, sizeof(iobuf_), 1);
+
+    if (role_ == TlsRole::Server) {
+        br_ssl_server_reset(&serverCtx_);
+    } else {
+        br_ssl_client_reset(&clientCtx_, nullptr, 0);
+    }
+
+    LOGI("tls engine init: role=%s cert=%zu bytes",
+         role_ == TlsRole::Server ? "server" : "client",
+         certDer_.size());
+    return true;
+}
+
+int TlsEngine::runUntil(unsigned target)
+{
+    for (;;) {
+        unsigned state = br_ssl_engine_current_state(engine_);
+        if (state & BR_SSL_CLOSED) {
+            int err = br_ssl_engine_last_error(engine_);
+            if (err != 0) {
+                lastError_ = err;
+                LOGE("tls engine closed with error: %d", err);
+            }
+            return -1;
+        }
+
+        if (state & BR_SSL_SENDREC) {
+            size_t len;
+            unsigned char *buf = br_ssl_engine_sendrec_buf(engine_, &len);
+            ssize_t wlen = ::send(fd_, buf, len, MSG_NOSIGNAL);
+            if (wlen < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+                lastError_ = errno;
+                engine_->err = BR_ERR_IO;
+                return -1;
+            }
+            if (wlen == 0) {
+                lastError_ = EPIPE;
+                engine_->err = BR_ERR_IO;
+                return -1;
+            }
+            br_ssl_engine_sendrec_ack(engine_, static_cast<size_t>(wlen));
+            continue;
+        }
+
+        if (state & target) {
+            return 1;
+        }
+
+        if (state & BR_SSL_RECVAPP) {
+            // 应用数据已在引擎缓冲里（只有 write 路径会走到这里：target=SENDAPP
+            // 与 RECVAPP 互斥，无法原地接收新数据）。不能当错误返回，把数据
+            // 移到 pendingApp_ 供 read() 后续取出，然后继续推进状态机。
+            size_t len;
+            unsigned char *appBuf = br_ssl_engine_recvapp_buf(engine_, &len);
+            pendingApp_.insert(pendingApp_.end(), appBuf, appBuf + len);
+            br_ssl_engine_recvapp_ack(engine_, len);
+            br_ssl_engine_flush(engine_, 0);
+            continue;
+        }
+
+        if (state & BR_SSL_RECVREC) {
+            size_t len;
+            unsigned char *buf = br_ssl_engine_recvrec_buf(engine_, &len);
+            ssize_t rlen = ::recv(fd_, buf, len, 0);
+            if (rlen < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+                lastError_ = errno;
+                engine_->err = BR_ERR_IO;
+                return -1;
+            }
+            if (rlen == 0) {
+                lastError_ = EPIPE;
+                engine_->err = BR_ERR_IO;
+                return -1;
+            }
+            br_ssl_engine_recvrec_ack(engine_, static_cast<size_t>(rlen));
+            continue;
+        }
+
+        br_ssl_engine_flush(engine_, 0);
+    }
+}
+
+bool TlsEngine::doHandshake()
+{
+    if (handshakeDone_) return true;
+
+    int r = runUntil(BR_SSL_SENDAPP | BR_SSL_RECVAPP);
+    if (r == 1) {
+        handshakeDone_ = true;
+        LOGI("tls handshake done (role=%s)",
+             role_ == TlsRole::Server ? "server" : "client");
+        return true;
+    }
+    return false;
+}
+
+ssize_t TlsEngine::read(std::vector<uint8_t> &buf)
+{
+    if (!handshakeDone_) return -1;
+
+    int r = runUntil(BR_SSL_RECVAPP);
+    if (r < 0) return -1;
+    if (r == 1) {
+        size_t len;
+        unsigned char *appBuf = br_ssl_engine_recvapp_buf(engine_, &len);
+        if (len > buf.size()) len = buf.size();
+        std::memcpy(buf.data(), appBuf, len);
+        br_ssl_engine_recvapp_ack(engine_, len);
+        return static_cast<ssize_t>(len);
+    }
+    // r == 0：引擎在等更多 socket 数据，但 write 路径可能暂存过应用数据
+    if (!pendingApp_.empty()) {
+        size_t n = pendingApp_.size();
+        if (n > buf.size()) n = buf.size();
+        std::memcpy(buf.data(), pendingApp_.data(), n);
+        pendingApp_.erase(pendingApp_.begin(), pendingApp_.begin() + n);
+        return static_cast<ssize_t>(n);
+    }
+    return 0;
+}
+
+// 非阻塞尽力写（详见头文件语义）。旧实现是「拷贝一次 + 30s 睡眠重试」，
+// 会把 >16 KiB 的帧截断并污染后续帧流（REVIEW §4 P1-3），且在 JS 主线程上阻塞
+// 最长 30 s（§4 P1-6）。现在只做一次尽力，剩余字节由上层 TX 队列在 EPOLLOUT 续传。
+ssize_t TlsEngine::write(const uint8_t *data, size_t len)
+{
+    if (!handshakeDone_) return -1;
+    if (len == 0) return 0;
+
+    int r = runUntil(BR_SSL_SENDAPP);
+    if (r < 0) return -1;
+    if (r == 0) return 0;  // 引擎暂不可写（输出缓冲满 / socket 不可写）
+
+    size_t avail;
+    unsigned char *appBuf = br_ssl_engine_sendapp_buf(engine_, &avail);
+    if (avail > len) avail = len;
+    std::memcpy(appBuf, data, avail);
+    br_ssl_engine_sendapp_ack(engine_, avail);
+    br_ssl_engine_flush(engine_, 0);
+
+    // 尽力泵到 socket；EAGAIN 时记录留在引擎缓冲，等待 EPOLLOUT / tick 续传
+    if (!pump()) {
+        return -1;
+    }
+    return static_cast<ssize_t>(avail);
+}
+
+// 推进发送侧状态机：把 SENDREC 里残留的加密记录写出。
+// 无待发数据时是廉价空操作（引擎处于 SENDAPP 即返回）。
+bool TlsEngine::pump()
+{
+    if (!handshakeDone_) return true;
+    int r = runUntil(BR_SSL_SENDAPP);
+    return r >= 0;
+}
+
+} // namespace kdeconnect

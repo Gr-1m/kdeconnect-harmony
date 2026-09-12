@@ -1,0 +1,12 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "KDE-H Connect entry module",
+  "main": "",
+  "author": "",
+  "license": "GPL-3.0-or-later",
+  "dependencies": {
+    "libkdeconnect_napi.so": "file:./src/main/cpp/types/libkdeconnect_napi"
+  },
+  "modelVersion": "6.0.0"
+}
