@@ -21,6 +21,8 @@ napi_value JsKeepPayload(napi_env env, napi_callback_info info);
 napi_value JsDiscardPayload(napi_env env, napi_callback_info info);
 napi_value JsCancelPayload(napi_env env, napi_callback_info info);
 napi_value JsSetCapabilities(napi_env env, napi_callback_info info);
+napi_value JsGetPeerCertificate(napi_env env, napi_callback_info info);
+napi_value JsGetPairVerificationCode(napi_env env, napi_callback_info info);
 
 #ifdef __cplusplus
 }

@@ -40,6 +40,10 @@ public:
     void setCapabilities(const std::vector<std::string> &incomingCaps,
                          const std::vector<std::string> &outgoingCaps);
 
+    // AP-1b：对端证书 PEM（空 = 无加密链路）；配对验证码（KDE verificationKey 等价）
+    std::string getPeerCertificate(const std::string &deviceId);
+    std::string getPairVerificationCode(const std::string &deviceId, int64_t pairingTimestamp);
+
     // —— WP-1b payload ——
     uint64_t sendPayload(const std::string &deviceId, const std::string &type,
                          const std::string &bodyJson, const std::string &filePath);
@@ -96,6 +100,10 @@ private:
     std::vector<std::string> capsIncoming_{"kdeconnect.ping", "kdeconnect.identity",
                                            "kdeconnect.pair"};
     std::vector<std::string> capsOutgoing_{"kdeconnect.ping"};
+
+    // 本机证书 SPKI DER 惰性缓存（验证码用）
+    std::string ownSpkiDer_;
+    bool ownSpkiDone_ = false;
 
     std::unique_ptr<PayloadManager> payload_;
 };

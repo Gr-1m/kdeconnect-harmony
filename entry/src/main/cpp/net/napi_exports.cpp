@@ -281,3 +281,39 @@ napi_value JsSetCapabilities(napi_env env, napi_callback_info info)
     napi_get_undefined(env, &out);
     return out;
 }
+
+napi_value JsGetPeerCertificate(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    std::string pem;
+    if (argc >= 1) {
+        std::string deviceId;
+        if (jsGetString(env, args[0], deviceId)) {
+            pem = netStack().getPeerCertificate(deviceId);
+        }
+    }
+    napi_value out = nullptr;
+    napi_create_string_utf8(env, pem.c_str(), pem.size(), &out);
+    return out;
+}
+
+napi_value JsGetPairVerificationCode(napi_env env, napi_callback_info info)
+{
+    size_t argc = 2;
+    napi_value args[2] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    std::string code;
+    if (argc >= 2) {
+        std::string deviceId;
+        double ts = 0;
+        if (jsGetString(env, args[0], deviceId) && jsGetDouble(env, args[1], ts)) {
+            code = netStack().getPairVerificationCode(deviceId,
+                                                      static_cast<int64_t>(ts));
+        }
+    }
+    napi_value out = nullptr;
+    napi_create_string_utf8(env, code.c_str(), code.size(), &out);
+    return out;
+}
