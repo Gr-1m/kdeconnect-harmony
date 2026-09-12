@@ -167,6 +167,82 @@
     {
       "name": "rail_remembered_short",
       "value": "记"
+    },
+    {
+      "name": "pair_action",
+      "value": "配对"
+    },
+    {
+      "name": "pair_pending",
+      "value": "等待确认"
+    },
+    {
+      "name": "pair_dialog_title",
+      "value": "配对请求"
+    },
+    {
+      "name": "pair_dialog_code_label",
+      "value": "验证码"
+    },
+    {
+      "name": "pair_code_unavailable",
+      "value": "待 native 提供对端证书"
+    },
+    {
+      "name": "pair_dialog_hint",
+      "value": "请确认与对端设备上显示的验证码一致"
+    },
+    {
+      "name": "pair_accept",
+      "value": "接受"
+    },
+    {
+      "name": "pair_reject",
+      "value": "拒绝"
+    },
+    {
+      "name": "files_active",
+      "value": "进行中的传输"
+    },
+    {
+      "name": "files_receiving",
+      "value": "接收中"
+    },
+    {
+      "name": "files_sending",
+      "value": "发送中"
+    },
+    {
+      "name": "files_finished",
+      "value": "已完成"
+    },
+    {
+      "name": "files_saved",
+      "value": "已保存"
+    },
+    {
+      "name": "files_cancelled",
+      "value": "已取消"
+    },
+    {
+      "name": "files_failed",
+      "value": "失败"
+    },
+    {
+      "name": "files_history",
+      "value": "历史记录"
+    },
+    {
+      "name": "files_action_save",
+      "value": "保存"
+    },
+    {
+      "name": "files_action_discard",
+      "value": "丢弃"
+    },
+    {
+      "name": "files_action_cancel",
+      "value": "取消"
     }
   ]
 }

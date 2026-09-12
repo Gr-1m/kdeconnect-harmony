@@ -3,11 +3,20 @@ import { NetConfig, CertPair, NetEvent } from 'libkdeconnect_napi.so';
 import { util } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
 import { Context } from '@kit.AbilityKit';
+import { fileIo } from '@kit.CoreFileKit';
 import { display } from '@kit.ArkUI';
 import { HdsTabs, HdsTabsController, hdsMaterial } from '@kit.UIDesignKit';
 import uiMaterial from '@ohos.arkui.uiMaterial';
-import { PacketRouter } from '../net/PacketRouter';
-import { DeviceItem, RememberedDevice } from '../model/DeviceModels';
+import { PacketRouter, RouterCallbacks } from '../net/PacketRouter';
+import { PluginRegistry } from '../plugins/PluginRegistry';
+import { PluginHost } from '../plugins/PluginHost';
+import { PingPlugin } from '../plugins/PingPlugin';
+import { SharePlugin } from '../plugins/SharePlugin';
+import { BatteryPlugin } from '../plugins/BatteryPlugin';
+import { DeviceItem, RememberedDevice, BatteryItem } from '../model/DeviceModels';
+import { PayloadTransfer, PayloadDirection, PayloadState } from '../model/PayloadModels';
+import { TrustedDevice } from '../model/TrustModels';
+import { TrustStore } from '../common/TrustStore';
 import { colorModeOf, languageOf, LANG_SYSTEM, THEME_FOLLOW_SYSTEM } from '../common/AppSettings';
 import { DevicesTab } from '../components/DevicesTab';
 import { FilesTab } from '../components/FilesTab';
@@ -53,6 +62,18 @@ struct Index {
   @State connectedDevices: DeviceItem[] = [];
   @State discoveredDevices: DeviceItem[] = [];
   @State rememberedDevices: RememberedDevice[] = [];
+  // AP-1 配对确认：对端请求待确认的设备（空串 = 无弹窗）
+  @State pendingPairId: string = '';
+  @State pendingPairName: string = '';
+  // 对端 pair 包里的 timestamp（秒）：与对端用同一值算验证码
+  @State pendingPairTimestamp: number = 0;
+  @State pendingPairCode: string = '';
+  // 本侧已发起、等待对端确认的设备
+  @State requestedPairIds: string[] = [];
+  // AP-2 payload 传输（接收/发送进度与处置状态）
+  @State payloads: PayloadTransfer[] = [];
+  // 插件推来的展示项（目前：电量）
+  @State batteryItems: BatteryItem[] = [];
   // 状态栏 / 导航栏安全区高度（EntryAbility 写入，单位 px）
   @StorageProp('statusBarHeightPx') statusBarHeightPx: number = 0;
   @StorageProp('navBarHeightPx') navBarHeightPx: number = 0;
@@ -64,6 +85,11 @@ struct Index {
   private certPem: string = '';
   private keyPem: string = '';
   private router: PacketRouter | undefined = undefined;
+  // AP-4 插件框架：注册表驱动，每设备一份实例
+  private pluginRegistry: PluginRegistry = new PluginRegistry();
+  private pluginHost: PluginHost | undefined = undefined;
+  // AP-3：信任设备（Preferences 持久化，UI 用 rememberedDevices 展示）
+  private trustedDevices: TrustedDevice[] = [];
   private pageShown: boolean = false;
   private settingsLoaded: boolean = false;
   private settingsApplied: boolean = false;
@@ -97,7 +123,23 @@ struct Index {
       this.deviceName = String(await pref.get('deviceName', DEFAULT_DEVICE_NAME));
       this.themeMode = parseInt(String(await pref.get('themeMode', '0')), 10) || THEME_FOLLOW_SYSTEM;
       this.language = String(await pref.get('language', LANG_SYSTEM));
-      this.loadRememberedDevices(String(await pref.get('rememberedDevices', '[]')));
+      // AP-3：信任设备（含旧的 rememberedDevices 一次性迁移）
+      this.trustedDevices = await TrustStore.load(ctx);
+      this.rememberedDevices = this.trustedDevices.map((t: TrustedDevice) => {
+        const r: RememberedDevice = { id: t.id, name: t.name };
+        return r;
+      });
+      this.log(`trust store: ${this.trustedDevices.length} device(s)`);
+      // WP-2 钉扎：把已配对设备的对端证书回灌给 native（内存态），重启后仍能强校验
+      for (const t of this.trustedDevices) {
+        if (t.certPem.length > 0) {
+          try {
+            native.setTrustedCertificate(t.id, t.certPem);
+          } catch (e) {
+            this.log(`pin rehydrate failed: ${t.id}`);
+          }
+        }
+      }
     } catch (e) {
       // Preferences load failed, will generate new below
     }
@@ -128,15 +170,41 @@ struct Index {
 
     const self = this;
     try {
-      native.init((event: NetEvent) => self.handleEvent(event));
+      native.init((event: NetEvent): void => {
+        self.handleEvent(event);
+      });
     } catch (e) {
       this.status = 'init failed: ' + (e instanceof Error ? e.message : 'unknown');
       return;
     }
+    // AP-4：注册插件（能力交由 registry 汇总）+ 建插件宿主
+    this.pluginRegistry.register('ping', (): PingPlugin => new PingPlugin());
+    // M1 锚点：接收桌面文件。能力必须声明，否则 KDE 会收窄并拒发 share 请求。
+    this.pluginRegistry.register('share', (): SharePlugin => new SharePlugin());
+    this.pluginRegistry.register('battery', (): BatteryPlugin => new BatteryPlugin());
+    this.pluginHost = new PluginHost(this.pluginRegistry, (m: string): void => {
+      this.log(m);
+    });
+    const callbacks: RouterCallbacks = {
+      onPairRequest: (id: string, ts: number): void => {
+        this.handlePairRequest(id, ts);
+      },
+      onPaired: (id: string): void => {
+        this.handlePaired(id);
+      },
+      onUnpaired: (id: string): void => {
+        this.handleUnpaired(id);
+      },
+      onPeerCapabilities: (id: string, incoming: string[], outgoing: string[]): void => {
+        this.loadPlugins(id, incoming, outgoing);
+      },
+      onPluginPacket: (id: string, packetType: string, body: Object): boolean =>
+        this.dispatchPluginPacket(id, packetType, body)
+    };
     this.router = new PacketRouter(this.deviceId, this.deviceName, 'phone',
-      (msg: string) => this.log(msg),
-      (id: string) => this.handlePaired(id),
-      (id: string) => this.handleUnpaired(id));
+      (msg: string): void => {
+        this.log(msg);
+      }, callbacks);
     this.startNative();
   }
 
@@ -185,6 +253,18 @@ struct Index {
         keyPem: this.keyPem,
         tcpPort: 0
       };
+      // M1 能力协商（单一来源）：核心包（identity/pair）由本层处理，其余由插件注册表汇总；
+      // 按 ZCode 建议在 start() 之前设置。native 未导出该符号时 try/catch 兜底。
+      try {
+        const incoming: string[] = ['kdeconnect.identity', 'kdeconnect.pair']
+          .concat(this.pluginRegistry.incomingCapabilities());
+        const outgoing: string[] = ['kdeconnect.identity', 'kdeconnect.pair']
+          .concat(this.pluginRegistry.outgoingCapabilities());
+        native.setCapabilities(incoming, outgoing);
+        this.log(`caps: in=${incoming.length} out=${outgoing.length}`);
+      } catch (e) {
+        this.log('setCapabilities unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
+      }
       native.start(cfg);
       this.status = 'running';
     } catch (e) {
@@ -193,22 +273,6 @@ struct Index {
   }
 
   // 解析持久化的已配对设备列表（JSON 数组 [{id, name}]）
-  private loadRememberedDevices(raw: string): void {
-    try {
-      const parsed: Array<Record<string, string>> = JSON.parse(raw) as Array<Record<string, string>>;
-      const arr: RememberedDevice[] = [];
-      for (const it of parsed) {
-        const id: string = it['id'] ?? '';
-        if (id !== '') {
-          arr.push({ id: id, name: it['name'] ?? id });
-        }
-      }
-      this.rememberedDevices = arr;
-    } catch (e) {
-      this.rememberedDevices = [];
-    }
-  }
-
   private async persistSettings(entries: SettingEntry[]): Promise<void> {
     try {
       const hostCtx: Context | undefined = this.getUIContext().getHostContext();
@@ -225,18 +289,13 @@ struct Index {
     }
   }
 
-  private async persistRememberedDevices(): Promise<void> {
-    try {
-      const hostCtx: Context | undefined = this.getUIContext().getHostContext();
-      if (hostCtx === undefined) {
-        return;
-      }
-      const pref = await preferences.getPreferences(hostCtx, 'kdeconnect');
-      await pref.put('rememberedDevices', JSON.stringify(this.rememberedDevices));
-      await pref.flush();
-    } catch (e) {
-      this.log('persist remembered failed');
+  private async persistTrust(): Promise<void> {
+    const hostCtx: Context | undefined = this.getUIContext().getHostContext();
+    if (hostCtx === undefined) {
+      this.log('persist trust failed: no host context');
+      return;
     }
+    await TrustStore.save(hostCtx, this.trustedDevices);
   }
 
   // 自定义设备名：持久化并重启 native 栈，使 identity 广播/握手使用新名称（deviceId/证书不变）
@@ -288,36 +347,194 @@ struct Index {
     }
   }
 
-  // PacketRouter 配对接受回调（骨架阶段为自动接受；AP-1 将改为确认 UI 后触发）
+  // AP-4：对端 identity → 按能力交集装载插件（每设备一份实例）
+  private loadPlugins(deviceId: string, incoming: string[], outgoing: string[]): void {
+    if (this.pluginHost === undefined) {
+      return;
+    }
+    this.pluginHost.loadForDevice(deviceId, incoming, outgoing,
+      (dev: string, json: string): boolean => native.sendPacket(dev, json),
+      (dev: string, kind: string, data: string): void => {
+        this.onPluginEvent(dev, kind, data);
+      });
+  }
+
+  // 插件 → UI 事件（电量等）
+  private onPluginEvent(deviceId: string, kind: string, data: string): void {
+    if (kind !== 'battery') {
+      this.log(`plugin event ${kind} from ${deviceId}`);
+      return;
+    }
+    const parts: string[] = data.split('|');
+    const charge: string = parts.length > 0 ? parts[0] : '?';
+    const charging: boolean = parts.length > 1 && parts[1] === '1';
+    const text: string = `${charge}%${charging ? ' ⚡' : ''}`;
+    const exists: boolean = this.batteryItems.some((b: BatteryItem) => b.deviceId === deviceId);
+    const item: BatteryItem = { deviceId: deviceId, text: text };
+    if (exists) {
+      this.batteryItems = this.batteryItems.map((b: BatteryItem) => b.deviceId === deviceId ? item : b);
+    } else {
+      this.batteryItems = this.batteryItems.concat([item]);
+    }
+    this.log(`battery ${text} <- ${deviceId}`);
+  }
+
+  // AP-4：非核心 packet 分发到插件（返回 true 表示已处理）
+  private dispatchPluginPacket(deviceId: string, packetType: string, body: Object): boolean {
+    if (this.pluginHost === undefined) {
+      return false;
+    }
+    return this.pluginHost.dispatch(deviceId, packetType, body);
+  }
+
+  // AP-1：对端发起配对请求 → 弹确认框（不做任何自动接受）
+  private handlePairRequest(deviceId: string, timestamp: number): void {
+    if (deviceId === '') {
+      return;
+    }
+    this.pendingPairId = deviceId;
+    this.pendingPairName = this.displayNameOf(deviceId);
+    this.pendingPairTimestamp = timestamp;
+    this.pendingPairCode = this.computePairCode(deviceId, timestamp);
+    this.log(`pair request from ${this.pendingPairName} (ts=${timestamp}) — awaiting confirmation`);
+  }
+
+  // 验证码由 native 计算（公钥 SPKI DER 排序拼接 + SHA256，ArkTS 无法做 ASN.1 解析）。
+  // 无 TLS 链路/无对端证书时 native 返回空串 → UI 显示占位。
+  private computePairCode(deviceId: string, timestamp: number): string {
+    try {
+      const code: string = native.getPairVerificationCode(deviceId, timestamp);
+      if (code.length === 0) {
+        return '';
+      }
+      // 8 位 hex → 4 段 2 字符（AB CD EF 12）
+      const parts: string[] = [];
+      for (let i = 0; i + 1 < code.length; i += 2) {
+        parts.push(code.substring(i, i + 2));
+      }
+      return parts.join(' ');
+    } catch (e) {
+      this.log('getPairVerificationCode unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
+      return '';
+    }
+  }
+
+  // 用户在确认框点「接受」
+  private acceptPairing(): void {
+    const id: string = this.pendingPairId;
+    if (id === '' || this.router === undefined) {
+      return;
+    }
+    this.router.acceptPair(id);
+    this.pendingPairId = '';
+    this.pendingPairName = '';
+  }
+
+  // 用户在确认框点「拒绝」
+  private rejectPairing(): void {
+    const id: string = this.pendingPairId;
+    if (id === '' || this.router === undefined) {
+      return;
+    }
+    this.router.rejectPair(id);
+    this.pendingPairId = '';
+    this.pendingPairName = '';
+    this.log(`pairing rejected: ${id}`);
+  }
+
+  // 已连接设备行「配对」按钮：本侧发起请求，等待对端确认
+  private requestPairWith(d: DeviceItem): void {
+    if (this.router === undefined) {
+      return;
+    }
+    this.router.requestPair(d.id);
+    if (!this.requestedPairIds.includes(d.id)) {
+      this.requestedPairIds = this.requestedPairIds.concat([d.id]);
+    }
+    this.log(`pair request sent: ${d.name}`);
+  }
+
+  private displayNameOf(deviceId: string): string {
+    const conn: DeviceItem | undefined = this.connectedDevices.find((d: DeviceItem) => d.id === deviceId);
+    if (conn !== undefined) {
+      return conn.name;
+    }
+    const disc: DeviceItem | undefined = this.discoveredDevices.find((d: DeviceItem) => d.id === deviceId);
+    if (disc !== undefined) {
+      return disc.name;
+    }
+    const rem: RememberedDevice | undefined = this.rememberedDevices.find((r: RememberedDevice) => r.id === deviceId);
+    if (rem !== undefined) {
+      return rem.name;
+    }
+    return deviceId;
+  }
+
+  // 配对成功回调（本侧请求被对端确认，或本侧接受后）：写入记住列表
   private handlePaired(deviceId: string): void {
     if (deviceId === '') {
       return;
     }
-    let name: string = deviceId;
-    const conn: DeviceItem | undefined = this.connectedDevices.find((d: DeviceItem) => d.id === deviceId);
-    if (conn !== undefined) {
-      name = conn.name;
-    } else {
-      const disc: DeviceItem | undefined = this.discoveredDevices.find((d: DeviceItem) => d.id === deviceId);
-      if (disc !== undefined) {
-        name = disc.name;
-      }
+    this.requestedPairIds = this.requestedPairIds.filter((id: string) => id !== deviceId);
+    if (this.pendingPairId === deviceId) {
+      this.pendingPairId = '';
+      this.pendingPairName = '';
     }
-    const exists: boolean = this.rememberedDevices.some((r: RememberedDevice) => r.id === deviceId);
+    const name: string = this.displayNameOf(deviceId);
+    const exists: boolean = this.trustedDevices.some((t: TrustedDevice) => t.id === deviceId);
     if (!exists) {
-      const item: RememberedDevice = { id: deviceId, name: name };
-      this.rememberedDevices = this.rememberedDevices.concat([item]);
-      this.persistRememberedDevices();
-      this.log(`paired with ${deviceId}`);
+      // AP-3：把对端证书一并入库（钉扎判定在 native，这里只存展示/后续迁移用）
+      let peerCert: string = '';
+      try {
+        peerCert = native.getPeerCertificate(deviceId);
+      } catch (e) {
+        this.log('getPeerCertificate unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
+      }
+      const entry: TrustedDevice = {
+        id: deviceId,
+        name: name,
+        certPem: peerCert,
+        pairedAt: Date.now()
+      };
+      this.trustedDevices = this.trustedDevices.concat([entry]);
+      this.rememberedDevices = this.trustedDevices.map((t: TrustedDevice) => {
+        const r: RememberedDevice = { id: t.id, name: t.name };
+        return r;
+      });
+      this.persistTrust();
+      // WP-2 钉扎：登记对端证书，后续连接强校验（证书不符 → error EACCES + 断链）
+      if (peerCert.length > 0) {
+        try {
+          native.setTrustedCertificate(deviceId, peerCert);
+        } catch (e) {
+          this.log('setTrustedCertificate unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
+        }
+      }
+      this.log(`paired with ${deviceId} (cert=${peerCert.length > 0 ? 'stored' : 'unavailable'})`);
     }
   }
 
   // 对端发 unpair {pair:false} 或本侧解除配对时移出记住列表
   private handleUnpaired(deviceId: string): void {
-    const before: number = this.rememberedDevices.length;
-    this.rememberedDevices = this.rememberedDevices.filter((r: RememberedDevice) => r.id !== deviceId);
-    if (this.rememberedDevices.length !== before) {
-      this.persistRememberedDevices();
+    this.requestedPairIds = this.requestedPairIds.filter((id: string) => id !== deviceId);
+    if (this.pendingPairId === deviceId) {
+      this.pendingPairId = '';
+      this.pendingPairName = '';
+    }
+    const before: number = this.trustedDevices.length;
+    this.trustedDevices = this.trustedDevices.filter((t: TrustedDevice) => t.id !== deviceId);
+    if (this.trustedDevices.length !== before) {
+      // WP-2：解除钉扎（必须在 TrustStore 移除之前调用）
+      try {
+        native.removeTrustedCertificate(deviceId);
+      } catch (e) {
+        this.log('removeTrustedCertificate unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
+      }
+      this.rememberedDevices = this.trustedDevices.map((t: TrustedDevice) => {
+        const r: RememberedDevice = { id: t.id, name: t.name };
+        return r;
+      });
+      this.persistTrust();
       this.log(`unpaired ${deviceId}`);
     }
   }
@@ -371,6 +588,9 @@ struct Index {
       case 'disconnected': {
         const did: string = event.deviceId ?? '';
         this.connectedDevices = this.connectedDevices.filter((d: DeviceItem) => d.id !== did);
+        this.batteryItems = this.batteryItems.filter((b: BatteryItem) => b.deviceId !== did);
+        // AP-4：断链卸载该设备插件（onDestroy 必达）
+        this.pluginHost?.unloadForDevice(did);
         this.log(`disconnected ${event.deviceId}`);
         break;
       }
@@ -405,9 +625,22 @@ struct Index {
         }
         break;
       }
-      case 'error':
-        this.log(`error ${event.errorCode}: ${event.errorMessage}`);
+      case 'payloadTransfer': {
+        this.handlePayloadTransfer(event);
         break;
+      }
+      case 'error': {
+        // WP-2 限流/钉扎失败给可读提示（errorCode/errorMessage 已对齐 d.ts）
+        const em: string = event.errorMessage ?? '';
+        if (em.includes('rate limited')) {
+          this.log('连接过于频繁，请稍后重试（rate limited）');
+        } else if (em.includes('certificate mismatch')) {
+          this.log('对端证书与登记不符，需重新配对（certificate mismatch）');
+        } else {
+          this.log(`error ${event.errorCode}: ${em}`);
+        }
+        break;
+      }
       default:
         this.log(`event: ${event.type}`);
         break;
@@ -442,6 +675,7 @@ struct Index {
       this.log('unpair send failed: ' + (e instanceof Error ? e.message : 'unknown'));
     }
     this.handleUnpaired(d.id);
+    this.router?.forgetPeer(d.id);
     // 短延迟确保 unpair 帧先发出（sendPacket 为同步直写内核缓冲区，close 后内核仍会发尽）
     setTimeout(() => {
       try {
@@ -461,6 +695,126 @@ struct Index {
       this.log('connectToPeer ok');
     } catch (e) {
       this.log('connectToPeer failed: ' + (e instanceof Error ? e.message : 'unknown'));
+    }
+  }
+
+  private toPayloadDirection(v: string): PayloadDirection {
+    return v === 'send' ? 'send' : 'receive';
+  }
+
+  private toPayloadState(v: string): PayloadState {
+    if (v === 'started') {
+      return 'started';
+    }
+    if (v === 'progress') {
+      return 'progress';
+    }
+    if (v === 'finished') {
+      return 'finished';
+    }
+    if (v === 'cancelled') {
+      return 'cancelled';
+    }
+    return 'failed';
+  }
+
+  // AP-2：payloadTransfer 事件 → 传输列表 upsert（进度事件 ≤10Hz，不逐条写日志）
+  private handlePayloadTransfer(event: NetEvent): void {
+    const tid: number = event.payloadTransferId ?? 0;
+    if (tid <= 0) {
+      return;
+    }
+    const state: PayloadState = this.toPayloadState(event.payloadState ?? 'failed');
+    const idx: number = this.payloads.findIndex((p: PayloadTransfer) => p.transferId === tid);
+    const settled: boolean = idx >= 0 ? this.payloads[idx].settled : false;
+    const item: PayloadTransfer = {
+      transferId: tid,
+      deviceId: event.deviceId ?? '',
+      direction: this.toPayloadDirection(event.payloadDirection ?? 'receive'),
+      state: state,
+      fileName: event.payloadFileName ?? (idx >= 0 ? this.payloads[idx].fileName : ''),
+      size: event.payloadSize ?? (idx >= 0 ? this.payloads[idx].size : 0),
+      bytesDone: event.payloadBytesDone ?? 0,
+      filePath: event.payloadFilePath ?? (idx >= 0 ? this.payloads[idx].filePath : ''),
+      settled: settled
+    };
+    if (idx >= 0) {
+      this.payloads = this.payloads.map((p: PayloadTransfer) => p.transferId === tid ? item : p);
+    } else {
+      this.payloads = [item].concat(this.payloads);
+    }
+    if (state !== 'progress') {
+      this.log(`payload ${state} ${item.direction} #${tid} ${item.fileName}`);
+    }
+  }
+
+  // 接收文件的落盘目录：应用沙箱 files/kdeconnect（M1 无需额外存储权限）
+  private ensureKdcDir(): string {
+    const hostCtx: Context | undefined = this.getUIContext().getHostContext();
+    if (hostCtx === undefined) {
+      return '';
+    }
+    const dir: string = hostCtx.filesDir + '/kdeconnect';
+    try {
+      fileIo.mkdirSync(dir);
+    } catch (e) {
+      // 已存在（EEXIST）忽略
+    }
+    return dir;
+  }
+
+  private markPayloadSettled(transferId: number): void {
+    this.payloads = this.payloads.map((p: PayloadTransfer) => {
+      const next: PayloadTransfer = {
+        transferId: p.transferId,
+        deviceId: p.deviceId,
+        direction: p.direction,
+        state: p.state,
+        fileName: p.fileName,
+        size: p.size,
+        bytesDone: p.bytesDone,
+        filePath: p.filePath,
+        settled: true
+      };
+      return p.transferId === transferId ? next : p;
+    });
+  }
+
+  private savePayload(p: PayloadTransfer): void {
+    const dir: string = this.ensureKdcDir();
+    if (dir === '') {
+      this.log('save failed: no host context');
+      return;
+    }
+    const name: string = p.fileName.length > 0 ? p.fileName : `transfer_${p.transferId}`;
+    const dest: string = `${dir}/${name}`;
+    try {
+      const ok: boolean = native.keepPayload(p.transferId, dest);
+      this.log(ok ? `saved -> ${dest}` : 'keepPayload failed');
+      if (ok) {
+        this.markPayloadSettled(p.transferId);
+      }
+    } catch (e) {
+      this.log('keepPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
+    }
+  }
+
+  private discardPayload(p: PayloadTransfer): void {
+    try {
+      const ok: boolean = native.discardPayload(p.transferId);
+      this.log(ok ? `discarded #${p.transferId}` : 'discardPayload failed');
+      this.markPayloadSettled(p.transferId);
+    } catch (e) {
+      this.log('discardPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
+    }
+  }
+
+  private cancelPayload(p: PayloadTransfer): void {
+    try {
+      native.cancelPayload(p.transferId);
+      this.log(`payload cancel requested #${p.transferId}`);
+    } catch (e) {
+      this.log('cancelPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
     }
   }
 
@@ -583,9 +937,20 @@ struct Index {
                 rememberedDevices: this.rememberedDevices,
                 immersive: false,
                 isWide: this.isWide,
-                onDisconnectDevice: (d: DeviceItem) => this.disconnectDevice(d),
-                onConnectDevice: (d: DeviceItem) => this.connectDevice(d),
-                onManualConnect: (host: string, port: number) => this.manualConnect(host, port)
+                requestedPairIds: this.requestedPairIds,
+                batteryItems: this.batteryItems,
+                onDisconnectDevice: (d: DeviceItem): void => {
+                  this.disconnectDevice(d);
+                },
+                onConnectDevice: (d: DeviceItem): void => {
+                  this.connectDevice(d);
+                },
+                onManualConnect: (host: string, port: number): void => {
+                  this.manualConnect(host, port);
+                },
+                onPairDevice: (d: DeviceItem): void => {
+                  this.requestPairWith(d);
+                }
               })
             }
             .padding({ bottom: 92 })
@@ -595,9 +960,19 @@ struct Index {
           TabContent() {
             Column() {
               FilesTab({
-                connectedCount: this.connectedDevices.length,
-                immersive: false
-              })
+                    connectedCount: this.connectedDevices.length,
+                    immersive: false,
+                    payloads: this.payloads,
+                    onSavePayload: (p: PayloadTransfer): void => {
+                      this.savePayload(p);
+                    },
+                    onDiscardPayload: (p: PayloadTransfer): void => {
+                      this.discardPayload(p);
+                    },
+                    onCancelPayload: (p: PayloadTransfer): void => {
+                      this.cancelPayload(p);
+                    }
+                  })
             }
             .padding({ bottom: 92 })
           }
@@ -612,9 +987,15 @@ struct Index {
                 themeMode: this.themeMode,
                 language: this.language,
                 immersive: false,
-                onRenameDevice: (name: string) => this.renameDevice(name),
-                onThemeChange: (mode: number) => this.applyTheme(mode, true),
-                onLanguageChange: (lang: string) => this.applyLanguage(lang, true)
+                onRenameDevice: (name: string): void => {
+                  this.renameDevice(name);
+                },
+                onThemeChange: (mode: number): void => {
+                  this.applyTheme(mode, true);
+                },
+                onLanguageChange: (lang: string): void => {
+                  this.applyLanguage(lang, true);
+                }
               })
             }
             .padding({ bottom: 92 })
@@ -637,10 +1018,13 @@ struct Index {
         .barOverlap(true)
         .scrollable(false)
         .animationDuration(200)
+        // TabBar 自身背景置透明：否则暗色下会在材质层下压出一块深灰底
+        .barBackgroundColor(Color.Transparent)
         .barFloatingStyle({
           barWidth: { smallWidth: 300, mediumWidth: 420, largeWidth: 520 },
           barBottomMargin: this.getUIContext().px2vp(this.navBarHeightPx) + 12,
-          gradientMask: { maskColor: $r('app.color.mask_fade'), maskHeight: 96 },
+          // 显式给全透明遮罩：覆盖 HdsTabs 默认的底部渐隐（暗色下会呈一条渐黑带）
+          gradientMask: { maskColor: '#00000000', maskHeight: 96 },
           systemMaterialEffect: {
             materialType: hdsMaterial.MaterialType.ADAPTIVE,
             materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
@@ -655,9 +1039,82 @@ struct Index {
       .width('100%')
       .height('100%')
       .padding({ left: 16, right: 16 })
+
+      // AP-1 配对确认弹窗（模态；必须明确接受/拒绝；验证码 AP-1b 接 native 对端证书后填真实值）
+      if (this.pendingPairId !== '') {
+        Column() {
+          Column({ space: 14 }) {
+            Text($r('app.string.pair_dialog_title'))
+              .fontSize(16)
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.text_primary'))
+            Text(this.pendingPairName)
+              .fontSize(14)
+              .fontColor($r('app.color.text_secondary'))
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+            Column({ space: 4 }) {
+              Text($r('app.string.pair_dialog_code_label'))
+                .fontSize(12)
+                .fontColor($r('app.color.text_muted'))
+              Text(this.pendingPairCode.length > 0 ? this.pendingPairCode : '-- -- -- --')
+                .fontSize(28)
+                .fontWeight(FontWeight.Bold)
+                .fontColor($r('app.color.accent_text'))
+                .fontFamily('monospace')
+              if (this.pendingPairCode.length === 0) {
+                Text($r('app.string.pair_code_unavailable'))
+                  .fontSize(10)
+                  .fontColor($r('app.color.text_muted'))
+              }
+            }
+            Text($r('app.string.pair_dialog_hint'))
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .textAlign(TextAlign.Center)
+            Row({ space: 10 }) {
+              Button($r('app.string.pair_reject'))
+                .layoutWeight(1)
+                .height(42)
+                .fontSize(14)
+                .backgroundColor($r('app.color.danger_bg'))
+                .fontColor($r('app.color.danger_text'))
+                .borderRadius(12)
+                .onClick(() => {
+                  this.rejectPairing();
+                })
+              Button($r('app.string.pair_accept'))
+                .layoutWeight(1)
+                .height(42)
+                .fontSize(14)
+                .backgroundColor($r('app.color.accent'))
+                .borderRadius(12)
+                .onClick(() => {
+                  this.acceptPairing();
+                })
+            }
+            .width('100%')
+          }
+          .width('86%')
+          .padding(20)
+          .borderRadius(20)
+          .backgroundColor($r('app.color.card_bg'))
+          .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
+          .border({ width: 1, color: $r('app.color.card_border') })
+          .alignItems(HorizontalAlign.Center)
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .backgroundColor('#99000000')
+        .transition(TransitionEffect.OPACITY)
+      }
     }
     .width('100%')
     .height('100%')
+    // 兜底底色：暗色下窗口默认背景为黑，若底部安全区未被渐变覆盖会露出一条黑带
+    .backgroundColor($r('app.color.bg_grad_bottom'))
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
 }

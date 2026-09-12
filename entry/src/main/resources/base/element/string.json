@@ -179,6 +179,82 @@
     {
       "name": "rail_remembered_short",
       "value": "Mem"
+    },
+    {
+      "name": "pair_action",
+      "value": "Pair"
+    },
+    {
+      "name": "pair_pending",
+      "value": "Awaiting confirm"
+    },
+    {
+      "name": "pair_dialog_title",
+      "value": "Pairing request"
+    },
+    {
+      "name": "pair_dialog_code_label",
+      "value": "Verification code"
+    },
+    {
+      "name": "pair_code_unavailable",
+      "value": "pending native peer certificate"
+    },
+    {
+      "name": "pair_dialog_hint",
+      "value": "Make sure this matches the code shown on the other device"
+    },
+    {
+      "name": "pair_accept",
+      "value": "Accept"
+    },
+    {
+      "name": "pair_reject",
+      "value": "Reject"
+    },
+    {
+      "name": "files_active",
+      "value": "Active transfers"
+    },
+    {
+      "name": "files_receiving",
+      "value": "Receiving"
+    },
+    {
+      "name": "files_sending",
+      "value": "Sending"
+    },
+    {
+      "name": "files_finished",
+      "value": "Finished"
+    },
+    {
+      "name": "files_saved",
+      "value": "Saved"
+    },
+    {
+      "name": "files_cancelled",
+      "value": "Cancelled"
+    },
+    {
+      "name": "files_failed",
+      "value": "Failed"
+    },
+    {
+      "name": "files_history",
+      "value": "History"
+    },
+    {
+      "name": "files_action_save",
+      "value": "Save"
+    },
+    {
+      "name": "files_action_discard",
+      "value": "Discard"
+    },
+    {
+      "name": "files_action_cancel",
+      "value": "Cancel"
     }
   ]
 }
