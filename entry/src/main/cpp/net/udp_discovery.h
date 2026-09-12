@@ -2,7 +2,9 @@
 #define KDECONNECT_UDP_DISCOVERY_H
 
 #include "net_types.h"
+#include <mutex>
 #include <string>
+#include <vector>
 
 namespace kdeconnect {
 
@@ -21,6 +23,10 @@ public:
     int fd() const { return fd_; }
 
     bool broadcast();
+
+    // caps 单一来源：更新后立即重建广播 identity（线程安全）
+    void setCapabilities(const std::vector<std::string> &incomingCaps,
+                         const std::vector<std::string> &outgoingCaps);
     std::string readIdentity();
 
     // 最近一次 readIdentity 收到的 UDP 源地址（IPv4 点分十进制）。
@@ -29,6 +35,9 @@ public:
 
 private:
     int fd_ = -1;
+    std::mutex capsMutex_;
+    std::string identityFields_[3];   // deviceId / deviceName / deviceType
+    uint16_t identityPort_ = 0;
     std::string identityJson_;
     std::string lastSourceHost_;
 };

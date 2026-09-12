@@ -21,7 +21,11 @@ public:
                                      const std::string &deviceName,
                                      const std::string &deviceType,
                                      uint16_t tcpPort,
-                                     int protocolVersion = PROTOCOL_VERSION);
+                                     int protocolVersion = PROTOCOL_VERSION,
+                                     const std::vector<std::string> &incomingCaps
+                                         = std::vector<std::string>(),
+                                     const std::vector<std::string> &outgoingCaps
+                                         = std::vector<std::string>());
 
     static bool parseIdentity(const std::string &json, DeviceInfo &info);
 

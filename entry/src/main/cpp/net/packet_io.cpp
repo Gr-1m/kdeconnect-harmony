@@ -40,7 +40,9 @@ std::string PacketIO::buildIdentity(const std::string &deviceId,
                                     const std::string &deviceName,
                                     const std::string &deviceType,
                                     uint16_t tcpPort,
-                                    int protocolVersion)
+                                    int protocolVersion,
+                                    const std::vector<std::string> &incomingCaps,
+                                    const std::vector<std::string> &outgoingCaps)
 {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "id", 0);
@@ -54,9 +56,16 @@ std::string PacketIO::buildIdentity(const std::string &deviceId,
     cJSON_AddNumberToObject(body, "tcpPort", tcpPort);
     cJSON_AddNumberToObject(body, "protocolVersion", protocolVersion);
     // protocol v8 要求 incomingCapabilities / outgoingCapabilities
+    // caps 单一来源（REVIEW §3.3）：由 NetStack 传入，UDP 与 TLS 两条 identity 路径共用
     cJSON *inCaps = cJSON_CreateArray();
+    for (const auto &c : incomingCaps) {
+        cJSON_AddItemToArray(inCaps, cJSON_CreateString(c.c_str()));
+    }
     cJSON_AddItemToObject(body, "incomingCapabilities", inCaps);
     cJSON *outCaps = cJSON_CreateArray();
+    for (const auto &c : outgoingCaps) {
+        cJSON_AddItemToArray(outCaps, cJSON_CreateString(c.c_str()));
+    }
     cJSON_AddItemToObject(body, "outgoingCapabilities", outCaps);
     cJSON_AddItemToObject(root, "body", body);
 
