@@ -1,5 +1,6 @@
 #include "net_stack.h"
 #include "udp_discovery.h"
+#include "cert_util.h"
 #include "tcp_server.h"
 #include "tcp_connection.h"
 #include "packet_io.h"
@@ -801,6 +802,58 @@ void NetStack::payloadCancel(uint64_t id)
     if (payload_ != nullptr) {
         payload_->cancel(id);
     }
+}
+
+
+std::string NetStack::getPeerCertificate(const std::string &deviceId)
+{
+    std::lock_guard<std::mutex> lk(connMutex_);
+    for (auto &p : connections_) {
+        TcpConnection &c = *p.second;
+        if (c.deviceId() == deviceId && c.state() == ConnectionState::Encrypted &&
+            c.tlsEngine() != nullptr) {
+            std::vector<uint8_t> der = c.tlsEngine()->peerLeafCertDer();
+            if (!der.empty()) {
+                return derToPem("CERTIFICATE", der.data(), der.size());
+            }
+        }
+    }
+    return std::string();
+}
+
+std::string NetStack::getPairVerificationCode(const std::string &deviceId,
+                                              int64_t pairingTimestamp)
+{
+    std::string peerSpki;
+    {
+        std::lock_guard<std::mutex> lk(connMutex_);
+        for (auto &p : connections_) {
+            TcpConnection &c = *p.second;
+            if (c.deviceId() == deviceId && c.state() == ConnectionState::Encrypted &&
+                c.tlsEngine() != nullptr) {
+                std::vector<uint8_t> der = c.tlsEngine()->peerLeafCertDer();
+                if (!der.empty()) {
+                    peerSpki = extractSpkiDer(der.data(), der.size());
+                }
+                break;
+            }
+        }
+    }
+    if (peerSpki.empty()) {
+        return std::string();
+    }
+    if (!ownSpkiDone_) {
+        const std::string ownDer = pemToDer(config_.certPem, "CERTIFICATE");
+        ownSpkiDer_ = ownDer.empty()
+                          ? std::string()
+                          : extractSpkiDer(reinterpret_cast<const uint8_t *>(ownDer.data()),
+                                           ownDer.size());
+        ownSpkiDone_ = true;
+    }
+    if (ownSpkiDer_.empty()) {
+        return std::string();
+    }
+    return computeVerificationCode(ownSpkiDer_, peerSpki, pairingTimestamp);
 }
 
 void NetStack::setCapabilities(const std::vector<std::string> &incomingCaps,

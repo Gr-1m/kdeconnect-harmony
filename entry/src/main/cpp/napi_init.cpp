@@ -55,6 +55,10 @@ static napi_value RegisterModule(napi_env env, napi_value exports)
          nullptr},
         {"setCapabilities", nullptr, JsSetCapabilities, nullptr, nullptr, nullptr, napi_default,
          nullptr},
+        {"getPeerCertificate", nullptr, JsGetPeerCertificate, nullptr, nullptr, nullptr,
+         napi_default, nullptr},
+        {"getPairVerificationCode", nullptr, JsGetPairVerificationCode, nullptr, nullptr,
+         nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     return exports;

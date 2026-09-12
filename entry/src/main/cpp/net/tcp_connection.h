@@ -44,6 +44,7 @@ public:
     bool needsSendIdentity() const { return needsSendIdentity_; }
     void clearNeedsSendIdentity() { needsSendIdentity_ = false; }
     bool tlsHandshakeDone() const;
+    TlsEngine *tlsEngine() { return tls_.get(); }
 
     // TLS 应用数据排空读：反复读直到 EAGAIN（或缓冲超限），数据追加到 rxBuf_。
     // 返回 >=0：本轮追加的字节数；-1：对端关闭/错误/超限。
