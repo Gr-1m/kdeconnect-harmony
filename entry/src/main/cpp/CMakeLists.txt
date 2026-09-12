@@ -24,9 +24,9 @@ set_target_properties(bearssl PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # 网络栈核心（cpp/net/）与 NAPI 桥（cpp/napi/ + napi_init.cpp）均由 native agent 维护；
 # 规范见 devdocs/CPP_GUIDE.md，接口契约以 cpp/types/libkdeconnect_napi/Index.d.ts 为准。
 # 注意：GLOB 对新增文件需重新配置（每次 hvigor 构建都会重跑 CMake，无需手动刷新缓存）。
-file(GLOB_RECURSE NET_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/net/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/net/*.c)
-file(GLOB_RECURSE NAPI_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/napi/*.cpp)
-file(GLOB_RECURSE PAYLOAD_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/payload/*.cpp)
+file(GLOB_RECURSE NET_SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/net/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/net/*.c)
+file(GLOB_RECURSE NAPI_SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/napi/*.cpp)
+file(GLOB_RECURSE PAYLOAD_SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/payload/*.cpp)
 file(GLOB_RECURSE JSON_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/json/*.c)
 
 add_library(kdeconnect_napi SHARED

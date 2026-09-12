@@ -317,3 +317,11 @@ napi_value JsGetPairVerificationCode(napi_env env, napi_callback_info info)
     napi_create_string_utf8(env, code.c_str(), code.size(), &out);
     return out;
 }
+
+napi_value JsGetOwnCertificate(napi_env env, napi_callback_info info)
+{
+    std::string pem = netStack().getOwnCertificate();
+    napi_value out = nullptr;
+    napi_create_string_utf8(env, pem.c_str(), pem.size(), &out);
+    return out;
+}
