@@ -43,6 +43,12 @@ public:
     // AP-1b：对端证书 PEM（空 = 无加密链路）；配对验证码（KDE verificationKey 等价）
     std::string getPeerCertificate(const std::string &deviceId);
     std::string getOwnCertificate();
+
+    // —— WP-2 安全加固 ——
+    // 信任设备证书钉扎（内存态；持久化由 ArkTS TrustStore/Preferences 负责，启动时回灌）。
+    // 已登记 deviceId 的后续连接：对端证书与登记不符 → 断链 + error 事件。
+    void setTrustedCertificate(const std::string &deviceId, const std::string &certPem);
+    void removeTrustedCertificate(const std::string &deviceId);
     std::string getPairVerificationCode(const std::string &deviceId, int64_t pairingTimestamp);
 
     // —— WP-1b payload ——
@@ -107,6 +113,12 @@ private:
     bool ownSpkiDone_ = false;
     // 对端证书 PEM 缓存（按 deviceId，掉线后保留至下次连接覆盖；AP-1b「记住的设备」展示用）
     std::unordered_map<std::string, std::string> peerCertPemCache_;
+
+    // WP-2：信任设备证书（deviceId → PEM）；连接限流（IP/deviceId → 最近一次 ms）
+    std::mutex trustMutex_;
+    std::unordered_map<std::string, std::string> trustedCertPem_;
+    std::unordered_map<std::string, int64_t> lastAcceptByIp_;
+    std::unordered_map<std::string, int64_t> lastConnByDevice_;
 
     std::unique_ptr<PayloadManager> payload_;
 };
