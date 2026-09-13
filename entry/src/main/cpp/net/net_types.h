@@ -26,12 +26,14 @@ constexpr int CONN_RATE_LIMIT_MS = 1000;   // 同 IP/deviceId 连接限流（WP-
 // 只刷新时间戳不派发（见 NetStack::eventLoop）。
 constexpr int DISCOVERY_TIMEOUT_MS = 60000;
 
-// —— UDP 发现周期重播（CodeArts MSG73_TO_OMP 修复 2）——
+// —— UDP 发现周期重播（CodeArts MSG73_TO_OMP 修复 2 + MSG78 §2 裁决）——
 // 对端只在启动/网络变化时广播（KDE `lanlinkprovider.cpp:149,192`、Android 同构），
-// 故「后启动/错过对端广播」的一方必须由我们主动补齐重播间隔：初期快速、随后稳定。
-constexpr int DISCOVERY_BROADCAST_FAST_MS = 5000;    // 启动初期
-constexpr int DISCOVERY_BROADCAST_SLOW_MS = 30000;   // 稳定期
-constexpr int DISCOVERY_BROADCAST_FAST_COUNT = 5;    // 快速阶段次数
+// 故「后启动/错过对端广播」的一方必须由我们主动补齐：启动初期快速，随后长期低频持续。
+// MSG78 §2 裁决：早期版本「5s×5 次后停止」会让发现列表在 60s 后因 DISCOVERY_TIMEOUT 被清空
+// （真机实证），故稳定期改为**每 60s 一次、持续不停**；60s 远大于 KDE 同设备去抖窗口(500ms)。
+constexpr int DISCOVERY_BROADCAST_FAST_MS = 5000;      // 启动初期
+constexpr int DISCOVERY_BROADCAST_FAST_COUNT = 5;      // 快速阶段次数
+constexpr int DISCOVERY_LONG_INTERVAL_MS = 60000;      // 稳定期：长期低频、不停
 // 已建链时是否仍周期广播 —— 默认 **false**（偏离 MSG73 原方案，理由与证据见下）。
 // KDE 收到任意 identity 广播都会**新建 TCP 连接**（`udpBroadcastReceived` 无「已有链路则跳过」，
 // 仅 500ms 同设备去抖），而它对同设备**新链路替换旧链路**（实测 `deviceLinkDestroyed`
