@@ -19,11 +19,16 @@ export struct DevicesTab {
   cardMaterial: uiMaterial.Material | undefined = undefined;
   onDisconnectDevice: (d: DeviceItem) => void = () => {
   };
+  onUnpairDevice: (d: DeviceItem) => void = () => {
+  };
   onConnectDevice: (d: DeviceItem) => void = () => {
   };
   onManualConnect: (host: string, port: number) => void = () => {
   };
   onPairDevice: (d: DeviceItem) => void = () => {
+  };
+  // 发现列表下拉刷新 → 请求页面触发一次 identity 广播（MSG73/MSG74）
+  onRefreshDiscovery: () => void = () => {
   };
   // 侧栏选中项：0 已连接 / 1 发现 / 2 记住的 / 3 手动连接
   // @Link：连接/配对成功后由 Index 切回「已连接设备」分区
@@ -33,6 +38,8 @@ export struct DevicesTab {
   // 手动连接默认值：host 留空（10.0.2.2 只是 QEMU 模拟器的 NAT 网关，真机无意义），port 用默认端口
   @State manualHost: string = '';
   @State manualPort: string = '1716';
+  // 发现列表下拉刷新态（触发广播后自动收起）
+  @State discoveryRefreshing: boolean = false;
 
   private openSide(): void {
     if (this.isWide) {
@@ -161,10 +168,19 @@ export struct DevicesTab {
             .fontSize(10)
             .fontColor($r('app.color.dot_connected'))
         }
+        // CodeArts MSG75 裁决 2 补充：说明「断开」与「解除配对」的差别
+        if (this.isPaired(d.id)) {
+          Text($r('app.string.disconnect_hint'))
+            .fontSize(9)
+            .fontColor($r('app.color.text_muted'))
+            .maxLines(2)
+        }
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
-      // AP-1 配对状态：已配对 → 徽标；已发起等待确认 → 提示；否则 → 配对按钮
+      // AP-1 配对状态（CodeArts MSG69/MSG71 §2）：
+      //   已配对 → 徽标 + 断开（只断链）+ 解除配对（unpair+断链）；
+      //   等待确认 → 提示 + 断开；否则 → 配对 + 断开
       if (this.isPaired(d.id)) {
         Text($r('app.string.remembered_hint'))
           .fontSize(10)
@@ -172,6 +188,15 @@ export struct DevicesTab {
           .padding({ left: 8, right: 8, top: 2, bottom: 2 })
           .borderRadius(999)
           .backgroundColor($r('app.color.chip_bg'))
+        Button($r('app.string.unpair_action'))
+          .fontSize(12)
+          .height(32)
+          .backgroundColor($r('app.color.chip_bg'))
+          .fontColor($r('app.color.text_secondary'))
+          .borderRadius(8)
+          .onClick(() => {
+            this.onUnpairDevice(d);
+          })
       } else if (this.requestedPairIds.includes(d.id)) {
         Text($r('app.string.pair_pending'))
           .fontSize(10)
@@ -208,13 +233,24 @@ export struct DevicesTab {
   discoveredRow(d: DeviceItem) {
     Row({ space: 10 }) {
       Circle({ width: 8, height: 8 })
-        .fill($r('app.color.dot_discovered'))
+        .fill(d.online ? $r('app.color.dot_discovered') : $r('app.color.text_muted'))
       Column({ space: 2 }) {
-        Text(d.name)
-          .fontSize(13)
-          .fontColor($r('app.color.text_primary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Row({ space: 6 }) {
+          Text(d.name)
+            .fontSize(13)
+            .fontColor(d.online ? $r('app.color.text_primary') : $r('app.color.text_muted'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          // 离线标记（MSG78 §2：超时不删条目，只标离线）
+          if (!d.online) {
+            Text($r('app.string.device_offline'))
+              .fontSize(9)
+              .fontColor($r('app.color.text_muted'))
+              .padding({ left: 6, right: 6, top: 1, bottom: 1 })
+              .borderRadius(999)
+              .backgroundColor($r('app.color.chip_bg'))
+          }
+        }
         Text(d.host !== '' ? `${d.host}:${d.tcpPort}` : $r('app.string.address_pending'))
           .fontSize(10)
           .fontColor($r('app.color.text_muted'))
@@ -318,10 +354,30 @@ export struct DevicesTab {
   @Builder
   sectionContent() {
     Column({ space: 8 }) {
-      Text(this.sectionTitleOf(this.deviceSection))
-        .fontSize(13)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
+      Row({ space: 8 }) {
+        Text(this.sectionTitleOf(this.deviceSection))
+          .fontSize(13)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .layoutWeight(1)
+        // 显式「刷新」按钮（CodeArts MSG78 §3）：与下拉刷新同源，但可靠、可自动化验证
+        if (this.deviceSection === 1) {
+          Button($r('app.string.discovery_refresh'))
+            .fontSize(12)
+            .height(30)
+            .backgroundColor($r('app.color.accent_soft'))
+            .fontColor($r('app.color.accent_text'))
+            .borderRadius(8)
+            .onClick(() => {
+              this.discoveryRefreshing = true;
+              this.onRefreshDiscovery();
+              setTimeout((): void => {
+                this.discoveryRefreshing = false;
+              }, 1500);
+            })
+        }
+      }
+      .width('100%')
       if (this.deviceSection === 0) {
         if (this.connectedDevices.length === 0) {
           this.emptyHint($r('app.string.group_empty'))
@@ -330,12 +386,34 @@ export struct DevicesTab {
           this.connectedRow(d)
         }, (d: DeviceItem) => d.id)
       } else if (this.deviceSection === 1) {
-        if (this.discoveredDevices.length === 0) {
-          this.emptyHint($r('app.string.discovered_hint'))
+        // 下拉刷新：手动触发一次 identity 广播（对端后启动/丢包时用）。
+        // Refresh 需要可滚动子组件才能识别下拉手势，故内层包一个 Scroll。
+        Refresh({ refreshing: $$this.discoveryRefreshing }) {
+          Scroll() {
+            Column({ space: 8 }) {
+              if (this.discoveredDevices.length === 0) {
+                this.emptyHint($r('app.string.discovered_hint'))
+              }
+              ForEach(this.discoveredDevices, (d: DeviceItem) => {
+                this.discoveredRow(d)
+              }, (d: DeviceItem) => d.id)
+            }
+            .width('100%')
+            .alignItems(HorizontalAlign.Start)
+          }
+          .width('100%')
+          .height('100%')
+          .scrollBar(BarState.Off)
+          .edgeEffect(EdgeEffect.Spring)
         }
-        ForEach(this.discoveredDevices, (d: DeviceItem) => {
-          this.discoveredRow(d)
-        }, (d: DeviceItem) => d.id)
+        .width('100%')
+        .layoutWeight(1)
+        .onRefreshing(() => {
+          this.onRefreshDiscovery();
+          setTimeout((): void => {
+            this.discoveryRefreshing = false;
+          }, 1500);
+        })
       } else if (this.deviceSection === 2) {
         if (this.rememberedDevices.length === 0) {
           this.emptyHint($r('app.string.remembered_hint_empty'))

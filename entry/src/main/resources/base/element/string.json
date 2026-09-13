@@ -293,6 +293,22 @@
       "value": "Accept the request on the other device within 30 seconds"
     },
     {
+      "name": "discovery_refresh",
+      "value": "Refresh"
+    },
+    {
+      "name": "device_offline",
+      "value": "Offline"
+    },
+    {
+      "name": "disconnect_hint",
+      "value": "Reconnect may require Unpair first"
+    },
+    {
+      "name": "unpair_action",
+      "value": "Unpair"
+    },
+    {
       "name": "action_cancel",
       "value": "Cancel"
     },

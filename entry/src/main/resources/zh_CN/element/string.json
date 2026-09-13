@@ -281,6 +281,22 @@
       "value": "请在 30 秒内到对端设备上点「接受」"
     },
     {
+      "name": "discovery_refresh",
+      "value": "刷新"
+    },
+    {
+      "name": "device_offline",
+      "value": "离线"
+    },
+    {
+      "name": "disconnect_hint",
+      "value": "断开后重连可能需先解除配对"
+    },
+    {
+      "name": "unpair_action",
+      "value": "解除配对"
+    },
+    {
       "name": "action_cancel",
       "value": "取消"
     },

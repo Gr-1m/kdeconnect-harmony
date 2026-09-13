@@ -45,7 +45,7 @@ packet 以换行分隔的 JSON 字符串发送：`{"id", "type", "body", "versio
 - 卡片材质走「沉浸光感」：`@ohos.arkui.uiMaterial`（API 26，`ImmersiveMaterial` + 通用属性 `systemMaterial`），`uiMaterial.isImmersiveMaterialSupported()` 探测设备能力，**QEMU 模拟器运行时未实现该 API**（d.ts 有声明），须 catch 后降级 `backgroundBlurStyle(BlurStyle.BACKGROUND_THIN)` 毛玻璃——探测失败勿写屏幕日志。
 - 状态栏安全高度由 `EntryAbility.onWindowStageCreate` 里 `setWindowLayoutFullScreen(true)` + `getWindowAvoidArea` 读入 AppStorage，页面用 `this.getUIContext().px2vp()` 换算（全局 `px2vp` 在 API 26 已废弃）。
 - 已连接设备列表（`connectedDevices`）由 ArkTS 依据 native 的 `connected`/`disconnected` 事件维护，断开按钮调 `native.disconnect(deviceId)`。**层间契约：native 必须在所有断开路径（主动断、对端断、TLS 失败）都派发 `Disconnected` 事件**，否则 UI 残留死连接。
-- **配对协议分层**：`pairingRequest` 事件是 TLS 握手层的 identity 帧（**不是**配对请求），ArkTS 只回填设备名、**勿自动回发 pair**（双方互发 pair 请求会导致 KDE 配对超时）；真正的配对请求是 `packetReceived` 里的 `kdeconnect.pair` 帧，由 `PacketRouter.handlePair` 应答。断开按钮**先发 unpair `{pair:false}` 再 disconnect**（否则 KDE 残留配对态，重连报 pairing timed out）。
+- **配对协议分层**：`pairingRequest` 事件是 TLS 握手层的 identity 帧（**不是**配对请求），ArkTS 只回填设备名、**勿自动回发 pair**（双方互发 pair 请求会导致 KDE 配对超时）；真正的配对请求是 `packetReceived` 里的 `kdeconnect.pair` 帧，由 `PacketRouter.handlePair` 应答。**按钮语义（2026-09-13 用户裁决，CodeArts MSG69/MSG71）**：「断开」**只断 TCP/TLS、保留配对**（调 `native.disconnect`）；「解除配对」才发 unpair `{pair:false}` + 断开 + 移出记住列表 —— 对 KDE 残留配对态的规避（否则重连报 pairing timed out）现在归「解除配对」。**连接/配对会话**：连上未配对设备后 App **自动**发 pair 请求（弹窗只显示验证码 + 「等待对端确认」，不再要求用户先点「配对」）；配对成功自动跳回「已连接设备」分区。
 - 事件语义（已端到端验证）：`connected` 在 TLS 握手 + 双方 identity 完成后派发，带 `deviceName`/`role`；`disconnected` 在主动断与对端断（含 readTls==0）均派发。桌面 KDE 只对已配对设备发 mount 共享目录请求——guest 未实现文件共享时该请求失败属**预期行为**，非 bug。
 - 开发偏好：UI/业务层尽量用官方 ArkTS 实现，native C++ 只保留官方 API 覆盖不到的部分（socket/TLS 网络栈）。
 
