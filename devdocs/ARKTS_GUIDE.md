@@ -76,7 +76,7 @@ UI 结构（对齐 iOS 端 Devices+Settings 两 Tab，鸿蒙扩展为四 Tab）�
 | AP-2 | **d.ts v2 payload 契约共定**：与 zcode WP-1 逐字对齐（方法名/事件名/字段名），ArkTS 侧先出提案草案 → 双方定稿 → zcode 实现。方向：`payloadReceived`（含 `payloadTransferInfo`/`payloadSize`）、`payloadProgress`（bytes/total）、接收落盘路径约定（沙箱 `files/kdeconnect/`）、发送侧 `sendPayload` 排队语义 | WP-1 | d.ts v2 定稿并经 CodeArts 评审 |
 | AP-3 | **信任设备存储（Preferences 侧完成）**：`TrustStore`（键 `trustedDevices`，JSON 带 `schemaVersion=2`）+ 旧 `rememberedDevices` 自动迁移 + 配对时存对端证书 PEM + 解除配对移除；**已与 WP-2 钉扎对接**（配对登记 `setTrustedCertificate` / 启动回灌 / unpair 先 `removeTrustedCertificate`） | WP-2 | 匹配 WP-2 钉扎：证书变更拒连、限流 error 文案可读化 |
 | AP-4 | **插件框架（M2 地基）已完成**：`PluginBase`（能力声明/生命周期/收包回调，`onDestroy` 必达）+ `PluginRegistry`（注册表驱动，禁硬编码 switch）+ `PluginHost`（每设备一份实例、能力交集装载、逐个 try/catch 分发、插件→UI 事件通道 `uiFn`）+ 已落地 `PingPlugin` / `SharePlugin` / `BatteryPlugin`；capabilities 由注册表汇总喂 `native.setCapabilities`（单一来源） | M2 | 注册新插件零改动框架代码；identity 能力协商随插件清单自动更新 |
-| AP-5 | iOS 功能集 8 类插件逐个实现（KICKOFF §5 表：ping/battery/clipboard/findmyphone/runcommand/share(+payload)/mousepad/presenter），每个独立验收（连桌面实测） | M2 | 8 类逐一通过；share 依赖 WP-1/AP-2 |
+| AP-5 | iOS 功能集插件逐个实现，**已完成 6/8**：`PingPlugin`（回显+主动发）、`SharePlugin`（**接收**：声明 caps + 文件信息；**发送**：文件页选文件 → 沙箱复制 → `native.sendPayload`）、`BatteryPlugin`（设备行显示 `82% ⚡`）、`ClipboardPlugin`（接收写系统剪贴板；`sendClipboard()` 待 UI 入口）、`FindMyPhonePlugin`（振动 4s，`VIBRATE` 权限，onDestroy 停振）；剩余：RunCommand（受限命令集）、Mousepad/Presenter（输入注入需系统权限，评估中） | M2 | 每个插件连桌面实测通过 |
 | AP-6 | 多设备管理、前后台/保活策略、错误恢复重连、全量中文文案、图标与界面打磨 | M3 | 真机/模拟器体验验收 |
 | AP-7 | **上架前置**：bundleName 改最终标识（用户定名后一次改 `AppScope/app.json5` + 两处 label）、**改名后 Preferences 迁移逻辑 + 单元测试**（用户要求：开发期保持、上架前改动能正常——迁移代码我写，测试计划按 CodeArts 单测指导，测试代码可由 CodeArts/我分工）、Release 混淆启用评估、隐私政策/权限用途文案（正式前用户确认） | M4/WP-6 | Release HAP 可安装且老用户数据不丢（模拟改名演练） |
 
@@ -154,6 +154,12 @@ protocolVersion=8；UDP 1716；TCP 1716–1764；payload 端口 ≥1739；单包
 - lint 面板：Linux 侧 codelinter 被商用 CLT 类型门禁卡死（假象），**lint 结论以 Win10 DevEco 实测为准**（首验③，进行中）。
 - 模拟器/真机：装设备优先在用户终端执行（历史约定）；本侧 HAP 未配置签名（`signingConfigs` 空）——模拟器安装运行前需用户在 DevEco 配置自动签名（首验②阻塞项，见 WIN10_LOG）。
 - 沉浸光感材质：`uiMaterial` 探测失败静默降级毛玻璃，勿写屏幕日志（QEMU 已知不支持）。
+- **ArkUI 组件成员命名坑**：子组件（`@Component`）成员名**不能与通用属性同名**（如 `direction`/`size`/`width`/`opacity`/`backgroundColor`），否则报「Property 'x' in type 'X' is not assignable to the same property in base type 'CustomComponent'」——用领域前缀（`payloadDirection`/`payloadSize`）。
+- **Win10 侧签名/装机（2026-09-13 新，方案 A 兼容）**：tracked `build-profile.json5` 的 `signingConfigs` 恒为 `[]`；本机改用**仓库外自签调试脚本** `C:\Users\<user>\.ohos\kdc-sign-win.ps1`（材料在 `C:\Users\<user>\.ohos\kdc-sign\`，机器本地不入库）：
+  - 关键技巧：SDK 的 `OpenHarmony.p12` 里带 **`openharmony application ca` 的私钥**，用 `hap-sign-tool generate-app-cert` 以该 CA 签发**自定义 subject 的叶证书**（本项目 `O=Gr1m, OU=Gr1m, CN=KDE-H Connect`），证书链仍是 leaf→App CA→Root CA，**设备照常信任**；团队名即证书 subject 的 O/OU。
+  - 用法：`powershell -ExecutionPolicy Bypass -File kdc-sign-win.ps1 -Mode all`（`materials|sign-only|install|all`）；profile 的 `device-ids` 绑定目标设备 UDID（脚本自动取自 `hdc shell bm get --udid`），**换设备需重跑**。
+  - 坑：`generate-app-cert` 要求 **subject 密钥与 CA 私钥在同一 keystore**（本方案用 SDK keystore 副本 `gr1m-work.p12` + `generate-keypair` 加入自己的密钥）；keytool 读不了这套老 p12 的私钥（改用 hap-sign-tool）；PowerShell 脚本里**不要用 `$pwd` 当密码变量**（= 当前目录自动变量）。
+- **ArkUI 状态刷新坑（易踩；"点击有效但高亮不跟随"的根因）**：`@Builder` 的**值参数变化不会触发刷新**（值传递语义）——选中态/进度等动态内容必须**在 Builder 内部直接读状态**（如 `this.themeMode === mode`），或只传 `id` 进去再在 Builder 内现读（如 `this.payloadOf(transferId)`）。`ForEach` 用稳定 key 时尤其明显：列表项不重建，传进去的旧值会一直显示旧值。
 - **两个编译器口径不同（重要）**：Win10 DevEco 编译器宽松，**Linux CLT 会额外报 `arkts-no-implicit-return-types`**——凡作为**函数类型参数**传入的箭头函数（`RouterCallbacks` 字段、`SendFrameFn`/`uiFn`、`native.init` 回调、组件回调 prop）**必须显式标注返回类型**（`(): void => { ... }` / `(): boolean => ...`）。Win10 绿 ≠ Linux 绿：UI 预览用 Win10，**最终构建门禁以 Linux 侧为准**（ZCode MSG49）。
 - **工具约定（血泪教训）**：不要用 PowerShell `Get-Content`/`Set-Content`/`-replace` 批量改 `.ets`/`.md`（PS 5.1 按 ANSI 读 UTF-8 → 中文变 `鈥?` 且丢失字节，导致 `Unterminated string literal` 或文档损坏）；一律用编辑工具逐处改，改完先 `arkts_check` 再 `build_project`，改 `.md` 后用 grep 复核中文。
 - 每次交付前冒烟：`arkts_check` → `assembleHap` →（有设备时）安装启动看 hilog 关键行（deviceId / packet type / 错误码）。

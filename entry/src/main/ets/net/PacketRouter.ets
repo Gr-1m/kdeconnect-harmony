@@ -6,7 +6,6 @@
 // 配对语义（AP-1）：请求不再自动接受，交由 UI 弹窗确认（用户裁决：与 iOS 一致）。
 import native from 'libkdeconnect_napi.so';
 
-const PROTOCOL_VERSION = 8;
 // Android 参考（PairingHandler）：时钟偏差超 30 分钟则拒绝配对请求。
 const MAX_TIMESTAMP_DIFF_SECONDS = 1800;
 
@@ -71,19 +70,26 @@ export class PacketRouter {
 
   // ---- 供 UI 调用的配对动作 ----
 
-  // 本侧发起配对请求（UI：已连接设备行的「配对」按钮）
-  requestPair(deviceId: string): void {
+  // 本侧发起配对请求（UI：发现/手动连接后的配对确认弹窗、已连接设备行的「配对」按钮）。
+  // timestamp 由 UI 传入：弹窗里显示的验证码必须用同一个值计算（native getPairVerificationCode）。
+  requestPair(deviceId: string, timestamp: number): void {
     this.requestedPeers.add(deviceId);
-    const body: PairBody = { pair: true, timestamp: Math.floor(Date.now() / 1000) };
+    let ts: number = timestamp;
+    if (ts <= 0) {
+      ts = Math.floor(Date.now() / 1000);
+    }
+    const body: PairBody = { pair: true, timestamp: ts };
     this.sendFrame(deviceId, PACKET_PAIR, body);
     this.logFn('pair request sent to ' + deviceId);
   }
 
-  // UI 确认接受对端请求：回 {pair:true} + 重发 identity
+  // UI 确认接受对端请求：回 {pair:true}
+  // 注意（AtomCode P0-4 / CodeArts MSG58）：这里**不再自造 identity 帧**——
+  // native 在 TLS 握手完成后会发带正确宽 caps 的 identity，setCapabilities 也会向已建链路重发；
+  // 若此处再发窄 caps identity，会被 KDE 采纳并覆盖，导致对端拒发 ping/share.request。
   acceptPair(deviceId: string): void {
     const body: PairBody = { pair: true, timestamp: Math.floor(Date.now() / 1000) };
     this.sendFrame(deviceId, PACKET_PAIR, body);
-    this.sendIdentity(deviceId);
     this.logFn('pairing accepted with ' + deviceId);
     this.callbacks.onPaired(deviceId);
   }
@@ -160,7 +166,7 @@ export class PacketRouter {
       }
       if (this.requestedPeers.has(deviceId)) {
         this.requestedPeers.delete(deviceId);
-        this.sendIdentity(deviceId);
+        // 不再自造 identity（caps 单一来源在 native，见 acceptPair 注释）
         this.logFn('pairing confirmed by ' + deviceId);
         this.callbacks.onPaired(deviceId);
         return;
@@ -183,20 +189,6 @@ export class PacketRouter {
       (body.deviceName ?? '?') + ' v' + (body.protocolVersion ?? '?') +
       ' incoming=' + incoming.length + ' outgoing=' + outgoing.length);
     this.callbacks.onPeerCapabilities(deviceId, incoming, outgoing);
-  }
-
-  private sendIdentity(deviceId: string): void {
-    const body: IdentityBody = {
-      deviceId: this.selfDeviceId,
-      protocolVersion: PROTOCOL_VERSION,
-      deviceName: this.selfDeviceName,
-      deviceType: this.selfDeviceType,
-      // 能力由 native 统一持有（d.ts setCapabilities，单一来源）；此处仅发结构占位，
-      // 真实 caps 由 native 在 identity 帧内填充（见 d.ts setCapabilities 注释）。
-      incomingCapabilities: ['kdeconnect.identity', 'kdeconnect.pair'],
-      outgoingCapabilities: ['kdeconnect.identity', 'kdeconnect.pair']
-    };
-    this.sendFrame(deviceId, PACKET_IDENTITY, body);
   }
 
   private sendFrame(deviceId: string, type: string, body: Object): void {

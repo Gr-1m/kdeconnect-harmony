@@ -1,5 +1,6 @@
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import { GlassCard } from './GlassCard';
+import { OptionPill } from './OptionPill';
 import { THEME_FOLLOW_SYSTEM, THEME_LIGHT, THEME_DARK, LANG_SYSTEM, LANG_ZH, LANG_EN } from '../common/AppSettings';
 
 // 设置 Tab：本机身份与协议信息 + 可自定义设备名称 / 主题（跟随系统·亮·暗）/ 语言（默认跟随系统）。
@@ -59,22 +60,8 @@ export struct SettingsTab {
       .fontColor($r('app.color.text_primary'))
   }
 
-  @Builder
-  optionPill(label: ResourceStr, active: boolean, onPick: () => void) {
-    Text(label)
-      .fontSize(12)
-      .fontColor(active ? $r('app.color.accent_text') : $r('app.color.text_secondary'))
-      .fontWeight(active ? FontWeight.Medium : FontWeight.Normal)
-      .textAlign(TextAlign.Center)
-      .padding({ top: 8, bottom: 8 })
-      .layoutWeight(1)
-      .borderRadius(10)
-      .backgroundColor(active ? $r('app.color.accent_soft') : $r('app.color.input_bg'))
-      .onClick(() => {
-        onPick();
-      })
-  }
-
+  // 选中态一律用子组件 OptionPill（@Prop 驱动）——不要用 @Builder 传值：
+  // @Builder 的参数不变时会跳过重建，表现为"点击有效但高亮不跟随"。
   build() {
     Scroll() {
       Column({ space: 12 }) {
@@ -116,14 +103,26 @@ export struct SettingsTab {
           Column({ space: 10 }) {
             this.sectionTitle($r('app.string.settings_theme'))
             Row({ space: 8 }) {
-              this.optionPill($r('app.string.follow_system'), this.themeMode === THEME_FOLLOW_SYSTEM, () => {
-                this.onThemeChange(THEME_FOLLOW_SYSTEM);
+              OptionPill({
+                label: $r('app.string.follow_system'),
+                active: this.themeMode === THEME_FOLLOW_SYSTEM,
+                onPick: (): void => {
+                  this.onThemeChange(THEME_FOLLOW_SYSTEM);
+                }
               })
-              this.optionPill($r('app.string.theme_light'), this.themeMode === THEME_LIGHT, () => {
-                this.onThemeChange(THEME_LIGHT);
+              OptionPill({
+                label: $r('app.string.theme_light'),
+                active: this.themeMode === THEME_LIGHT,
+                onPick: (): void => {
+                  this.onThemeChange(THEME_LIGHT);
+                }
               })
-              this.optionPill($r('app.string.theme_dark'), this.themeMode === THEME_DARK, () => {
-                this.onThemeChange(THEME_DARK);
+              OptionPill({
+                label: $r('app.string.theme_dark'),
+                active: this.themeMode === THEME_DARK,
+                onPick: (): void => {
+                  this.onThemeChange(THEME_DARK);
+                }
               })
             }
             .width('100%')
@@ -137,14 +136,26 @@ export struct SettingsTab {
           Column({ space: 10 }) {
             this.sectionTitle($r('app.string.settings_language'))
             Row({ space: 8 }) {
-              this.optionPill($r('app.string.follow_system'), this.language === LANG_SYSTEM, () => {
-                this.onLanguageChange(LANG_SYSTEM);
+              OptionPill({
+                label: $r('app.string.follow_system'),
+                active: this.language === LANG_SYSTEM,
+                onPick: (): void => {
+                  this.onLanguageChange(LANG_SYSTEM);
+                }
               })
-              this.optionPill($r('app.string.lang_zh'), this.language === LANG_ZH, () => {
-                this.onLanguageChange(LANG_ZH);
+              OptionPill({
+                label: $r('app.string.lang_zh'),
+                active: this.language === LANG_ZH,
+                onPick: (): void => {
+                  this.onLanguageChange(LANG_ZH);
+                }
               })
-              this.optionPill($r('app.string.lang_en'), this.language === LANG_EN, () => {
-                this.onLanguageChange(LANG_EN);
+              OptionPill({
+                label: $r('app.string.lang_en'),
+                active: this.language === LANG_EN,
+                onPick: (): void => {
+                  this.onLanguageChange(LANG_EN);
+                }
               })
             }
             .width('100%')

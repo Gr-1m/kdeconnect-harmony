@@ -255,6 +255,46 @@
     {
       "name": "files_action_cancel",
       "value": "Cancel"
+    },
+    {
+      "name": "files_send_title",
+      "value": "Send a file"
+    },
+    {
+      "name": "files_action_send",
+      "value": "Choose file and send"
+    },
+    {
+      "name": "connect_connecting",
+      "value": "Connecting…"
+    },
+    {
+      "name": "connect_failed",
+      "value": "Connection failed"
+    },
+    {
+      "name": "pair_failed",
+      "value": "Pairing failed"
+    },
+    {
+      "name": "pair_success",
+      "value": "Paired"
+    },
+    {
+      "name": "pair_dialog_title_outgoing",
+      "value": "Pair with this device?"
+    },
+    {
+      "name": "pair_waiting",
+      "value": "Waiting for the other device to confirm…"
+    },
+    {
+      "name": "action_cancel",
+      "value": "Cancel"
+    },
+    {
+      "name": "action_close",
+      "value": "Close"
     }
   ]
 }

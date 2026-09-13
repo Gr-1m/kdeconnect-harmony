@@ -3,7 +3,7 @@ import { NetConfig, CertPair, NetEvent } from 'libkdeconnect_napi.so';
 import { util } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
 import { Context } from '@kit.AbilityKit';
-import { fileIo } from '@kit.CoreFileKit';
+import { fileIo, picker } from '@kit.CoreFileKit';
 import { display } from '@kit.ArkUI';
 import { HdsTabs, HdsTabsController, hdsMaterial } from '@kit.UIDesignKit';
 import uiMaterial from '@ohos.arkui.uiMaterial';
@@ -13,6 +13,8 @@ import { PluginHost } from '../plugins/PluginHost';
 import { PingPlugin } from '../plugins/PingPlugin';
 import { SharePlugin } from '../plugins/SharePlugin';
 import { BatteryPlugin } from '../plugins/BatteryPlugin';
+import { ClipboardPlugin } from '../plugins/ClipboardPlugin';
+import { FindMyPhonePlugin } from '../plugins/FindMyPhonePlugin';
 import { DeviceItem, RememberedDevice, BatteryItem } from '../model/DeviceModels';
 import { PayloadTransfer, PayloadDirection, PayloadState } from '../model/PayloadModels';
 import { TrustedDevice } from '../model/TrustModels';
@@ -46,7 +48,18 @@ interface SettingEntry {
   value: string;
 }
 
+// 发送文件时的 share.request body
+interface SendShareBody {
+  filename: string;
+}
+
 const DEFAULT_DEVICE_NAME: string = 'kdeconnect-harmony';
+
+// 连接/配对会话超时（毫秒）：TCP+TLS 建连 20s；配对请求等对端确认 30s
+const CONNECT_TIMEOUT_MS: number = 20000;
+const PAIR_TIMEOUT_MS: number = 30000;
+// 成功提示停留时间
+const NOTICE_MS: number = 2500;
 
 @Entry
 @Component
@@ -70,6 +83,26 @@ struct Index {
   @State pendingPairCode: string = '';
   // 本侧已发起、等待对端确认的设备
   @State requestedPairIds: string[] = [];
+  // 连接/配对会话（发现列表「连接」与手动连接共用一条状态机）：
+  // idle → connecting → prompt（等用户确认配对）→ awaiting（已发请求，等对端确认）
+  //   → idle（成功，跳回「已连接设备」）| failed（连接/配对失败，弹窗给出原因）
+  @State sessionState: string = 'idle';
+  @State sessionDeviceId: string = '';
+  @State sessionName: string = '';
+  @State sessionTarget: string = '';
+  @State sessionError: string = '';
+  @State sessionTimestamp: number = 0;
+  // 会话弹窗里显示的验证码（进入 prompt/awaiting 时算一次，避免渲染期调 native）
+  @State sessionCode: string = '';
+  // 对端先发起了配对请求（此时弹窗上的「配对」按钮同时充当接受）
+  @State sessionPeerRequested: boolean = false;
+  // 配对/连接成功后的短暂提示
+  @State sessionNotice: string = '';
+  // 设备 Tab 分区（0 已连接 / 1 发现 / 2 记住 / 3 手动）：@Link 给 DevicesTab，
+  // 配对成功后由本页切回「已连接设备」
+  @State deviceSection: number = 0;
+  private sessionTimerId: number = -1;
+  private noticeTimerId: number = -1;
   // AP-2 payload 传输（接收/发送进度与处置状态）
   @State payloads: PayloadTransfer[] = [];
   // 插件推来的展示项（目前：电量）
@@ -182,6 +215,8 @@ struct Index {
     // M1 锚点：接收桌面文件。能力必须声明，否则 KDE 会收窄并拒发 share 请求。
     this.pluginRegistry.register('share', (): SharePlugin => new SharePlugin());
     this.pluginRegistry.register('battery', (): BatteryPlugin => new BatteryPlugin());
+    this.pluginRegistry.register('clipboard', (): ClipboardPlugin => new ClipboardPlugin());
+    this.pluginRegistry.register('findmyphone', (): FindMyPhonePlugin => new FindMyPhonePlugin());
     this.pluginHost = new PluginHost(this.pluginRegistry, (m: string): void => {
       this.log(m);
     });
@@ -392,6 +427,15 @@ struct Index {
     if (deviceId === '') {
       return;
     }
+    // 本侧刚连上该设备（会话弹窗已在屏幕上）：不再叠加第二个弹窗，
+    // 弹窗上的「配对」按钮即接受（对端先请求时本侧同帧回 pair:true 是标准做法）。
+    if (this.sessionDeviceId === deviceId && this.sessionState === 'prompt') {
+      this.sessionPeerRequested = true;
+      this.sessionTimestamp = timestamp;
+      this.sessionCode = this.computePairCode(deviceId, timestamp);
+      this.log(`peer requested pairing first (${deviceId}) — confirm in dialog`);
+      return;
+    }
     this.pendingPairId = deviceId;
     this.pendingPairName = this.displayNameOf(deviceId);
     this.pendingPairTimestamp = timestamp;
@@ -447,7 +491,8 @@ struct Index {
     if (this.router === undefined) {
       return;
     }
-    this.router.requestPair(d.id);
+    const ts: number = Math.floor(Date.now() / 1000);
+    this.router.requestPair(d.id, ts);
     if (!this.requestedPairIds.includes(d.id)) {
       this.requestedPairIds = this.requestedPairIds.concat([d.id]);
     }
@@ -511,6 +556,11 @@ struct Index {
         }
       }
       this.log(`paired with ${deviceId} (cert=${peerCert.length > 0 ? 'stored' : 'unavailable'})`);
+    }
+    // 会话命中该设备 → 配对成功：提示并自动跳回「已连接设备」
+    if (this.sessionDeviceId === deviceId && this.sessionState !== 'idle' && this.sessionState !== 'failed') {
+      this.succeedSession();
+      this.log('pair success -> switch to connected devices');
     }
   }
 
@@ -581,6 +631,17 @@ struct Index {
           this.connectedDevices = this.connectedDevices.filter((d: DeviceItem) => d.id !== cid);
           this.connectedDevices = this.connectedDevices.concat([dev]);
           this.discoveredDevices = this.discoveredDevices.filter((d: DeviceItem) => d.id !== cid);
+          // 会话：连接阶段完成 → 已配对直接跳过去；未配对则弹配对确认
+          if (this.sessionState === 'connecting') {
+            if (this.isTrusted(cid)) {
+              this.sessionDeviceId = cid;
+              this.sessionName = event.deviceName ?? this.sessionName;
+              this.succeedSession();
+              this.log(`connected ${cid} (already paired) -> switch to connected devices`);
+            } else {
+              this.promptPairing(cid, event.deviceName ?? '');
+            }
+          }
         }
         this.log(`connected ${event.deviceId} role=${event.role}`);
         break;
@@ -591,6 +652,10 @@ struct Index {
         this.batteryItems = this.batteryItems.filter((b: BatteryItem) => b.deviceId !== did);
         // AP-4：断链卸载该设备插件（onDestroy 必达）
         this.pluginHost?.unloadForDevice(did);
+        // 会话中的设备断链 → 连接/配对失败（未建连就被拒时 native 也可能只派发 disconnected）
+        if (did !== '' && this.sessionDeviceId === did && this.sessionState !== 'idle') {
+          this.failSession('disconnected');
+        }
         this.log(`disconnected ${event.deviceId}`);
         break;
       }
@@ -639,6 +704,14 @@ struct Index {
         } else {
           this.log(`error ${event.errorCode}: ${em}`);
         }
+        // 会话进行中报错 → 直接判定失败（否则用户等到超时才看到结果）
+        if (this.sessionState === 'connecting' || this.sessionState === 'awaiting'
+          || this.sessionState === 'prompt') {
+          const eid: string = event.deviceId ?? '';
+          if (eid === '' || this.sessionDeviceId === '' || this.sessionDeviceId === eid) {
+            this.failSession(em.length > 0 ? em : `error ${event.errorCode}`);
+          }
+        }
         break;
       }
       default:
@@ -647,19 +720,13 @@ struct Index {
     }
   }
 
-  // 发现列表「连接」按钮：向对端发起 TCP（配对确认 UI 为 AP-1，当前由 PacketRouter 骨架自动接受）
+  // 发现列表「连接」按钮：走与手动连接相同的会话（连接中 → 配对弹窗 → 跳已连接）
   private connectDevice(d: DeviceItem): void {
     if (d.host === '' || d.tcpPort <= 0) {
       this.log('connect skipped: no address');
       return;
     }
-    this.log(`connectToPeer ${d.host}:${d.tcpPort}`);
-    try {
-      native.connectToPeer(d.host, d.tcpPort);
-      this.log('connectToPeer ok');
-    } catch (e) {
-      this.log('connectToPeer failed: ' + (e instanceof Error ? e.message : 'unknown'));
-    }
+    this.startSession(d.id, d.name, d.host, d.tcpPort);
   }
 
   // 连接列表「断开」按钮：先发 unpair {pair:false} 清除 KDE 配对记录再断开
@@ -687,15 +754,134 @@ struct Index {
     }, 200);
   }
 
-  // 手动连接（可选功能）：host:port 直连
+  // 手动连接（可选功能）：host:port 直连，与发现列表「连接」同一条会话状态机
   private manualConnect(host: string, port: number): void {
-    this.log(`manual connectToPeer ${host}:${port}`);
+    this.startSession('', `${host}:${port}`, host, port);
+  }
+
+  // ---- 连接/配对会话 ----
+
+  private isTrusted(deviceId: string): boolean {
+    return this.trustedDevices.some((t: TrustedDevice) => t.id === deviceId);
+  }
+
+  private clearSessionTimer(): void {
+    if (this.sessionTimerId !== -1) {
+      clearTimeout(this.sessionTimerId);
+      this.sessionTimerId = -1;
+    }
+  }
+
+  private armSessionTimer(ms: number, reason: string): void {
+    this.clearSessionTimer();
+    this.sessionTimerId = setTimeout((): void => {
+      this.sessionTimerId = -1;
+      this.failSession(reason);
+    }, ms);
+  }
+
+  // 统一入口：立即弹「连接中」模态（点击连接即时有反馈），连接完成后再切配对确认
+  private startSession(id: string, name: string, host: string, port: number): void {
+    if (this.sessionState === 'connecting' || this.sessionState === 'awaiting') {
+      this.log(`session busy (${this.sessionState}), ignore ${host}:${port}`);
+      return;
+    }
+    this.clearSessionTimer();
+    this.sessionDeviceId = id;
+    this.sessionName = name.length > 0 ? name : `${host}:${port}`;
+    this.sessionTarget = `${host}:${port}`;
+    this.sessionError = '';
+    this.sessionPeerRequested = false;
+    this.sessionTimestamp = Math.floor(Date.now() / 1000);
+    this.sessionState = 'connecting';
+    this.log(`connect ${this.sessionTarget}`);
     try {
       native.connectToPeer(host, port);
-      this.log('connectToPeer ok');
     } catch (e) {
-      this.log('connectToPeer failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.failSession('connectToPeer failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      return;
     }
+    this.armSessionTimer(CONNECT_TIMEOUT_MS, 'connect timeout');
+  }
+
+  // 已连接但未配对 → 弹配对确认（显示验证码，与对端同一 timestamp 计算）
+  private promptPairing(deviceId: string, name: string): void {
+    this.clearSessionTimer();
+    this.sessionDeviceId = deviceId;
+    if (name.length > 0) {
+      this.sessionName = name;
+    }
+    this.sessionTimestamp = Math.floor(Date.now() / 1000);
+    this.sessionCode = this.computePairCode(deviceId, this.sessionTimestamp);
+    this.sessionState = 'prompt';
+    this.log(`connected ${deviceId} — awaiting pair confirmation`);
+  }
+
+  // 弹窗「配对」：发 pair:true（若对端已先请求，本帧同时充当接受）
+  private confirmPairInSession(): void {
+    const id: string = this.sessionDeviceId;
+    if (id === '' || this.router === undefined) {
+      return;
+    }
+    this.router.requestPair(id, this.sessionTimestamp);
+    if (!this.requestedPairIds.includes(id)) {
+      this.requestedPairIds = this.requestedPairIds.concat([id]);
+    }
+    this.sessionState = 'awaiting';
+    this.armSessionTimer(PAIR_TIMEOUT_MS, 'pair not confirmed');
+  }
+
+  // 弹窗「取消」：仅关闭会话，保留已建立的连接（之后可从「已连接设备」再配对）
+  private cancelSession(): void {
+    this.clearSessionTimer();
+    const id: string = this.sessionDeviceId;
+    this.sessionState = 'idle';
+    this.sessionError = '';
+    this.sessionPeerRequested = false;
+    if (id !== '') {
+      this.requestedPairIds = this.requestedPairIds.filter((x: string) => x !== id);
+    }
+    this.log('connect/pair session cancelled by user');
+  }
+
+  private failSession(reason: string): void {
+    this.clearSessionTimer();
+    const id: string = this.sessionDeviceId;
+    this.sessionState = 'failed';
+    this.sessionError = reason;
+    if (id !== '') {
+      this.requestedPairIds = this.requestedPairIds.filter((x: string) => x !== id);
+    }
+    this.log(`session failed: ${reason}${id !== '' ? ' (' + id + ')' : ''}`);
+  }
+
+  private dismissSession(): void {
+    this.sessionState = 'idle';
+    this.sessionError = '';
+  }
+
+  // 成功：提示 + 自动跳回「已连接设备」分区
+  private succeedSession(): void {
+    this.clearSessionTimer();
+    const id: string = this.sessionDeviceId;
+    this.sessionState = 'idle';
+    this.sessionError = '';
+    this.deviceSection = 0;
+    if (id !== '') {
+      this.requestedPairIds = this.requestedPairIds.filter((x: string) => x !== id);
+    }
+    this.showNotice('ok');
+  }
+
+  private showNotice(kind: string): void {
+    this.sessionNotice = kind;
+    if (this.noticeTimerId !== -1) {
+      clearTimeout(this.noticeTimerId);
+    }
+    this.noticeTimerId = setTimeout((): void => {
+      this.noticeTimerId = -1;
+      this.sessionNotice = '';
+    }, NOTICE_MS);
   }
 
   private toPayloadDirection(v: string): PayloadDirection {
@@ -763,6 +949,24 @@ struct Index {
     return dir;
   }
 
+  // 文件名白名单清洗（CodeArts MSG58 §4）：native 的 settle() 只拦 ".."，
+  // 这里再去掉路径分隔符/前导点、限长，避免写入意外路径或隐藏文件。
+  private sanitizeFileName(raw: string, transferId: number): string {
+    let name: string = raw;
+    name = name.replace(new RegExp('/', 'g'), '_');
+    name = name.replace(new RegExp('\\\\', 'g'), '_');
+    while (name.startsWith('.')) {
+      name = name.substring(1);
+    }
+    if (name.length === 0) {
+      name = `transfer_${transferId}`;
+    }
+    if (name.length > 128) {
+      name = name.substring(0, 128);
+    }
+    return name;
+  }
+
   private markPayloadSettled(transferId: number): void {
     this.payloads = this.payloads.map((p: PayloadTransfer) => {
       const next: PayloadTransfer = {
@@ -786,7 +990,7 @@ struct Index {
       this.log('save failed: no host context');
       return;
     }
-    const name: string = p.fileName.length > 0 ? p.fileName : `transfer_${p.transferId}`;
+    const name: string = this.sanitizeFileName(p.fileName, p.transferId);
     const dest: string = `${dir}/${name}`;
     try {
       const ok: boolean = native.keepPayload(p.transferId, dest);
@@ -815,6 +1019,55 @@ struct Index {
       this.log(`payload cancel requested #${p.transferId}`);
     } catch (e) {
       this.log('cancelPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
+    }
+  }
+
+  // M2：选文件 → 复制进沙箱 → native.sendPayload（发送方向；进度走 payloadTransfer）
+  private async pickAndSendFile(): Promise<void> {
+    if (this.connectedDevices.length === 0) {
+      this.log('send file: no connected device');
+      return;
+    }
+    const target: DeviceItem = this.connectedDevices[0];
+    if (this.connectedDevices.length > 1) {
+      this.log(`send file: multiple devices, using ${target.name}`);
+    }
+    const hostCtx: Context | undefined = this.getUIContext().getHostContext();
+    if (hostCtx === undefined) {
+      this.log('send file: no host context');
+      return;
+    }
+    let uris: string[] = [];
+    try {
+      const docPicker: picker.DocumentViewPicker = new picker.DocumentViewPicker(hostCtx);
+      const options: picker.DocumentSelectOptions = { maxSelectNumber: 1 };
+      uris = await docPicker.select(options);
+    } catch (e) {
+      this.log('send file: picker cancelled/failed');
+      return;
+    }
+    if (uris.length === 0) {
+      return;
+    }
+    const srcUri: string = uris[0];
+    const fileName: string = srcUri.substring(srcUri.lastIndexOf('/') + 1);
+    const cachePath: string = `${hostCtx.cacheDir}/${fileName}`;
+    try {
+      // picker 返回的 URI 直接交给 native 读不到（沙箱外），先复制进 cacheDir
+      await fileIo.copyFile(srcUri, cachePath);
+    } catch (e) {
+      this.log('send file: copy into sandbox failed');
+      return;
+    }
+    try {
+      const body: SendShareBody = { filename: fileName };
+      const transferId: number = native.sendPayload(target.id, 'kdeconnect.share.request',
+        JSON.stringify(body), cachePath);
+      this.log(transferId > 0
+        ? `send file #${transferId}: ${fileName} -> ${target.name}`
+        : 'send file: sendPayload returned 0 (failed)');
+    } catch (e) {
+      this.log('sendPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
     }
   }
 
@@ -971,6 +1224,9 @@ struct Index {
                     },
                     onCancelPayload: (p: PayloadTransfer): void => {
                       this.cancelPayload(p);
+                    },
+                    onSendFile: (): void => {
+                      this.pickAndSendFile();
                     }
                   })
             }
