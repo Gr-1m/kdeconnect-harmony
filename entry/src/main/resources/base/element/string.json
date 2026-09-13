@@ -301,6 +301,14 @@
       "value": "Not paired"
     },
     {
+      "name": "perm_write_media_reason",
+      "value": "Save received files to your device"
+    },
+    {
+      "name": "perm_background_reason",
+      "value": "Keep device discovery and connection running in background"
+    },
+    {
       "name": "discovery_refresh",
       "value": "Refresh"
     },
@@ -321,8 +329,80 @@
       "value": "Cancel"
     },
     {
-      "name": "action_close",
-      "value": "Close"
+      "name": "action_send_file",
+      "value": "Send File"
+    },
+    {
+      "name": "action_send_file_desc",
+      "value": "Pick a file and send to the peer"
+    },
+    {
+      "name": "action_clipboard",
+      "value": "Clipboard"
+    },
+    {
+      "name": "action_clipboard_desc",
+      "value": "Share clipboard with the peer"
+    },
+    {
+      "name": "action_find_phone",
+      "value": "Find Phone"
+    },
+    {
+      "name": "action_find_phone_desc",
+      "value": "Ring and show a notice"
+    },
+    {
+      "name": "action_ring",
+      "value": "Ring"
+    },
+    {
+      "name": "action_ring_desc",
+      "value": "Make the peer ring"
+    },
+    {
+      "name": "action_battery",
+      "value": "Battery"
+    },
+    {
+      "name": "action_battery_desc",
+      "value": "Show peer battery state"
+    },
+    {
+      "name": "action_media",
+      "value": "Media"
+    },
+    {
+      "name": "action_media_desc",
+      "value": "Control peer media playback"
+    },
+    {
+      "name": "device_detail_section",
+      "value": "Device"
+    },
+    {
+      "name": "drawer_expand",
+      "value": "Expand"
+    },
+    {
+      "name": "drawer_collapse",
+      "value": "Collapse"
+    },
+    {
+      "name": "drawer_pick_device_hint",
+      "value": "No connected device. Open the menu to pick one."
+    },
+    {
+      "name": "settings_system_name_label",
+      "value": "System device name"
+    },
+    {
+      "name": "settings_use_system_name",
+      "value": "Use system name"
+    },
+    {
+      "name": "toast_not_implemented",
+      "value": "Not implemented yet"
     }
   ]
 }

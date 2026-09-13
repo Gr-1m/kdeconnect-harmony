@@ -289,6 +289,14 @@
       "value": "未配对"
     },
     {
+      "name": "perm_write_media_reason",
+      "value": "把接收到的文件保存到你的设备"
+    },
+    {
+      "name": "perm_background_reason",
+      "value": "保持设备发现与连接在后台运行"
+    },
+    {
       "name": "discovery_refresh",
       "value": "刷新"
     },
@@ -309,8 +317,80 @@
       "value": "取消"
     },
     {
-      "name": "action_close",
-      "value": "关闭"
+      "name": "action_send_file",
+      "value": "发送文件"
+    },
+    {
+      "name": "action_send_file_desc",
+      "value": "选择文件发送到对端"
+    },
+    {
+      "name": "action_clipboard",
+      "value": "剪贴板同步"
+    },
+    {
+      "name": "action_clipboard_desc",
+      "value": "与对端共享剪贴板"
+    },
+    {
+      "name": "action_find_phone",
+      "value": "查找手机"
+    },
+    {
+      "name": "action_find_phone_desc",
+      "value": "响铃并弹出提示"
+    },
+    {
+      "name": "action_ring",
+      "value": "响铃"
+    },
+    {
+      "name": "action_ring_desc",
+      "value": "让对端设备发声"
+    },
+    {
+      "name": "action_battery",
+      "value": "电量"
+    },
+    {
+      "name": "action_battery_desc",
+      "value": "查看对端电量状态"
+    },
+    {
+      "name": "action_media",
+      "value": "媒体控制"
+    },
+    {
+      "name": "action_media_desc",
+      "value": "控制对端播放"
+    },
+    {
+      "name": "device_detail_section",
+      "value": "设备"
+    },
+    {
+      "name": "drawer_expand",
+      "value": "展开"
+    },
+    {
+      "name": "drawer_collapse",
+      "value": "收起"
+    },
+    {
+      "name": "drawer_pick_device_hint",
+      "value": "暂无已连接设备，从左上角菜单选择"
+    },
+    {
+      "name": "settings_system_name_label",
+      "value": "系统设备名称"
+    },
+    {
+      "name": "settings_use_system_name",
+      "value": "使用系统名称"
+    },
+    {
+      "name": "toast_not_implemented",
+      "value": "功能开发中"
     }
   ]
 }

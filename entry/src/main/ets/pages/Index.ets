@@ -2,7 +2,7 @@ import native from 'libkdeconnect_napi.so';
 import { NetConfig, CertPair, NetEvent } from 'libkdeconnect_napi.so';
 import { util } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
-import { Context } from '@kit.AbilityKit';
+import { Context, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { display } from '@kit.ArkUI';
 import { connection } from '@kit.NetworkKit';
@@ -21,7 +21,7 @@ import { DeviceItem, RememberedDevice, BatteryItem } from '../model/DeviceModels
 import { PayloadTransfer, PayloadDirection, PayloadState } from '../model/PayloadModels';
 import { TrustedDevice } from '../model/TrustModels';
 import { TrustStore } from '../common/TrustStore';
-import { colorModeOf, languageOf, LANG_SYSTEM, THEME_FOLLOW_SYSTEM } from '../common/AppSettings';
+import { colorModeOf, languageOf, LANG_SYSTEM, THEME_FOLLOW_SYSTEM, systemDeviceName } from '../common/AppSettings';
 import { DevicesTab } from '../components/DevicesTab';
 import { FilesTab } from '../components/FilesTab';
 import { SettingsTab } from '../components/SettingsTab';
@@ -64,6 +64,8 @@ const CONNECT_TIMEOUT_MS: number = 20000;
 const PAIR_TIMEOUT_MS: number = 45000;
 // 成功提示停留时间
 const NOTICE_MS: number = 2500;
+// 抽屉收起态最多显示的已连接设备数（超出才出现「展开 ⌄」）
+const DRAWER_DEVICE_CAP: number = 2;
 
 @Entry
 @Component
@@ -72,6 +74,8 @@ struct Index {
   @State logText: string = '';
   @State currentTab: number = 0;
   @State deviceName: string = DEFAULT_DEVICE_NAME;
+  // 系统设备名称（只读展示 + 设置页「使用系统名称」）
+  @State systemName: string = '';
   @State themeMode: number = THEME_FOLLOW_SYSTEM;
   @State language: string = LANG_SYSTEM;
   // 宽屏（平板/折叠展开）判定：>=600vp 走常驻侧栏，否则走抽屉式侧栏
@@ -97,11 +101,16 @@ struct Index {
   @State sessionPeerRequested: boolean = false;
   // 顶部临时提示（连接中/连接成功/连接失败/配对成功…）
   @State noticeKey: string = '';
-  @State noticeDetail: string = '';
-  @State noticeError: boolean = false;
   // 设备 Tab 分区（0 已连接 / 1 发现 / 2 记住 / 3 手动）：@Link 给 DevicesTab，
   // 配对成功后由本页切回「已连接设备」
   @State deviceSection: number = 0;
+  // 手机窄屏侧栏抽屉：**必须在根 Stack（全屏）渲染**——放在内容区会因 padding(16) 内缩，
+  // 表现为「面板不贴边 + 遮罩是内缩的直角暗层」（用户实测反馈）。
+  @State drawerOpen: boolean = false;
+  // 抽屉里「展开 ⌄」只用于**已连接设备列表**（对齐参考稿「我的产品」：先露前几个，点开看全部）
+  @State drawerExpanded: boolean = false;
+  // 抽屉里选中的设备：页面据此展示「设备信息 + 大按钮」（未选中时仍显示已连接列表）
+  @State selectedDeviceId: string = '';
   private sessionTimerId: number = -1;
   private noticeTimerId: number = -1;
   // 局域网发现（MSG73/MSG74）：网络变化时触发 native 重新广播 identity
@@ -157,7 +166,12 @@ struct Index {
       deviceId = String(await pref.get('deviceId', ''));
       certPem = String(await pref.get('certPem', ''));
       keyPem = String(await pref.get('keyPem', ''));
-      this.deviceName = String(await pref.get('deviceName', DEFAULT_DEVICE_NAME));
+      // 设备名称：用户改过就用用户的；没改过 → 读**系统设备名称**（设置→关于本机→设备名称，回退市场名/型号）
+      this.deviceName = String(await pref.get('deviceName', ''));
+      this.systemName = systemDeviceName(ctx);
+      if (this.deviceName.length === 0) {
+        this.deviceName = this.systemName;
+      }
       this.themeMode = parseInt(String(await pref.get('themeMode', '0')), 10) || THEME_FOLLOW_SYSTEM;
       this.language = String(await pref.get('language', LANG_SYSTEM));
       // AP-3：信任设备（含旧的 rememberedDevices 一次性迁移）
@@ -354,6 +368,14 @@ struct Index {
       // ignore
     }
     this.startNative();
+  }
+
+  // 设置页「使用系统名称」：把设备名恢复为系统设备名称（重新读取一次，避免系统名被改过）
+  private useSystemDeviceName(): void {
+    const name: string = systemDeviceName(this.getUIContext().getHostContext());
+    this.systemName = name;
+    this.log(`use system device name: ${name}`);
+    this.renameDevice(name);
   }
 
   private applyTheme(mode: number, persist: boolean): void {
@@ -672,6 +694,8 @@ struct Index {
       case 'connected': {
         const cid: string = event.deviceId ?? '';
         if (cid !== '') {
+          // 真值模型（MSG85）：对端拨入即视为连接，一律进「已连接设备」——
+          // 不做抑制/拒连，避免「桌面显示已连接、本机列表为空」的两端不一致。
           const dev: DeviceItem = {
             id: cid,
             name: event.deviceName ?? cid,
@@ -680,25 +704,21 @@ struct Index {
             deviceType: '',
             online: true
           };
-          // 同一设备可能重复触发 connected，先去重再追加。
-          // 需求 2（用户 miaoshu.txt）：**保留发现列表里的条目**（原实现会把它移走 ⇒ 用户看到"一闪而过"），
-          // 两个列表是不同维度（已连接态 / 发现态），并存更符合 KDE/Android 语义。
+          // ② 同一设备可能重复触发 connected，先去重再追加。
+          //    需求 2：**保留发现列表里的条目**（两列表并存）。
           this.connectedDevices = this.connectedDevices.filter((d: DeviceItem) => d.id !== cid);
           this.connectedDevices = this.connectedDevices.concat([dev]);
-          // 插件装载兜底（MSG81）：native 目前把 kdeconnect.identity 帧内部消化后**不下发**
-          // packetReceived（net_stack.cpp:725 `continue`）⇒ PacketRouter.handleIdentity /
-          // onPeerCapabilities 永不触发 ⇒ 插件从不装载，ping/battery/clipboard/findmyphone/share
-          // 全部落 "unhandled packet type"。这里在 connected 时若该设备还没装载插件，就按
-          // 「对端 caps 未知 = 全支持」装载（PluginHost.matches 语义），保证配对后功能可用；
-          // native 下发 identity 后真实 caps 会再次 loadForDevice 覆盖（loadForDevice 幂等）。
+          // ③ 插件装载兜底（MSG81）：native 不派发 identity 帧时 caps 不可知 → 按「全支持」装载
           if (this.pluginHost !== undefined && this.pluginHost.pluginsFor(cid).length === 0) {
             this.loadPlugins(cid, [], []);
             this.log(`plugins loaded for ${cid} with unknown caps (fallback)`);
           }
-          // 连接反馈（需求 4.1/4.2）：只在「本侧刚发起连接」时提示；
-          // **不再自动配对**（需求 4.3：配对统一由「已连接设备」行的「配对」按钮触发）
-          if (this.sessionState === 'connecting' && this.sessionDeviceId === cid) {
+          // ④ 本侧发起连接的反馈（手动连接时发起前不知道 deviceId，这里按会话状态收口）
+          if (this.sessionState === 'connecting'
+            && (this.sessionDeviceId === cid || this.sessionDeviceId === '')) {
             this.clearSessionTimer();
+            this.sessionDeviceId = cid;
+            this.sessionName = event.deviceName ?? this.sessionName;
             this.sessionState = 'idle';
             this.showNotice('connected', event.deviceName ?? this.sessionName, false);
             this.log(`connected ${cid} -> notice 连接成功`);
@@ -711,23 +731,29 @@ struct Index {
         const did: string = event.deviceId ?? '';
         this.connectedDevices = this.connectedDevices.filter((d: DeviceItem) => d.id !== did);
         this.batteryItems = this.batteryItems.filter((b: BatteryItem) => b.deviceId !== did);
+        // 断链即清「等待确认」态（否则行上会残留"等待确认"徽标）
+        this.requestedPairIds = this.requestedPairIds.filter((x: string) => x !== did);
         // AP-4：断链卸载该设备插件（onDestroy 必达）
         this.pluginHost?.unloadForDevice(did);
-        // 会话中的设备断链 → 连接/配对失败（未建连就被拒时 native 也可能只派发 disconnected）
+        // 会话中的设备断链 → 连接/配对失败
         if (did !== '' && this.sessionDeviceId === did) {
           if (this.sessionState === 'connecting') {
-            this.failConnect('disconnected');
+            this.failConnect('disconnected', Index.ERR_DISCONNECTED);
           } else if (this.sessionState === 'awaiting' || this.sessionState === 'prompt') {
-            this.failPairing('disconnected');
+            this.failPairing('disconnected', Index.ERR_DISCONNECTED);
           }
         }
         this.log(`disconnected ${event.deviceId}`);
         break;
       }
       case 'deviceLost': {
-        // CodeArts MSG78 §2 裁决：超时只置离线（灰显），**不从列表删除**——
-        // 对端只在启动时广播，删条会让「发现设备」页在 60s 后永远为空。
+        // CodeArts MSG78 §2 裁决：超时只置离线（灰显），**不从列表删除**。
+        // 但若该设备当前仍是连接态，则不标离线（避免"已连接却显示离线"的状态矛盾）。
         const lid: string = event.deviceId ?? '';
+        if (this.connectedDevices.some((d: DeviceItem) => d.id === lid)) {
+          this.log(`lost ${lid} ignored (still connected)`);
+          break;
+        }
         this.discoveredDevices = this.discoveredDevices.map(
           (d: DeviceItem) => d.id === lid ? { id: d.id, name: d.name, host: d.host, tcpPort: d.tcpPort, deviceType: d.deviceType, online: false } : d);
         this.log(`lost ${event.deviceId} (kept in list as offline)`);
@@ -772,13 +798,14 @@ struct Index {
         } else {
           this.log(`error ${event.errorCode}: ${em}`);
         }
-        // 会话进行中报错 → 直接判定失败（否则用户等到超时才看到结果）
+        // 会话进行中报错 → 直接判定失败（提示只给错误码，明细已在日志里）
         const eid: string = event.deviceId ?? '';
         if (eid === '' || this.sessionDeviceId === '' || this.sessionDeviceId === eid) {
+          const code: number = event.errorCode ?? Index.ERR_OTHER;
           if (this.sessionState === 'connecting') {
-            this.failConnect(em.length > 0 ? em : `error ${event.errorCode}`);
+            this.failConnect(em.length > 0 ? em : `error ${code}`, code);
           } else if (this.sessionState === 'awaiting' || this.sessionState === 'prompt') {
-            this.failPairing(em.length > 0 ? em : `error ${event.errorCode}`);
+            this.failPairing(em.length > 0 ? em : `error ${code}`, code);
           }
         }
         break;
@@ -789,31 +816,11 @@ struct Index {
     }
   }
 
-  // 发现列表「连接」按钮：走与手动连接相同的会话（连接中 → 配对弹窗 → 跳已连接）
-  private connectDevice(d: DeviceItem): void {
-    if (d.host === '' || d.tcpPort <= 0) {
-      this.log('connect skipped: no address');
-      return;
-    }
-    this.startSession(d.id, d.name, d.host, d.tcpPort);
-  }
-
-  // 连接列表「断开」按钮：**只断开连接，保留配对状态**（用户裁决 CodeArts MSG69/MSG71 §2）
-  private disconnectDevice(d: DeviceItem): void {
-    this.log(`disconnect ${d.id} (keep pairing)`);
-    try {
-      native.disconnect(d.id);
-      this.log('disconnect ok');
-    } catch (e) {
-      this.log('disconnect failed: ' + (e instanceof Error ? e.message : 'unknown'));
-    }
-  }
-
-  // 「解除配对」按钮：unpair {pair:false} + 断开 + 从记住列表移除。
-  // 注：AGENTS.md 记录过「对 KDE 必须先发 unpair 再 disconnect，否则桌面残留配对态、
-  // 重连报 pairing timed out」——该语义现在归到本方法，不要再塞回「断开」。
+  // 「解除配对」按钮（已连接设备行/发现设备行共用）：发 unpair {pair:false} + 本侧标记未配对。
+  // 用户 2026-09-13 裁决：**链路不用管**——KDE 收到 unpair 后自行处理（可能断链、可能重拨），
+  // 我们不再主动 disconnect，也不做任何抑制；`disconnected` 事件到了就把行从列表移除。
   private unpairDevice(d: DeviceItem): void {
-    this.log(`unpair ${d.id} (unpair first, then disconnect)`);
+    this.log(`unpair ${d.id}`);
     const unpairBody: PairRequestBody = { pair: false };
     const unpairPkt: PairRequestPacket = { id: Date.now(), type: 'kdeconnect.pair', body: unpairBody };
     try {
@@ -824,15 +831,6 @@ struct Index {
     }
     this.handleUnpaired(d.id);
     this.router?.forgetPeer(d.id);
-    // 短延迟确保 unpair 帧先发出（sendPacket 为同步直写内核缓冲区，close 后内核仍会发尽）
-    setTimeout(() => {
-      try {
-        native.disconnect(d.id);
-        this.log('disconnect after unpair ok');
-      } catch (e) {
-        this.log('disconnect after unpair failed: ' + (e instanceof Error ? e.message : 'unknown'));
-      }
-    }, 200);
   }
 
   // 手动连接（可选功能）：host:port 直连，与发现列表「连接」同一条会话状态机
@@ -843,8 +841,15 @@ struct Index {
   // ---- 连接/配对会话 ----
 
   private isTrusted(deviceId: string): boolean {
-    return this.trustedDevices.some((t: TrustedDevice) => t.id === deviceId);
+    return this.trustedDevices.some((t: TrustedDevice) => t.id === deviceId && t.paired);
   }
+
+  // 失败码（上线口径：提示只给错误码，明细进日志）
+  private static readonly ERR_TIMEOUT: number = 1;
+  private static readonly ERR_DISCONNECTED: number = 2;
+  private static readonly ERR_SEND: number = 3;
+  private static readonly ERR_ADDRESS: number = 4;
+  private static readonly ERR_OTHER: number = 0;
 
   private clearSessionTimer(): void {
     if (this.sessionTimerId !== -1) {
@@ -853,23 +858,27 @@ struct Index {
     }
   }
 
-  // stage: 'connect' → 连接超时（toast）；'pair' → 配对超时（toast + 收弹窗）
-  private armSessionTimer(ms: number, reason: string, stage: string): void {
+  // stage: 'connect' → 连接超时；'pair' → 配对超时
+  private armSessionTimer(ms: number, reason: string, stage: string, code: number): void {
     this.clearSessionTimer();
     this.sessionTimerId = setTimeout((): void => {
       this.sessionTimerId = -1;
       if (stage === 'pair') {
-        this.failPairing(reason);
+        this.failPairing(reason, code);
       } else {
-        this.failConnect(reason);
+        this.failConnect(reason, code);
       }
     }, ms);
   }
 
-  // 统一入口（需求 4.1/4.2）：**不弹模态**，只给顶部提示；设备连上后自然出现在「已连接设备」
+  // 统一入口（需求 4.1/4.2）：**不弹模态**，只给提示；设备连上后自然出现在「已连接设备」
   private startSession(id: string, name: string, host: string, port: number): void {
     if (this.sessionState === 'connecting') {
       this.log(`session busy (connecting), ignore ${host}:${port}`);
+      return;
+    }
+    if (host === '' || port <= 0) {
+      this.failConnect('no address', Index.ERR_ADDRESS);
       return;
     }
     this.clearSessionTimer();
@@ -882,18 +891,18 @@ struct Index {
     try {
       native.connectToPeer(host, port);
     } catch (e) {
-      this.failConnect('connectToPeer failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.failConnect('connectToPeer failed: ' + (e instanceof Error ? e.message : 'unknown'), Index.ERR_OTHER);
       return;
     }
-    this.armSessionTimer(CONNECT_TIMEOUT_MS, 'connect timeout', 'connect');
+    this.armSessionTimer(CONNECT_TIMEOUT_MS, 'connect timeout', 'connect', Index.ERR_TIMEOUT);
   }
 
-  // 连接失败（需求 4.1）：提示失败原因；发现列表条目保留（后面由 native 的 lost 置离线）
-  private failConnect(reason: string): void {
+  // 连接失败（需求 4.1 + 上线口径）：UI 只给错误码，明细写日志
+  private failConnect(reason: string, code: number): void {
     this.clearSessionTimer();
     this.sessionState = 'idle';
-    this.showNotice('failed', reason, true);
-    this.log(`connect failed: ${reason}`);
+    this.showNotice('failed', `${code}`, true);
+    this.log(`connect failed: ${reason} (code=${code})`);
   }
 
   // 打开配对确认弹窗（需求 4.3：配对统一在「已连接设备」里点「配对」，弹窗显示验证码）
@@ -928,11 +937,12 @@ struct Index {
     if (!this.sendPairRequest(id)) {
       this.sessionState = 'idle';
       this.sessionCode = '';
-      this.showNotice('failed', 'pair request not sent', true);
+      this.showNotice('pairFailed', `${Index.ERR_SEND}`, true);
+      this.log('pairing failed: pair request not sent (code=3)');
       return;
     }
     this.sessionState = 'awaiting';
-    this.armSessionTimer(PAIR_TIMEOUT_MS, 'pair not confirmed', 'pair');
+    this.armSessionTimer(PAIR_TIMEOUT_MS, 'pair not confirmed', 'pair', Index.ERR_TIMEOUT);
   }
 
   // 弹窗取消/拒绝：本侧发起 → 仅收起弹窗；对端请求 → 回 {pair:false}
@@ -966,8 +976,9 @@ struct Index {
     return ok;
   }
 
-  // 配对/连接失败（awaiting 阶段）
-  private failPairing(reason: string): void {
+  // 配对失败/超时：**同时把该设备的配对态置为未配对**（用户实测反馈：
+  // 对端拒绝或超时后仍显示「已配对」是错误的）——状态必须反映真实结果。
+  private failPairing(reason: string, code: number): void {
     this.clearSessionTimer();
     const id: string = this.sessionDeviceId;
     this.sessionState = 'idle';
@@ -975,9 +986,38 @@ struct Index {
     this.sessionPeerRequested = false;
     if (id !== '') {
       this.requestedPairIds = this.requestedPairIds.filter((x: string) => x !== id);
+      this.setPairedFlag(id, false);
     }
-    this.showNotice('failed', reason, true);
-    this.log(`pairing failed: ${reason}${id !== '' ? ' (' + id + ')' : ''}`);
+    this.showNotice('pairFailed', `${code}`, true);
+    this.log(`pairing failed: ${reason} (code=${code})${id !== '' ? ' (' + id + ')' : ''}`);
+  }
+
+  // 更新某设备的配对态（同时刷新记住列表 + 持久化）
+  private setPairedFlag(deviceId: string, paired: boolean): void {
+    let changed: boolean = false;
+    this.trustedDevices = this.trustedDevices.map((t: TrustedDevice) => {
+      if (t.id !== deviceId || t.paired === paired) {
+        return t;
+      }
+      changed = true;
+      const next: TrustedDevice = {
+        id: t.id,
+        name: t.name,
+        certPem: t.certPem,
+        pairedAt: paired ? Date.now() : t.pairedAt,
+        paired: paired
+      };
+      return next;
+    });
+    if (!changed) {
+      return;
+    }
+    this.rememberedDevices = this.trustedDevices.map((t: TrustedDevice) => {
+      const r: RememberedDevice = { id: t.id, name: t.name, paired: t.paired };
+      return r;
+    });
+    this.persistTrust();
+    this.log(`state: ${deviceId} paired=${paired}`);
   }
 
   // 成功：提示 + 自动跳回「已连接设备」
@@ -989,49 +1029,92 @@ struct Index {
     this.sessionPeerRequested = false;
     this.deviceSection = 0;
     if (id !== '') {
+      // 配对成功后顺带选中该设备 → 直接落到它的「功能页」（设备信息 + 大按钮），
+      // 不再依赖用户之前是否在抽屉里选过设备
+      this.selectedDeviceId = id;
       this.requestedPairIds = this.requestedPairIds.filter((x: string) => x !== id);
     }
     this.showNotice('paired', '', false);
   }
 
-  // 顶部提示：key ∈ connecting|connected|failed|paired（dupMs=0 表示不自动消失）
+  // 提示（需求 4.1/4.2 + 用户反馈）：用**系统 toast**（底部居中、系统层级）；
+  // 失败只给错误码，明细只进日志（上线口径）。
+  // 注意：toast 的 message 用**纯字符串**（带格式参数的 $r(...) 会被 PromptAction 拒绝，实测 "toast failed (4)"）。
   private showNotice(key: string, detail: string, isError: boolean, dupMs: number = 0): void {
     this.noticeKey = key;
-    this.noticeDetail = detail;
-    this.noticeError = isError;
-    if (this.noticeTimerId !== -1) {
-      clearTimeout(this.noticeTimerId);
-      this.noticeTimerId = -1;
+    let message: string = this.resText($r('app.string.connect_failed').id);
+    if (key === 'connecting') {
+      message = `${this.resText($r('app.string.connect_connecting').id)} ${detail}`;
+    } else if (key === 'connected') {
+      message = `${this.resText($r('app.string.connect_success').id)} ${detail}`;
+    } else if (key === 'paired') {
+      message = this.resText($r('app.string.pair_success').id);
+    } else if (key === 'pairFailed') {
+      message = `${this.resText($r('app.string.pair_failed').id)} ${detail}`;
+    } else {
+      message = `${this.resText($r('app.string.connect_failed').id)} ${detail}`;
     }
-    const ms: number = dupMs > 0 ? dupMs : NOTICE_MS;
-    this.noticeTimerId = setTimeout((): void => {
-      this.noticeTimerId = -1;
-      this.noticeKey = '';
-      this.noticeDetail = '';
-    }, ms);
+    const ms: number = dupMs > 0 ? Math.min(dupMs, 10000) : NOTICE_MS;
+    try {
+      this.getUIContext().getPromptAction().showToast({
+        message: message,
+        duration: ms,
+        bottom: '96vp'
+      });
+      this.log(`toast: ${message}`);
+    } catch (e) {
+      this.log('toast failed: ' + (e instanceof Error ? e.message : 'unknown'));
+    }
+  }
+
+  // 同步取本地化文案（用于 toast 拼接）
+  private resText(resId: number): string {
+    try {
+      const hostCtx: Context | undefined = this.getUIContext().getHostContext();
+      if (hostCtx === undefined) {
+        return '';
+      }
+      return hostCtx.resourceManager.getStringSync(resId);
+    } catch (e) {
+      return '';
+    }
   }
 
   private clearNotice(): void {
-    if (this.noticeTimerId !== -1) {
-      clearTimeout(this.noticeTimerId);
-      this.noticeTimerId = -1;
-    }
     this.noticeKey = '';
-    this.noticeDetail = '';
   }
 
-  // 顶部提示文案（noticeKey → 资源）
-  private noticeTitle(): ResourceStr {
-    if (this.noticeKey === 'connecting') {
-      return $r('app.string.connect_connecting');
+  // 设备详情页的大按钮目前只做占位（用户要求：功能暂不实现，先保留版式）
+  private toastPlaceholder(key: string): void {
+    const base: string = this.resText($r('app.string.toast_not_implemented').id);
+    this.toastText(`${base}: ${key}`);
+  }
+
+  // 通用 toast（纯字符串；带格式参数的 $r(...) 会被 PromptAction 拒绝）
+  private toastText(message: string): void {
+    try {
+      this.getUIContext().getPromptAction().showToast({
+        message: message,
+        duration: NOTICE_MS,
+        bottom: '96vp'
+      });
+      this.log(`toast: ${message}`);
+    } catch (e) {
+      this.log('toast failed: ' + (e instanceof Error ? e.message : 'unknown'));
     }
-    if (this.noticeKey === 'connected') {
-      return $r('app.string.connect_success');
+  }
+
+  // 点设备行（发现页 / 已连接列表 / 抽屉）→ 回到该设备的「功能页」（设备信息 + 大按钮）。
+  // 未连接的设备（如发现页里离线条目）只提示离线，不改分区，避免落到一个空的详情页。
+  private openDeviceDetail(d: DeviceItem): void {
+    const online: boolean = this.connectedDevices.some((x: DeviceItem) => x.id === d.id);
+    if (!online) {
+      this.toastText(this.resText($r('app.string.device_offline').id));
+      return;
     }
-    if (this.noticeKey === 'paired') {
-      return $r('app.string.pair_success');
-    }
-    return $r('app.string.connect_failed');
+    this.selectedDeviceId = d.id;
+    this.deviceSection = 0;
+    this.log(`open device detail: ${d.id}`);
   }
 
   private toPayloadDirection(v: string): PayloadDirection {
@@ -1134,7 +1217,9 @@ struct Index {
     });
   }
 
-  private savePayload(p: PayloadTransfer): void {
+  // 保存接收到的文件。用户反馈「APP 从不请求权限」⇒ 这里按文件类型**运行时申请**对应媒体写权限
+  // （user_grant，会弹系统权限框），拿到后再调 native.keepPayload（真实沙箱路径，非 URI）。
+  private async savePayload(p: PayloadTransfer): Promise<void> {
     const dir: string = this.ensureKdcDir();
     if (dir === '') {
       this.log('save failed: no host context');
@@ -1142,6 +1227,11 @@ struct Index {
     }
     const name: string = this.sanitizeFileName(p.fileName, p.transferId);
     const dest: string = `${dir}/${name}`;
+    const granted: boolean = await this.ensureWritePermission(name);
+    if (!granted) {
+      this.log(`save aborted: write permission denied for ${name}`);
+      return;
+    }
     try {
       const ok: boolean = native.keepPayload(p.transferId, dest);
       this.log(ok ? `saved -> ${dest}` : 'keepPayload failed');
@@ -1150,6 +1240,50 @@ struct Index {
       }
     } catch (e) {
       this.log('keepPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
+    }
+  }
+
+  // 按扩展名映射需要申请的写入权限（无匹配则不需要权限 → 直接放行）
+  private writePermissionFor(fileName: string): string {
+    const lower: string = fileName.toLowerCase();
+    const imageVideo: string[] = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.heic', '.mp4', '.mov', '.mkv', '.webm', '.3gp'];
+    const audio: string[] = ['.mp3', '.wav', '.flac', '.aac', '.m4a', '.ogg', '.opus', '.amr'];
+    for (const ext of imageVideo) {
+      if (lower.endsWith(ext)) {
+        return 'ohos.permission.WRITE_IMAGEVIDEO';
+      }
+    }
+    for (const ext of audio) {
+      if (lower.endsWith(ext)) {
+        return 'ohos.permission.WRITE_AUDIO';
+      }
+    }
+    return '';
+  }
+
+  private async ensureWritePermission(fileName: string): Promise<boolean> {
+    const permName: string = this.writePermissionFor(fileName);
+    if (permName === '') {
+      return true;
+    }
+    try {
+      const hostCtx: Context | undefined = this.getUIContext().getHostContext();
+      if (hostCtx === undefined) {
+        return true;
+      }
+      const perms: Permissions[] = permName === 'ohos.permission.WRITE_IMAGEVIDEO'
+        ? ['ohos.permission.WRITE_IMAGEVIDEO']
+        : ['ohos.permission.WRITE_AUDIO'];
+      const atManager: abilityAccessCtrl.AtManager = abilityAccessCtrl.createAtManager();
+      const result = await atManager.requestPermissionsFromUser(hostCtx, perms);
+      const codes: number[] = result.authResults;
+      const granted: boolean = codes.length > 0 && codes[0] === 0;
+      this.log(`permission ${permName}: granted=${granted}`);
+      return granted;
+    } catch (e) {
+      this.log('permission request failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      // 申请失败（如模拟器不支持）不阻断保存，交给 keepPayload 自行判定
+      return true;
     }
   }
 
@@ -1253,22 +1387,282 @@ struct Index {
     }
   }
 
+  // 底栏图标：名字全部取自 SDK 的 sys.symbol 资源表
+  // （`ets-loader/sysResource.js` 的 symbol 段，已逐个核对存在，勿凭记忆猜名字）
+  private tabIcon(index: number): Resource {
+    if (index === 0) {
+      return $r('sys.symbol.house');
+    }
+    if (index === 1) {
+      return $r('sys.symbol.folder');
+    }
+    if (index === 2) {
+      return $r('sys.symbol.gearshape');
+    }
+    return $r('sys.symbol.text_alignleft');
+  }
+
   // 底部页签（自绘，供 HdsTabs 作 CustomBuilder 用）：整条悬浮胶囊由 HdsTabs 提供，
   // 激活态只做「变色 + 内缩半透明高亮」，不加边框/分隔线，视觉上保持一整个胶囊。
+  // 版式对齐参考稿（我的华为底栏）：**图标在上、文字在下**。
   @Builder
-  tabBuilder(index: number) {
-    Column() {
+  tabBuilder(index: number) {    Column({ space: 2 }) {
+      SymbolGlyph(this.tabIcon(index))
+        .fontSize(20)
+        .fontColor([this.currentTab === index ? $r('app.color.accent_text') : $r('app.color.text_secondary')])
       Text(this.tabs[index].label)
-        .fontSize(13)
-        .fontWeight(this.currentTab === index ? FontWeight.Bold : FontWeight.Normal)
+        .fontSize(11)
+        .fontWeight(this.currentTab === index ? FontWeight.Medium : FontWeight.Normal)
         .fontColor(this.currentTab === index ? $r('app.color.accent_text') : $r('app.color.text_secondary'))
         .maxLines(1)
     }
     .width('100%')
     .margin({ left: 4, right: 4 })
-    .padding({ top: 6, bottom: 6 })
+    .padding({ top: 4, bottom: 4 })
     .borderRadius(16)
     .backgroundColor(this.currentTab === index ? $r('app.color.accent_soft') : Color.Transparent)
+  }
+
+  // 汉堡按钮（三条横线自绘，不依赖资源）：放在标题旁边（对齐参考稿）
+  @Builder
+  menuButton() {
+    Column({ space: 4 }) {
+      Row()
+        .width(18)
+        .height(2)
+        .borderRadius(1)
+        .backgroundColor($r('app.color.text_primary'))
+      Row()
+        .width(18)
+        .height(2)
+        .borderRadius(1)
+        .backgroundColor($r('app.color.text_primary'))
+      Row()
+        .width(18)
+        .height(2)
+        .borderRadius(1)
+        .backgroundColor($r('app.color.text_primary'))
+    }
+    .padding({ left: 8, right: 8, top: 10, bottom: 10 })
+    .borderRadius(10)
+    .backgroundColor($r('app.color.chip_bg'))
+    .onClick(() => {
+      this.openDrawer();
+    })
+  }
+
+  // ---- 手机侧栏抽屉（全屏渲染；iOS 观感：面板左贴边滑入 + 背景浅色变暗淡入） ----
+
+  private openDrawer(): void {
+    animateTo({ duration: 280, curve: Curve.EaseOut }, () => {
+      this.drawerOpen = true;
+    });
+  }
+
+  private closeDrawer(): void {
+    animateTo({ duration: 220, curve: Curve.EaseIn }, () => {
+      this.drawerOpen = false;
+    });
+  }
+
+  private pickDrawerSection(index: number): void {
+    this.deviceSection = index;
+    this.closeDrawer();
+  }
+
+  private isPairedId(deviceId: string): boolean {
+    return this.rememberedDevices.some((r: RememberedDevice) => r.id === deviceId && r.paired);
+  }
+
+  // 抽屉里实际渲染的已连接设备：收起态只取前 drawerDeviceCap 台，展开态全部
+  private visibleDrawerDevices(): DeviceItem[] {
+    if (this.drawerExpanded || this.connectedDevices.length <= DRAWER_DEVICE_CAP) {
+      return this.connectedDevices;
+    }
+    return this.connectedDevices.slice(0, DRAWER_DEVICE_CAP);
+  }
+
+  // 抽屉里的设备行（对齐参考稿「我的产品」列表：方图 + 名称 + 副标题 + 状态标签，
+  // 选中行整行高亮）。点击 = 选中该设备并收起抽屉，页面随即展示该设备详情 + 大按钮。
+  @Builder
+  drawerDeviceRow(d: DeviceItem) {
+    Row({ space: 12 }) {
+      Column() {
+        SymbolGlyph($r('sys.symbol.computer'))
+          .fontSize(22)
+          .fontColor([$r('app.color.text_primary')])
+      }
+      .width(44)
+      .height(44)
+      .borderRadius(12)
+      .backgroundColor($r('app.color.chip_bg'))
+      .justifyContent(FlexAlign.Center)
+
+      Column({ space: 2 }) {
+        Text(d.name)
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(d.id)
+          .fontSize(10)
+          .fontColor($r('app.color.text_muted'))
+          .fontFamily('monospace')
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
+      Text(this.isPairedId(d.id) ? $r('app.string.remembered_hint') : $r('app.string.remembered_unpaired'))
+        .fontSize(10)
+        .fontColor(this.isPairedId(d.id) ? $r('app.color.dot_remembered') : $r('app.color.text_muted'))
+        .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+        .borderRadius(999)
+        .backgroundColor($r('app.color.chip_bg'))
+    }
+    .width('100%')
+    .padding({ left: 10, right: 10, top: 8, bottom: 8 })
+    .borderRadius(14)
+    .backgroundColor(this.selectedDeviceId === d.id ? $r('app.color.accent_soft') : Color.Transparent)
+    .onClick(() => {
+      // 必须走 openDeviceDetail：它同时负责「选中设备 + 切到已连接设备分区（功能页）」。
+      // 原来只置 selectedDeviceId，若当前停在发现/记忆/手动分区，点完页面不变 → 用户反馈"点了没反应"
+      this.openDeviceDetail(d);
+      this.closeDrawer();
+    })
+  }
+
+  // 抽屉里「展开 ⌄」之后露出的分区入口（发现 / 记住 / 手动）：
+  // 这三个页面本身不变，只是入口挪到展开区（对齐参考稿的「展开」折叠）。
+  @Builder
+  drawerSectionRow(index: number, label: ResourceStr, count: number) {
+    Row({ space: 10 }) {
+      Text(label)
+        .fontSize(14)
+        .fontColor(this.deviceSection === index ? $r('app.color.accent_text') : $r('app.color.text_secondary'))
+        .fontWeight(this.deviceSection === index ? FontWeight.Medium : FontWeight.Normal)
+        .layoutWeight(1)
+      if (count > 0) {
+        Text(`${count}`)
+          .fontSize(10)
+          .fontColor($r('app.color.accent_text'))
+          .padding({ left: 6, right: 6, top: 1, bottom: 1 })
+          .borderRadius(999)
+          .backgroundColor($r('app.color.accent_soft'))
+      }
+    }
+    .width('100%')
+    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+    .borderRadius(12)
+    .backgroundColor(this.deviceSection === index ? $r('app.color.accent_soft') : Color.Transparent)
+    .onClick(() => {
+      this.pickDrawerSection(index);
+    })
+  }
+
+  @Builder
+  drawerOverlay() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      // 遮罩：浅色变暗（不用纯黑/材质层——暗色主题下会糊成"黑方块"）；全屏淡入淡出
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#40000000')
+        .onClick(() => {
+          this.closeDrawer();
+        })
+        .transition(TransitionEffect.OPACITY.animation({ duration: 220, curve: Curve.EaseOut }))
+
+      // 面板：左贴屏边、右侧圆角、滑入/滑出
+      Column({ space: 10 }) {
+        Row({ space: 10 }) {
+          Text($r('app.string.tab_devices'))
+            .fontSize(16)
+            .fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.text_primary'))
+            .layoutWeight(1)
+          Text('✕')
+            .fontSize(16)
+            .fontColor($r('app.color.text_secondary'))
+            .padding(8)
+            .onClick(() => {
+              this.closeDrawer();
+            })
+        }
+        .width('100%')
+
+        Scroll() {
+          Column({ space: 6 }) {
+            Text($r('app.string.connected_devices'))
+              .fontSize(14)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+              .padding({ top: 4, bottom: 4 })
+            if (this.connectedDevices.length === 0) {
+              Text($r('app.string.drawer_pick_device_hint'))
+                .fontSize(12)
+                .fontColor($r('app.color.text_muted'))
+                .width('100%')
+                .padding({ top: 4, bottom: 4 })
+            }
+            ForEach(this.visibleDrawerDevices(), (d: DeviceItem) => {
+              this.drawerDeviceRow(d)
+            }, (d: DeviceItem) => d.id)
+
+            // 「展开 ⌄」只作用于**已连接设备列表**（设备多时先收起、点开看全部）；
+            // 下面三个分区入口（发现/记住/手动）常驻可见可点，不参与收起
+            if (this.connectedDevices.length > DRAWER_DEVICE_CAP) {
+              Row({ space: 6 }) {
+                Text(this.drawerExpanded ? $r('app.string.drawer_collapse') : $r('app.string.drawer_expand'))
+                  .fontSize(13)
+                  .fontColor($r('app.color.accent_text'))
+                SymbolGlyph(this.drawerExpanded ? $r('sys.symbol.chevron_up') : $r('sys.symbol.chevron_down'))
+                  .fontSize(13)
+                  .fontColor([$r('app.color.accent_text')])
+              }
+              .width('100%')
+              .justifyContent(FlexAlign.Center)
+              .padding({ top: 10, bottom: 10 })
+              .onClick(() => {
+                animateTo({ duration: 200, curve: Curve.EaseInOut }, () => {
+                  this.drawerExpanded = !this.drawerExpanded;
+                });
+              })
+            }
+
+            this.drawerSectionRow(1, $r('app.string.discovered_devices'), this.discoveredDevices.length)
+            this.drawerSectionRow(2, $r('app.string.remembered_devices'), this.rememberedDevices.length)
+            this.drawerSectionRow(3, $r('app.string.manual_connect'), 0)
+          }
+          .width('100%')
+          .alignItems(HorizontalAlign.Start)
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .align(Alignment.TopStart)
+        .scrollBar(BarState.Off)
+      }
+      .width('78%')
+      .height('100%')
+      .padding({
+        left: 16,
+        right: 16,
+        top: this.getUIContext().px2vp(this.statusBarHeightPx) + 16,
+        bottom: 16
+      })
+      .backgroundColor($r('app.color.bar_bg'))
+      .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
+      .borderRadius({ topRight: 22, bottomRight: 22 })
+      .border({ width: 1, color: $r('app.color.bar_border') })
+      .alignItems(HorizontalAlign.Start)
+      .clip(true)
+      .transition(TransitionEffect.translate({ x: -400 }).animation({ duration: 280, curve: Curve.EaseOut }))
+    }
+    .width('100%')
+    .height('100%')
   }
 
   build() {
@@ -1303,10 +1697,11 @@ struct Index {
 
       // 内容层：标题 + 状态条 → Tab 内容 → 底部悬浮栏
       Column() {
-        // 标题区
+        // 标题区（对齐参考稿：汉堡按钮紧挨标题左侧）
         Row({ space: 10 }) {
+          this.menuButton()
           Text('KDE Connect')
-            .fontSize(28)
+            .fontSize(26)
             .fontWeight(FontWeight.Bold)
             .fontColor($r('app.color.text_primary'))
           Text('HarmonyOS')
@@ -1318,6 +1713,7 @@ struct Index {
             .backgroundColor($r('app.color.chip_bg'))
         }
         .width('100%')
+        .alignItems(VerticalAlign.Center)
         .padding({ top: this.getUIContext().px2vp(this.statusBarHeightPx) + 14 })
 
         // 状态条（单行）
@@ -1358,17 +1754,18 @@ struct Index {
                 requestedPairIds: this.requestedPairIds,
                 batteryItems: this.batteryItems,
                 deviceSection: this.deviceSection,
-                onDisconnectDevice: (d: DeviceItem): void => {
-                  this.disconnectDevice(d);
-                },
                 onUnpairDevice: (d: DeviceItem): void => {
                   this.unpairDevice(d);
                 },
-                onConnectDevice: (d: DeviceItem): void => {
-                  this.connectDevice(d);
-                },
                 onManualConnect: (host: string, port: number): void => {
                   this.manualConnect(host, port);
+                },
+                selectedDeviceId: this.selectedDeviceId,
+                onPlaceholderAction: (key: string): void => {
+                  this.toastPlaceholder(key);
+                },
+                onOpenDevice: (d: DeviceItem): void => {
+                  this.openDeviceDetail(d);
                 },
                 onRefreshDiscovery: (): void => {
                   this.triggerDiscoveryBroadcast();
@@ -1411,12 +1808,16 @@ struct Index {
               SettingsTab({
                 deviceId: this.deviceId,
                 deviceName: this.deviceName,
+                systemName: this.systemName,
                 statusText: this.status,
                 themeMode: this.themeMode,
                 language: this.language,
                 immersive: false,
                 onRenameDevice: (name: string): void => {
                   this.renameDevice(name);
+                },
+                onUseSystemName: (): void => {
+                  this.useSystemDeviceName();
                 },
                 onThemeChange: (mode: number): void => {
                   this.applyTheme(mode, true);
@@ -1467,6 +1868,11 @@ struct Index {
       .width('100%')
       .height('100%')
       .padding({ left: 16, right: 16 })
+
+      // 手机侧栏抽屉（全屏覆盖）：必须在根 Stack 渲染，否则被内容区 padding(16) 内缩
+      if (this.drawerOpen) {
+        this.drawerOverlay()
+      }
 
 
       // 配对确认弹窗（需求 4.3）：本侧点已连接行「配对」或对端发起时都走这里；
@@ -1555,33 +1961,6 @@ struct Index {
         .transition(TransitionEffect.OPACITY)
       }
 
-      // 顶部提示（需求 4.1/4.2：连接中 / 连接成功 / 连接失败 / 配对成功），非模态、不挡操作
-      if (this.noticeKey !== '') {
-        Column() {
-          Row({ space: 8 }) {
-            Text(this.noticeTitle())
-              .fontSize(13)
-              .fontColor(this.noticeError ? $r('app.color.danger_text') : $r('app.color.text_primary'))
-            if (this.noticeDetail.length > 0) {
-              Text(this.noticeDetail)
-                .fontSize(12)
-                .fontColor($r('app.color.text_secondary'))
-                .maxLines(1)
-                .textOverflow({ overflow: TextOverflow.Ellipsis })
-            }
-          }
-          .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-          .borderRadius(999)
-          .backgroundColor($r('app.color.card_bg'))
-          .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
-          .border({ width: 1, color: $r('app.color.card_border') })
-          .constraintSize({ maxWidth: '92%' })
-        }
-        .width('100%')
-        .padding({ top: this.getUIContext().px2vp(this.statusBarHeightPx) + 64 })
-        .alignItems(HorizontalAlign.Center)
-        .hitTestBehavior(HitTestMode.None)
-      }
     }
     .width('100%')
     .height('100%')

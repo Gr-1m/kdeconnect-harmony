@@ -9,12 +9,17 @@ export struct SettingsTab {
   @Prop deviceId: string = '';
   // 父页面 Preferences 读取完成晚于本组件首次构建，用 @Watch 同步草稿，避免显示默认值
   @Prop @Watch('onDeviceNameChanged') deviceName: string = '';
+  // 系统设备名称（只读展示；「使用系统名称」按钮用它回填）
+  @Prop systemName: string = '';
   @Prop statusText: string = '';
   @Prop themeMode: number = THEME_FOLLOW_SYSTEM;
   @Prop language: string = LANG_SYSTEM;
   @Prop immersive: boolean = false;
   cardMaterial: uiMaterial.Material | undefined = undefined;
   onRenameDevice: (name: string) => void = () => {
+  };
+  // 「使用系统名称」：把设备名回填为系统设备名称
+  onUseSystemName: () => void = () => {
   };
   onThemeChange: (mode: number) => void = () => {
   };
@@ -70,7 +75,7 @@ export struct SettingsTab {
           Column({ space: 10 }) {
             this.sectionTitle($r('app.string.settings_device_name'))
             Row({ space: 8 }) {
-              TextInput({ text: this.nameDraft, placeholder: 'kdeconnect-harmony' })
+              TextInput({ text: this.nameDraft, placeholder: this.systemName.length > 0 ? this.systemName : 'kdeconnect-harmony' })
                 .layoutWeight(1)
                 .height(40)
                 .fontSize(13)
@@ -93,6 +98,30 @@ export struct SettingsTab {
                 })
             }
             .width('100%')
+            // 系统设备名称（只读）+ 一键回填：设备名默认就是它，用户改过之后也能恢复
+            if (this.systemName.length > 0) {
+              Row({ space: 8 }) {
+                Text($r('app.string.settings_system_name_label'))
+                  .fontSize(11)
+                  .fontColor($r('app.color.text_muted'))
+                Text(this.systemName)
+                  .fontSize(11)
+                  .fontColor($r('app.color.text_secondary'))
+                  .layoutWeight(1)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                Text($r('app.string.settings_use_system_name'))
+                  .fontSize(11)
+                  .fontColor($r('app.color.accent_text'))
+                  .onClick(() => {
+                    this.nameDraft = this.systemName;
+                    this.nameEdited = false;
+                    this.onUseSystemName();
+                  })
+              }
+              .width('100%')
+              .alignItems(VerticalAlign.Center)
+            }
           }
           .width('100%')
           .alignItems(HorizontalAlign.Start)
