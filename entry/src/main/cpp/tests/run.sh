@@ -8,6 +8,11 @@ cd "$(dirname "$0")"
 OUT=/tmp/kdc_native_tests
 mkdir -p "$OUT"
 
+# R1：packet_io / cert_util 的实现已迁到 Rust（rust/kdc_core），C++ 侧是薄 shim
+# ⇒ 先构建 host 静态库，再把 .a 链进每个测试二进制（脚本把路径打到 stdout）。
+RUST_LIB="$(../rust/build_host.sh)"
+echo "[run.sh] rust staticlib: $RUST_LIB"
+
 # BearSSL 0.6 静态库（host 版；与 NDK 侧同源码，见 CMakeLists.txt）
 make -s -C ../bearssl -j"$(nproc)" BUILD="$OUT/bearssl" lib
 BEARSSL_LIB="$OUT/bearssl/libbearssl.a"
@@ -23,7 +28,8 @@ g++ -std=c++17 -Wall -Wextra -O1 \
     ../net/cert_util.cpp \
     ../net/cert_gen.cpp \
     ../net/net_util.cpp \
-    "$OUT/cJSON.o" "$BEARSSL_LIB" \
+    "$OUT/cJSON.o" "$BEARSSL_LIB" "$RUST_LIB" \
+    -lpthread -ldl -lm \
     -o "$OUT/kdc_native_tests"
 
 "$OUT/kdc_native_tests"
@@ -39,8 +45,8 @@ g++ -std=c++17 -Wall -Wextra -O1 \
     ../net/cert_util.cpp \
     ../net/net_util.cpp \
     ../net/packet_io.cpp \
-    "$OUT/cJSON.o" "$BEARSSL_LIB" \
-    -lpthread \
+    "$OUT/cJSON.o" "$BEARSSL_LIB" "$RUST_LIB" \
+    -lpthread -ldl -lm \
     -o "$OUT/kdc_payload_tests"
 
 # 3) net 栈测试（连接失败可解释性 + 有界握手；不需局域网/设备）
@@ -57,8 +63,8 @@ g++ -std=c++17 -Wall -Wextra -O1 \
     ../net/net_util.cpp \
     ../net/packet_io.cpp \
     ../payload/payload.cpp \
-    "$OUT/cJSON.o" "$BEARSSL_LIB" \
-    -lpthread \
+    "$OUT/cJSON.o" "$BEARSSL_LIB" "$RUST_LIB" \
+    -lpthread -ldl -lm \
     -o "$OUT/kdc_net_tests"
 
 "$OUT/kdc_net_tests"

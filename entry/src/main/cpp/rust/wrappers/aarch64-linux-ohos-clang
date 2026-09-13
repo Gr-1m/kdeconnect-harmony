@@ -1,0 +1,35 @@
+#!/bin/sh
+# ---------------------------------------------------------------------------
+# aarch64-linux-ohos-clang — clang driver wrapper for the OpenHarmony NDK
+# (arm64-v8a / AArch64), used as the *linker* driver by rustc/cargo and as
+# CC/CXX by the CMake side.
+#
+# cargo picks this up through `rust/wrappers/.cargo/config.toml`:
+#   [target.aarch64-unknown-linux-ohos]
+#   linker = "aarch64-linux-ohos-clang"     # bare name -> resolved via PATH,
+#                                           # so `<this dir>` must be on PATH
+#
+# rustc's target spec for aarch64-unknown-linux-ohos has
+# `linker-flavor = "gnu-cc"`, so rustc feeds this wrapper plain `clang` syntax
+# (-Wl,... , -L , -l , -o ...) — no `cc`-style adapter is required.
+#
+# UNWINDER (measured, not assumed): rustc's OHOS target spec passes `-lunwind`,
+# and the OHOS *sysroot* ships libc/libdl/libm but no libunwind at all — the
+# only libunwind.a lives in $OHOS_NDK/llvm/lib/<arch>-linux-ohos. That is not a
+# problem here: the clang driver (a) adds `-l:libunwind.a` itself for this
+# target and (b) already searches its own runtime dir, so `-lunwind` resolves
+# without an explicit `-L`. Adding `-L$OHOS_NDK/llvm/lib/<arch>-linux-ohos`
+# also works but was dropped on purpose: it makes clang warn
+# `-Wunused-command-line-argument` on compile-only (`-c`) uses, which breaks a
+# `-Werror` CMake build. Result: the unwinder is linked *statically* into the
+# final image (aarch64 runtime dir has no libunwind.so).
+# ---------------------------------------------------------------------------
+set -eu
+
+OHOS_NDK="${OHOS_NDK:-/opt/command-line-tools/sdk/default/openharmony/native}"
+
+exec "$OHOS_NDK/llvm/bin/clang" \
+    --target=aarch64-linux-ohos \
+    --sysroot="$OHOS_NDK/sysroot" \
+    -D__MUSL__ \
+    "$@"

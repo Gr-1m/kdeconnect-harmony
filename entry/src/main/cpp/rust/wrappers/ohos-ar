@@ -1,0 +1,23 @@
+#!/bin/sh
+# ---------------------------------------------------------------------------
+# ohos-ar — archiver wrapper for the OpenHarmony NDK (arch-independent).
+#
+# Who needs it: the C/C++ (CMake) side, e.g.
+#   set(CMAKE_AR     <this dir>/ohos-ar)
+#   set(CMAKE_RANLIB <this dir>/ohos-ar)
+# to build/merge archives with the OHOS llvm-ar instead of the host `ar`.
+#
+# Who does NOT: cargo/rustc. Measured on rustc 1.98.1, a
+# `crate-type = ["staticlib"]` build never spawns an external archiver (a
+# logging `AR_aarch64_unknown_linux_ohos` probe was never invoked — the .a is
+# written in-process), which is why `.cargo/config.toml` next to this file has
+# no `AR_<target>` entries.
+#
+# llvm-ar covers both the `ar` and `ranlib` roles (`llvm-ar s ...`), so a
+# separate ranlib wrapper is not needed.
+# ---------------------------------------------------------------------------
+set -eu
+
+OHOS_NDK="${OHOS_NDK:-/opt/command-line-tools/sdk/default/openharmony/native}"
+
+exec "$OHOS_NDK/llvm/bin/llvm-ar" "$@"
