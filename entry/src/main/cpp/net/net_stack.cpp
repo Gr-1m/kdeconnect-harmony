@@ -93,6 +93,10 @@ bool NetStack::start(const NetConfig &config)
     }
 
     config_ = config;
+    // spool 目录可注入（NetConfig.spoolDir）：为空用设备默认路径。
+    // 在 start() 里重建，避免 ArkTS 尚未 start 就下发 payload（此时 payload_ 为默认实例）。
+    payload_ = std::make_unique<PayloadManager>(
+        this, config_.spoolDir.empty() ? std::string(kPayloadSpoolDirDefault) : config_.spoolDir);
 
     epollFd_ = epoll_create1(EPOLL_CLOEXEC);
     if (epollFd_ < 0) {
