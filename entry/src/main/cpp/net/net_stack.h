@@ -44,6 +44,9 @@ public:
     std::string getPeerCertificate(const std::string &deviceId);
     std::string getOwnCertificate();
 
+    // 立即发一次 UDP 发现广播（UI「扫描/下拉刷新」入口，CodeArts MSG73_TO_OMP 修复 4）
+    void triggerBroadcast();
+
     // —— WP-2 安全加固 ——
     // 信任设备证书钉扎（内存态；持久化由 ArkTS TrustStore/Preferences 负责，启动时回灌）。
     // 已登记 deviceId 的后续连接：对端证书与登记不符 → 断链 + error 事件。
@@ -100,6 +103,10 @@ private:
 
     // UDP 发现跟踪（deviceId → 最近一次广播时间 ms），超时后派发 DeviceLost
     std::unordered_map<std::string, int64_t> lastSeenMs_;
+
+    // 周期重播节奏（仅事件循环线程访问）
+    int64_t lastBroadcastMs_ = 0;
+    int broadcastCount_ = 0;
 
     int wakeFd_ = -1;
 

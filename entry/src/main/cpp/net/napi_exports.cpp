@@ -358,3 +358,13 @@ napi_value JsRemoveTrustedCertificate(napi_env env, napi_callback_info info)
     napi_get_undefined(env, &out);
     return out;
 }
+
+// —————— UDP 发现：UI 主动触发一次广播（CodeArts MSG73_TO_OMP 修复 4）——————
+napi_value JsTriggerBroadcast(napi_env env, napi_callback_info info)
+{
+    (void) info;
+    netStack().triggerBroadcast();
+    napi_value out = nullptr;
+    napi_get_undefined(env, &out);
+    return out;
+}

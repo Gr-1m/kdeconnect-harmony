@@ -27,6 +27,10 @@ napi_value JsSetTrustedCertificate(napi_env env, napi_callback_info info);
 napi_value JsRemoveTrustedCertificate(napi_env env, napi_callback_info info);
 napi_value JsGetPairVerificationCode(napi_env env, napi_callback_info info);
 
+// 立即触发一次 UDP 发现广播（UI「扫描/下拉刷新」，CodeArts MSG73_TO_OMP 修复 4）。
+// d.ts 声明由 DevEco Code 在同一契约变更内补齐。
+napi_value JsTriggerBroadcast(napi_env env, napi_callback_info info);
+
 #ifdef __cplusplus
 }
 #endif

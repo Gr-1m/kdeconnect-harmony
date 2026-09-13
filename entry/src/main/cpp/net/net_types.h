@@ -25,6 +25,21 @@ constexpr int CONN_RATE_LIMIT_MS = 1000;   // 同 IP/deviceId 连接限流（WP-
 // 注意（P1-2）：KDE/Android 不周期广播，故判定以「连接状态」为主——有活跃链路时
 // 只刷新时间戳不派发（见 NetStack::eventLoop）。
 constexpr int DISCOVERY_TIMEOUT_MS = 60000;
+
+// —— UDP 发现周期重播（CodeArts MSG73_TO_OMP 修复 2）——
+// 对端只在启动/网络变化时广播（KDE `lanlinkprovider.cpp:149,192`、Android 同构），
+// 故「后启动/错过对端广播」的一方必须由我们主动补齐重播间隔：初期快速、随后稳定。
+constexpr int DISCOVERY_BROADCAST_FAST_MS = 5000;    // 启动初期
+constexpr int DISCOVERY_BROADCAST_SLOW_MS = 30000;   // 稳定期
+constexpr int DISCOVERY_BROADCAST_FAST_COUNT = 5;    // 快速阶段次数
+// 已建链时是否仍周期广播 —— 默认 **false**（偏离 MSG73 原方案，理由与证据见下）。
+// KDE 收到任意 identity 广播都会**新建 TCP 连接**（`udpBroadcastReceived` 无「已有链路则跳过」，
+// 仅 500ms 同设备去抖），而它对同设备**新链路替换旧链路**（实测 `deviceLinkDestroyed`
+// → 我方旧链路 `error tls read failed` + `disconnected`）。若持续周期广播，对端会周期性换链路：
+// 正在进行的 payload 传输会随控制链路丢失被中止（`onDeviceDown`），会话弹窗也会被判失败。
+// 因此默认只在我们**没有活跃链路**时重播（覆盖「发现页空」的主场景），
+// 需要「对端后加入也能发现我们」时改 true——代价就是上述链路替换。
+constexpr bool DISCOVERY_BROADCAST_WHILE_LINKED = false;
 // 等待 socket 可写的单次上限（非阻塞写不可用时的兜底等待）
 constexpr int TLS_WRITE_WAIT_MS = 2000;
 // 单连接发送队列上限（对端长期不读时防止内存无界增长）
