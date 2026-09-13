@@ -55,9 +55,11 @@ interface SendShareBody {
 
 const DEFAULT_DEVICE_NAME: string = 'kdeconnect-harmony';
 
-// 连接/配对会话超时（毫秒）：TCP+TLS 建连 20s；配对请求等对端确认 30s
+// 连接/配对会话超时（毫秒）：TCP+TLS 建连 20s；配对请求等对端确认 45s
+// （对端 KDE PairingHandler::pairingTimeoutMsec 也是 30s：本侧必须留更长，
+//  否则用户还在点对端通知时本侧就先判失败。见 MSG65 §2）
 const CONNECT_TIMEOUT_MS: number = 20000;
-const PAIR_TIMEOUT_MS: number = 30000;
+const PAIR_TIMEOUT_MS: number = 45000;
 // 成功提示停留时间
 const NOTICE_MS: number = 2500;
 
@@ -103,6 +105,8 @@ struct Index {
   @State deviceSection: number = 0;
   private sessionTimerId: number = -1;
   private noticeTimerId: number = -1;
+  // 失败发生在哪个阶段：connect（TCP/TLS 未建立）| pair（配对未完成）
+  private sessionStage: string = 'connect';
   // AP-2 payload 传输（接收/发送进度与处置状态）
   @State payloads: PayloadTransfer[] = [];
   // 插件推来的展示项（目前：电量）
@@ -571,6 +575,10 @@ struct Index {
       this.pendingPairId = '';
       this.pendingPairName = '';
     }
+    // 会话中的设备被解除/断开：直接收起弹窗（属于用户显式动作，不算失败）
+    if (this.sessionDeviceId === deviceId && this.sessionState !== 'idle') {
+      this.dismissSession();
+    }
     const before: number = this.trustedDevices.length;
     this.trustedDevices = this.trustedDevices.filter((t: TrustedDevice) => t.id !== deviceId);
     if (this.trustedDevices.length !== before) {
@@ -794,6 +802,7 @@ struct Index {
     this.sessionPeerRequested = false;
     this.sessionTimestamp = Math.floor(Date.now() / 1000);
     this.sessionState = 'connecting';
+    this.sessionStage = 'connect';
     this.log(`connect ${this.sessionTarget}`);
     try {
       native.connectToPeer(host, port);
@@ -814,6 +823,7 @@ struct Index {
     this.sessionTimestamp = Math.floor(Date.now() / 1000);
     this.sessionCode = this.computePairCode(deviceId, this.sessionTimestamp);
     this.sessionState = 'prompt';
+    this.sessionStage = 'pair';
     this.log(`connected ${deviceId} — awaiting pair confirmation`);
   }
 
@@ -838,6 +848,7 @@ struct Index {
     this.sessionState = 'idle';
     this.sessionError = '';
     this.sessionPeerRequested = false;
+    this.sessionCode = '';
     if (id !== '') {
       this.requestedPairIds = this.requestedPairIds.filter((x: string) => x !== id);
     }
@@ -849,6 +860,8 @@ struct Index {
     const id: string = this.sessionDeviceId;
     this.sessionState = 'failed';
     this.sessionError = reason;
+    this.sessionCode = '';
+    this.sessionPeerRequested = false;
     if (id !== '') {
       this.requestedPairIds = this.requestedPairIds.filter((x: string) => x !== id);
     }
@@ -858,6 +871,7 @@ struct Index {
   private dismissSession(): void {
     this.sessionState = 'idle';
     this.sessionError = '';
+    this.sessionCode = '';
   }
 
   // 成功：提示 + 自动跳回「已连接设备」分区
@@ -866,11 +880,24 @@ struct Index {
     const id: string = this.sessionDeviceId;
     this.sessionState = 'idle';
     this.sessionError = '';
+    this.sessionCode = '';
+    this.sessionPeerRequested = false;
     this.deviceSection = 0;
     if (id !== '') {
       this.requestedPairIds = this.requestedPairIds.filter((x: string) => x !== id);
     }
     this.showNotice('ok');
+  }
+
+  // 会话弹窗标题（按状态切换）
+  private sessionTitle(): ResourceStr {
+    if (this.sessionState === 'failed') {
+      return this.sessionStage === 'connect' ? $r('app.string.connect_failed') : $r('app.string.pair_failed');
+    }
+    if (this.sessionState === 'prompt' || this.sessionState === 'awaiting') {
+      return $r('app.string.pair_dialog_title_outgoing');
+    }
+    return $r('app.string.connect_connecting');
   }
 
   private showNotice(kind: string): void {
@@ -1192,6 +1219,7 @@ struct Index {
                 isWide: this.isWide,
                 requestedPairIds: this.requestedPairIds,
                 batteryItems: this.batteryItems,
+                deviceSection: this.deviceSection,
                 onDisconnectDevice: (d: DeviceItem): void => {
                   this.disconnectDevice(d);
                 },
@@ -1365,6 +1393,143 @@ struct Index {
         .alignItems(HorizontalAlign.Center)
         .backgroundColor('#99000000')
         .transition(TransitionEffect.OPACITY)
+      }
+
+      // 连接/配对会话弹窗：点「连接」立刻可见（连接中 → 配对确认 → 等待对端 → 失败）
+      if (this.sessionState !== 'idle') {
+        Column() {
+          Column({ space: 14 }) {
+            Text(this.sessionTitle())
+              .fontSize(16)
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.text_primary'))
+            Text(this.sessionName)
+              .fontSize(14)
+              .fontColor($r('app.color.text_secondary'))
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+            if (this.sessionState === 'connecting') {
+              Text(this.sessionTarget)
+                .fontSize(11)
+                .fontColor($r('app.color.text_muted'))
+                .fontFamily('monospace')
+            }
+            if (this.sessionState === 'prompt' || this.sessionState === 'awaiting') {
+              Column({ space: 4 }) {
+                Text($r('app.string.pair_dialog_code_label'))
+                  .fontSize(12)
+                  .fontColor($r('app.color.text_muted'))
+                Text(this.sessionCode.length > 0 ? this.sessionCode : '-- -- -- --')
+                  .fontSize(28)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor($r('app.color.accent_text'))
+                  .fontFamily('monospace')
+                if (this.sessionCode.length === 0) {
+                  Text($r('app.string.pair_code_unavailable'))
+                    .fontSize(10)
+                    .fontColor($r('app.color.text_muted'))
+                }
+              }
+              Text($r('app.string.pair_dialog_hint'))
+                .fontSize(12)
+                .fontColor($r('app.color.text_secondary'))
+                .textAlign(TextAlign.Center)
+            }
+            if (this.sessionState === 'awaiting') {
+              Text($r('app.string.pair_waiting'))
+                .fontSize(12)
+                .fontColor($r('app.color.accent_text'))
+                .textAlign(TextAlign.Center)
+              Text($r('app.string.pair_waiting_hint'))
+                .fontSize(12)
+                .fontColor($r('app.color.text_secondary'))
+                .textAlign(TextAlign.Center)
+            }
+            if (this.sessionState === 'failed') {
+              Text(this.sessionError.length > 0 ? this.sessionError : 'unknown')
+                .fontSize(12)
+                .fontColor($r('app.color.danger_text'))
+                .textAlign(TextAlign.Center)
+            }
+            Row({ space: 10 }) {
+              if (this.sessionState === 'prompt') {
+                Button($r('app.string.action_cancel'))
+                  .layoutWeight(1)
+                  .height(42)
+                  .fontSize(14)
+                  .backgroundColor($r('app.color.danger_bg'))
+                  .fontColor($r('app.color.danger_text'))
+                  .borderRadius(12)
+                  .onClick(() => {
+                    this.cancelSession();
+                  })
+                Button($r('app.string.pair_action'))
+                  .layoutWeight(1)
+                  .height(42)
+                  .fontSize(14)
+                  .backgroundColor($r('app.color.accent'))
+                  .borderRadius(12)
+                  .onClick(() => {
+                    this.confirmPairInSession();
+                  })
+              } else if (this.sessionState === 'failed') {
+                Button($r('app.string.action_close'))
+                  .layoutWeight(1)
+                  .height(42)
+                  .fontSize(14)
+                  .backgroundColor($r('app.color.card_bg'))
+                  .fontColor($r('app.color.text_primary'))
+                  .borderRadius(12)
+                  .onClick(() => {
+                    this.dismissSession();
+                  })
+              } else {
+                Button($r('app.string.action_cancel'))
+                  .layoutWeight(1)
+                  .height(42)
+                  .fontSize(14)
+                  .backgroundColor($r('app.color.danger_bg'))
+                  .fontColor($r('app.color.danger_text'))
+                  .borderRadius(12)
+                  .onClick(() => {
+                    this.cancelSession();
+                  })
+              }
+            }
+            .width('100%')
+          }
+          .width('86%')
+          .padding(20)
+          .borderRadius(20)
+          .backgroundColor($r('app.color.card_bg'))
+          .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
+          .border({ width: 1, color: $r('app.color.card_border') })
+          .alignItems(HorizontalAlign.Center)
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .backgroundColor('#99000000')
+        .transition(TransitionEffect.OPACITY)
+      }
+
+      // 配对成功提示（跳转「已连接设备」后的短反馈）
+      if (this.sessionNotice !== '') {
+        Column() {
+          Text($r('app.string.pair_success'))
+            .fontSize(13)
+            .fontColor($r('app.color.text_primary'))
+            .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+            .borderRadius(999)
+            .backgroundColor($r('app.color.card_bg'))
+            .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
+            .border({ width: 1, color: $r('app.color.card_border') })
+        }
+        .width('100%')
+        .padding({ top: this.getUIContext().px2vp(this.statusBarHeightPx) + 64 })
+        .alignItems(HorizontalAlign.Center)
+        .hitTestBehavior(HitTestMode.None)
       }
     }
     .width('100%')

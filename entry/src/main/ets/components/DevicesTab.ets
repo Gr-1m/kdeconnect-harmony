@@ -26,10 +26,12 @@ export struct DevicesTab {
   onPairDevice: (d: DeviceItem) => void = () => {
   };
   // 侧栏选中项：0 已连接 / 1 发现 / 2 记住的 / 3 手动连接
-  @State selectedSection: number = 0;
+  // @Link：连接/配对成功后由 Index 切回「已连接设备」分区
+  @Link deviceSection: number;
   @State drawerOpen: boolean = false;
   @State railExpanded: boolean = true;
-  @State manualHost: string = '10.0.2.2';
+  // 手动连接默认值：host 留空（10.0.2.2 只是 QEMU 模拟器的 NAT 网关，真机无意义），port 用默认端口
+  @State manualHost: string = '';
   @State manualPort: string = '1716';
 
   private openSide(): void {
@@ -41,7 +43,7 @@ export struct DevicesTab {
   }
 
   private pickSection(index: number): void {
-    this.selectedSection = index;
+    this.deviceSection = index;
     if (!this.isWide) {
       this.drawerOpen = false;
     }
@@ -102,8 +104,8 @@ export struct DevicesTab {
     Column({ space: 2 }) {
       Text(expanded ? label : shortLabel)
         .fontSize(12)
-        .fontColor(this.selectedSection === index ? $r('app.color.accent_text') : $r('app.color.text_secondary'))
-        .fontWeight(this.selectedSection === index ? FontWeight.Medium : FontWeight.Normal)
+        .fontColor(this.deviceSection === index ? $r('app.color.accent_text') : $r('app.color.text_secondary'))
+        .fontWeight(this.deviceSection === index ? FontWeight.Medium : FontWeight.Normal)
         .maxLines(2)
         .textAlign(TextAlign.Center)
       if (count > 0) {
@@ -118,7 +120,7 @@ export struct DevicesTab {
     .width('100%')
     .padding({ top: 10, bottom: 10 })
     .borderRadius(14)
-    .backgroundColor(this.selectedSection === index ? $r('app.color.accent_soft') : Color.Transparent)
+    .backgroundColor(this.deviceSection === index ? $r('app.color.accent_soft') : Color.Transparent)
     .onClick(() => {
       this.pickSection(index);
     })
@@ -316,25 +318,25 @@ export struct DevicesTab {
   @Builder
   sectionContent() {
     Column({ space: 8 }) {
-      Text(this.sectionTitleOf(this.selectedSection))
+      Text(this.sectionTitleOf(this.deviceSection))
         .fontSize(13)
         .fontWeight(FontWeight.Medium)
         .fontColor($r('app.color.text_primary'))
-      if (this.selectedSection === 0) {
+      if (this.deviceSection === 0) {
         if (this.connectedDevices.length === 0) {
           this.emptyHint($r('app.string.group_empty'))
         }
         ForEach(this.connectedDevices, (d: DeviceItem) => {
           this.connectedRow(d)
         }, (d: DeviceItem) => d.id)
-      } else if (this.selectedSection === 1) {
+      } else if (this.deviceSection === 1) {
         if (this.discoveredDevices.length === 0) {
           this.emptyHint($r('app.string.discovered_hint'))
         }
         ForEach(this.discoveredDevices, (d: DeviceItem) => {
           this.discoveredRow(d)
         }, (d: DeviceItem) => d.id)
-      } else if (this.selectedSection === 2) {
+      } else if (this.deviceSection === 2) {
         if (this.rememberedDevices.length === 0) {
           this.emptyHint($r('app.string.remembered_hint_empty'))
         }
@@ -395,7 +397,7 @@ export struct DevicesTab {
         Column({ space: 10 }) {
           Row({ space: 10 }) {
             this.hamburger()
-            Text(this.sectionTitleOf(this.selectedSection))
+            Text(this.sectionTitleOf(this.deviceSection))
               .fontSize(13)
               .fontColor($r('app.color.text_muted'))
               .layoutWeight(1)

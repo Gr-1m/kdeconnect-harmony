@@ -277,6 +277,10 @@
       "value": "等待对端设备确认…"
     },
     {
+      "name": "pair_waiting_hint",
+      "value": "请在 30 秒内到对端设备上点「接受」"
+    },
+    {
       "name": "action_cancel",
       "value": "取消"
     },
