@@ -401,6 +401,42 @@
       "value": "Use system name"
     },
     {
+      "name": "files_auto_saved",
+      "value": "Saved automatically"
+    },
+    {
+      "name": "files_save_failed",
+      "value": "Save failed"
+    },
+    {
+      "name": "files_need_permission",
+      "value": "No write permission - save manually on the Files page"
+    },
+    {
+      "name": "toast_clipboard_sent",
+      "value": "Clipboard sent"
+    },
+    {
+      "name": "toast_clipboard_failed",
+      "value": "Clipboard empty or unreadable"
+    },
+    {
+      "name": "toast_ping_sent",
+      "value": "Ring sent"
+    },
+    {
+      "name": "toast_ping_failed",
+      "value": "Ring failed"
+    },
+    {
+      "name": "toast_plugin_unavailable",
+      "value": "Plugin unavailable (peer unsupported or not connected)"
+    },
+    {
+      "name": "toast_battery_none",
+      "value": "No battery data"
+    },
+    {
       "name": "toast_not_implemented",
       "value": "Not implemented yet"
     }

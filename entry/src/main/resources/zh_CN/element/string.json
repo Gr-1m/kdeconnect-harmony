@@ -389,6 +389,42 @@
       "value": "使用系统名称"
     },
     {
+      "name": "files_auto_saved",
+      "value": "已自动保存"
+    },
+    {
+      "name": "files_save_failed",
+      "value": "保存失败"
+    },
+    {
+      "name": "files_need_permission",
+      "value": "无写入权限，请在文件页手动保存"
+    },
+    {
+      "name": "toast_clipboard_sent",
+      "value": "剪贴板已发送"
+    },
+    {
+      "name": "toast_clipboard_failed",
+      "value": "剪贴板为空或读取失败"
+    },
+    {
+      "name": "toast_ping_sent",
+      "value": "已发送响铃"
+    },
+    {
+      "name": "toast_ping_failed",
+      "value": "响铃发送失败"
+    },
+    {
+      "name": "toast_plugin_unavailable",
+      "value": "插件未装载（对端不支持或未连接）"
+    },
+    {
+      "name": "toast_battery_none",
+      "value": "无电量数据"
+    },
+    {
       "name": "toast_not_implemented",
       "value": "功能开发中"
     }
