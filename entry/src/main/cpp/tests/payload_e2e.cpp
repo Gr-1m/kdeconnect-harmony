@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <string>
 #include <thread>
@@ -433,6 +434,56 @@ void payloadE2eSendReceive()
     CHECK_MSG(readFileEquals(dest, src), "落盘内容与源文件不一致");
 }
 
+// —————— 1b. 跨文件系统保存（spool 与目标不同挂载点）——————
+//
+// 回归点：设备的 spool 在 cacheDir，目标常在不同挂载点 ⇒ `rename()` 返回 EXDEV，
+// 旧实现直接 return false（App 只看到「保存失败」且无诊断）。用例把目标放到另一个
+// 挂载点（/dev/shm 与 /tmp 是两个独立 tmpfs），强制走「拷贝 + 删源」兜底。
+void payloadSettleCrossFilesystem()
+{
+    if (!std::ifstream("/dev/shm").good()) {
+        std::printf("  [skip] 无 /dev/shm，无法构造跨挂载点场景\n");
+        return;
+    }
+    const std::string sendDir = makeTempDir("payload_x_send");   // /tmp（tmpfs）
+    const std::string recvDir = makeTempDir("payload_x_recv");   // spool 在 /tmp
+    char destDirTmpl[] = "/dev/shm/kdc_xdst_XXXXXX";
+    char *destDirRaw = ::mkdtemp(destDirTmpl);
+    CHECK_MSG(destDirRaw != nullptr, "mkdtemp(/dev/shm) 失败");
+    if (destDirRaw == nullptr) {
+        return;
+    }
+    const std::string destDir = destDirRaw;
+
+    const std::string src = writeSourceFile(sendDir, 256 * 1024);
+    CHECK(!src.empty());
+
+    FakeHost a(kIdA, sendDir);
+    FakeHost b(kIdB, recvDir);
+    a.setPeerCertPem(kIdB, b.ownCertPem());
+    b.setPeerCertPem(kIdA, a.ownCertPem());
+    a.onFrame_ = [&](const std::string &deviceId, const std::string &frame) {
+        (void) deviceId;
+        pullOnFrame(b, kIdA, frame);
+    };
+    a.start();
+    b.start();
+
+    const uint64_t id = a.manager().startSend(kIdB, "kdeconnect.share.request",
+                                             "{\"filename\":\"x.bin\"}", src);
+    CHECK(id != 0);
+    const bool recvOk = b.waitState("finished", false, 15000);
+    CHECK_MSG(recvOk, "接收侧未 finished");
+    if (!recvOk) {
+        dumpEvents("receiver", b);
+        return;
+    }
+
+    const std::string dest = destDir + "/received.bin";
+    CHECK_MSG(b.manager().settle(id, dest, true), "跨文件系统保存失败（应为拷贝兜底）");
+    CHECK_MSG(readFileEquals(dest, src), "跨文件系统落盘内容与源不一致");
+}
+
 // —————— 2. 对端证书 CN 不匹配必须被拒（P0-2 的反面） ——————
 
 void payloadPeerCertMismatch()
@@ -540,6 +591,7 @@ void runCase(const char *name, void (*fn)())
 int main()
 {
     runCase("payloadE2eSendReceive", payloadE2eSendReceive);
+    runCase("payloadSettleCrossFilesystem", payloadSettleCrossFilesystem);
     runCase("payloadPeerCertMismatch", payloadPeerCertMismatch);
     runCase("payloadLockOrder", payloadLockOrder);
     runCase("tlsServerCapturesPeerCert", tlsServerCapturesPeerCert);
