@@ -12,6 +12,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <csignal>
+#include <cstdlib>
+#include <sys/wait.h>
+
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -199,10 +203,106 @@ void muteePeerTimesOutBounded()
     mute.detach();
 }
 
+// —————— ③ identity 帧必须派发 packetReceived（P0 回归）——————
+//
+// 回归点：`dispatchFrames` 曾对 `kdeconnect.identity` 帧 `continue` 跳过 PacketReceived 派发，
+// 导致 ArkTS 的 handleIdentity/onPeerCapabilities 永不执行 → 插件永不装载 →
+// 「配对成功、连上了，但对端发来的 packet 全部 unhandled」（用户实测 P0）。
+// 做法：把本测试二进制再 fork 成一个「对端栈」进程（同一份 native 代码，独立 deviceId/端口），
+// 让它主动拨入被测栈；被测栈必须收到 identity 帧的 packetReceived。
+void peerIdentityIsDispatchedAsPacket()
+{
+    const pid_t child = ::fork();
+    CHECK_MSG(child >= 0, "fork 失败");
+    if (child < 0) {
+        return;
+    }
+    if (child == 0) {
+        // 子进程：对端栈，拨入父进程（被测栈）
+        ::execl("/proc/self/exe", "kdc_net_tests", "--peer", "1745", nullptr);
+        ::_exit(127);
+    }
+
+    // 父进程：等对端 identity（PairingRequest）→ Connected → 其 identity 帧的 packetReceived
+    bool sawIdentityPacket = false;
+    bool sawPeerIdentity = false;
+    bool sawConnected = false;
+    const int64_t deadline = nowMs() + 12000;
+    while (nowMs() < deadline) {
+        {
+            std::lock_guard<std::mutex> lk(g_mu);
+            for (const NetEvent &e : g_events) {
+                if (e.type == EventType::PairingRequest) {
+                    sawPeerIdentity = true;
+                } else if (e.type == EventType::Connected) {
+                    sawConnected = true;
+                } else if (e.type == EventType::PacketReceived &&
+                           e.packet.find("\"type\":\"kdeconnect.identity\"") != std::string::npos) {
+                    sawIdentityPacket = true;
+                }
+            }
+        }
+        if (sawIdentityPacket) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+
+    CHECK_MSG(sawPeerIdentity, "未收到对端 identity（PairingRequest）");
+    CHECK_MSG(sawConnected, "未收到 Connected 事件");
+    CHECK_MSG(sawIdentityPacket,
+              "identity 帧没有派发 packetReceived（P0 回归：ArkTS 能力协商将失效）");
+    if (!sawIdentityPacket) {
+        std::lock_guard<std::mutex> lk(g_mu);
+        for (const NetEvent &e : g_events) {
+            std::fprintf(stderr, "  [dbg] type=%d device=%s pkt=%s\n", (int) e.type,
+                         e.deviceId.c_str(), e.packet.substr(0, 120).c_str());
+        }
+    }
+
+    ::kill(child, SIGKILL);
+    int status = 0;
+    ::waitpid(child, &status, 0);
+}
+
+// 子进程入口：起一个对端栈并拨入父进程
+int runPeerMode(uint16_t targetPort)
+{
+    const std::string devId = "hosttest22222222222222222222222222";
+    CertPair cert = CertGen::generateSelfSignedEc(devId, 10);
+    NetConfig cfg;
+    cfg.deviceId = devId;
+    cfg.deviceName = "kdc-nettest-peer";
+    cfg.deviceType = "desktop";
+    cfg.certPem = cert.certPem;
+    cfg.keyPem = cert.keyPem;
+    cfg.tcpPort = 1746;
+    cfg.spoolDir = "/tmp/kdc_nettest_spool";
+
+    NetStack &ns = netStack();
+    // 对端侧只保留一行摘要（CI 失败时可据此判断是对端没发、还是被测栈没收）
+    ns.setEventCallback([](const NetEvent &e) {
+        if (e.type == EventType::PacketReceived || e.type == EventType::Connected) {
+            std::fprintf(stderr, "[peer] type=%d device=%s role=%s\n", (int) e.type,
+                         e.deviceId.c_str(), e.role == TlsRole::Server ? "server" : "client");
+        }
+    });
+    if (!ns.start(cfg)) {
+        return 1;
+    }
+    ns.connectToPeer("127.0.0.1", targetPort);
+    std::this_thread::sleep_for(std::chrono::milliseconds(8000));
+    ns.stop();
+    return 0;
+}
+
 } // namespace
 
-int main()
+int main(int argc, char **argv)
 {
+    if (argc >= 3 && std::strcmp(argv[1], "--peer") == 0) {
+        return runPeerMode(static_cast<uint16_t>(std::atoi(argv[2])));
+    }
     CertPair cert = CertGen::generateSelfSignedEc("hosttest11111111111111111111111111", 10);
     NetConfig cfg;
     cfg.deviceId = "hosttest11111111111111111111111111";
@@ -223,6 +323,7 @@ int main()
 
     runCase("connectToClosedPortReportsReason", connectToClosedPortReportsReason);
     runCase("muteePeerTimesOutBounded", muteePeerTimesOutBounded);
+    runCase("peerIdentityIsDispatchedAsPacket", peerIdentityIsDispatchedAsPacket);
 
     ns.stop();
     std::printf("net stack tests: %d cases, %d failed\n", g_cases, g_failed);
