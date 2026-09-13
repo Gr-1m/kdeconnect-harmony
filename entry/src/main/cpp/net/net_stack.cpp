@@ -386,7 +386,7 @@ void NetStack::eventLoop()
             (linkedDevices.empty() || DISCOVERY_BROADCAST_WHILE_LINKED)) {
             const int interval = (broadcastCount_ < DISCOVERY_BROADCAST_FAST_COUNT)
                                      ? DISCOVERY_BROADCAST_FAST_MS
-                                     : DISCOVERY_BROADCAST_SLOW_MS;
+                                     : DISCOVERY_LONG_INTERVAL_MS;
             if (now - lastBroadcastMs_ >= interval) {
                 udp_->broadcast();
                 lastBroadcastMs_ = now;
