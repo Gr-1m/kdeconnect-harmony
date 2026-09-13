@@ -1,0 +1,24 @@
+#!/bin/sh
+# ---------------------------------------------------------------------------
+# x86_64-linux-ohos-clang — clang driver wrapper for the OpenHarmony NDK
+# (x86_64 emulator/device ABI), used as the *linker* driver by rustc/cargo and
+# as CC/CXX by the CMake side.
+#
+# cargo picks this up through `rust/wrappers/.cargo/config.toml`:
+#   [target.x86_64-unknown-linux-ohos]
+#   linker = "x86_64-linux-ohos-clang"      # bare name -> resolved via PATH,
+#                                           # so `<this dir>` must be on PATH
+#
+# See aarch64-linux-ohos-clang for the rationale of every flag (incl. why no
+# `-L` is passed and how `-lunwind` still resolves); the two wrappers differ
+# only in the target triple.
+# ---------------------------------------------------------------------------
+set -eu
+
+OHOS_NDK="${OHOS_NDK:-/opt/command-line-tools/sdk/default/openharmony/native}"
+
+exec "$OHOS_NDK/llvm/bin/clang" \
+    --target=x86_64-linux-ohos \
+    --sysroot="$OHOS_NDK/sysroot" \
+    -D__MUSL__ \
+    "$@"

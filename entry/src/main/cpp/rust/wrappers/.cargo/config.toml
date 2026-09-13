@@ -1,0 +1,55 @@
+# ---------------------------------------------------------------------------
+# OpenHarmony cross-compilation config for the `kdc_core` Rust crate.
+#
+# HOW TO USE (this file is NOT auto-discovered — see below)
+# --------------------------------------------------------
+# cargo only auto-discovers `.cargo/config.toml` in the crate directory or one
+# of its ANCESTORS. This file lives in `rust/wrappers/`, a SIBLING of
+# `rust/kdc_core/`, so it must be passed explicitly, and the wrapper directory
+# must be on PATH (the `linker` values below are bare command names resolved
+# through PATH — see the "whypath" note):
+#
+#   cd entry/src/main/cpp/rust/kdc_core
+#   export PATH="$(cd ../wrappers && pwd):$PATH"
+#   cargo build --release --target aarch64-unknown-linux-ohos \
+#               --config ../wrappers/.cargo/config.toml
+#
+# CMake equivalent (env vars beat this file, so it works without --config):
+#   set(ENV{PATH} "${RUST_WRAPPER_DIR}:$ENV{PATH}")
+#   add_custom_command(... COMMAND ${CARGO} build --release --target ${triple}
+#                        WORKING_DIRECTORY ${RUST_CRATE_DIR})
+# or per-target env overrides (no --config needed at all):
+#   CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER=<abs>/aarch64-linux-ohos-clang
+#   CARGO_TARGET_X86_64_UNKNOWN_LINUX_OHOS_LINKER=<abs>/x86_64-linux-ohos-clang
+#
+# WHY BARE NAMES (measured, not assumed): cargo does NOT resolve a relative
+# `linker` value against this file's directory. Bare names are looked up in
+# PATH; values containing a `/` are resolved against a cargo-internal base that
+# is neither the cwd nor the config directory (observed:
+# `/tmp/kdc-r1-spike/../wrappers/...` for a config at `/tmp/kdc-r1-spike/cfgdir/`
+# with cwd `/tmp/kdc-r1-spike/deep/spike`). Bare names + PATH is therefore the
+# only relocatable, predictable option — it survives the `/tmp/kdch-scratch`
+# repo copy used by MSG93 acceptance #3.
+# ---------------------------------------------------------------------------
+
+# --- linkers ---------------------------------------------------------------
+# rustc's target specs for *-unknown-linux-ohos use `linker-flavor = "gnu-cc"`,
+# so a plain clang driver wrapper is sufficient (no `cc`-style adapter). No `-L`
+# is needed for the unwind runtime that rustc's own `-lunwind` pulls in: the
+# clang driver emits `-l:libunwind.a` for this target and already searches its
+# own runtime dir, where the SDK's only libunwind.a lives (the sysroot has
+# none). Measurements are recorded in the wrapper headers.
+[target.aarch64-unknown-linux-ohos]
+linker = "aarch64-linux-ohos-clang"
+
+[target.x86_64-unknown-linux-ohos]
+linker = "x86_64-linux-ohos-clang"
+
+# --- archiver --------------------------------------------------------------
+# Deliberately NO `AR_<target>` entry here: measured on rustc 1.98.1, a
+# `crate-type = ["staticlib"]` build never spawns an external archiver (a
+# logging `AR_aarch64_unknown_linux_ohos` probe was never invoked; the .a is
+# written in-process), so such an entry would be dead config.
+# `ohos-ar` still exists next to this file for the C/C++ side: point CMake at
+# it (CMAKE_AR=<...>/ohos-ar, CMAKE_RANLIB=<...>/ohos-ar) when merging Rust and
+# C objects or producing archives inside the OHOS toolchain.
