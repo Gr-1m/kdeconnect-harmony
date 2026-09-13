@@ -58,7 +58,9 @@ export type NetEvent = NetEventBase;
 export const init: (eventCallback: (event: NetEvent) => void) => void;
 
 // 启动网络栈：UDP 发现广播 + TCP 监听 + TLS 就绪。
-export const start: (config: NetConfig) => void;
+// 返回 false = 启动失败（端口冲突 / UDP bind 失败 / epoll 失败）——UI 必须据此提示，
+// 不能无条件显示 running（评审 F1）。字段缺失或类型错误时抛 TypeError。
+export const start: (config: NetConfig) => boolean;
 
 // 停止所有网络活动，关闭所有连接。
 export const stop: () => void;

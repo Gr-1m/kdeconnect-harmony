@@ -2,6 +2,7 @@
 #include "net_stack.h"
 #include "cert_gen.h"
 #include "net_log.h"
+#include <cstdio>
 #include <string>
 
 using namespace kdeconnect;
@@ -10,24 +11,62 @@ using namespace kdeconnect;
 // 本文件此前另有一套 JsInit/TsfnCallJs/TsfnFinalize，从未被注册（napi_init.cpp 明确
 // 注释过），已删除——两套序列化实现并存曾导致 error 事件字段名漂移（REVIEW §4 P1-2）。
 
-static std::string napiGetString(napi_env env, napi_value obj, const char *name)
+// 取参 helper（代码评审 F1）：**必须**检查 NAPI 返回码与类型。
+// 旧实现静默回落 0/空串 ⇒「JS 传错参数」表现为「native 悄悄用默认值」，
+// 例如 certPem 为空串要等到 NetStack::start() 才失败，失败原因又会被吞掉（见 JsStart）。
+// 现在：属性缺失或类型不符 → 抛 TypeError（JS 侧立刻可见），调用方随后直接返回 nullptr。
+static void throwFieldTypeError(napi_env env, const char *field, const char *want)
 {
-    napi_value val;
-    napi_get_named_property(env, obj, name, &val);
-    size_t len = 0;
-    napi_get_value_string_utf8(env, val, nullptr, 0, &len);
-    std::string s(len, '\0');
-    napi_get_value_string_utf8(env, val, s.data(), len + 1, &len);
-    return s;
+    char msg[160];
+    std::snprintf(msg, sizeof(msg), "start(config): '%s' 缺失或类型错误（需要 %s）", field, want);
+    napi_throw_type_error(env, "EINVAL", msg);
 }
 
-static int napiGetInt(napi_env env, napi_value obj, const char *name)
+static bool napiGetString(napi_env env, napi_value obj, const char *name, std::string &out)
 {
-    napi_value val;
-    napi_get_named_property(env, obj, name, &val);
-    int32_t v = 0;
-    napi_get_value_int32(env, val, &v);
-    return v;
+    napi_value val = nullptr;
+    if (napi_get_named_property(env, obj, name, &val) != napi_ok) {
+        throwFieldTypeError(env, name, "string");
+        return false;
+    }
+    napi_valuetype type = napi_undefined;
+    if (napi_typeof(env, val, &type) != napi_ok || type != napi_string) {
+        throwFieldTypeError(env, name, "string");
+        return false;
+    }
+    size_t len = 0;
+    if (napi_get_value_string_utf8(env, val, nullptr, 0, &len) != napi_ok) {
+        throwFieldTypeError(env, name, "string");
+        return false;
+    }
+    std::string s(len, '\0');
+    size_t written = 0;
+    if (napi_get_value_string_utf8(env, val, s.data(), len + 1, &written) != napi_ok) {
+        throwFieldTypeError(env, name, "string");
+        return false;
+    }
+    s.resize(written);
+    out.swap(s);
+    return true;
+}
+
+static bool napiGetInt(napi_env env, napi_value obj, const char *name, int32_t &out)
+{
+    napi_value val = nullptr;
+    if (napi_get_named_property(env, obj, name, &val) != napi_ok) {
+        throwFieldTypeError(env, name, "number");
+        return false;
+    }
+    napi_valuetype type = napi_undefined;
+    if (napi_typeof(env, val, &type) != napi_ok || type != napi_number) {
+        throwFieldTypeError(env, name, "number");
+        return false;
+    }
+    if (napi_get_value_int32(env, val, &out) != napi_ok) {
+        throwFieldTypeError(env, name, "number");
+        return false;
+    }
+    return true;
 }
 
 napi_value JsStart(napi_env env, napi_callback_info info)
@@ -41,16 +80,26 @@ napi_value JsStart(napi_env env, napi_callback_info info)
     }
 
     NetConfig cfg;
-    cfg.deviceId   = napiGetString(env, args[0], "deviceId");
-    cfg.deviceName = napiGetString(env, args[0], "deviceName");
-    cfg.deviceType = napiGetString(env, args[0], "deviceType");
-    cfg.certPem    = napiGetString(env, args[0], "certPem");
-    cfg.keyPem     = napiGetString(env, args[0], "keyPem");
-    cfg.tcpPort    = static_cast<uint16_t>(napiGetInt(env, args[0], "tcpPort"));
+    int32_t tcpPort = 0;
+    if (!napiGetString(env, args[0], "deviceId", cfg.deviceId) ||
+        !napiGetString(env, args[0], "deviceName", cfg.deviceName) ||
+        !napiGetString(env, args[0], "deviceType", cfg.deviceType) ||
+        !napiGetString(env, args[0], "certPem", cfg.certPem) ||
+        !napiGetString(env, args[0], "keyPem", cfg.keyPem) ||
+        !napiGetInt(env, args[0], "tcpPort", tcpPort)) {
+        return nullptr;   // 已抛 TypeError，交由 JS 侧 catch
+    }
+    cfg.tcpPort = (tcpPort > 0 && tcpPort <= 0xFFFF) ? static_cast<uint16_t>(tcpPort) : 0;
 
-    bool ok = netStack().start(cfg);
+    // F1：把 start() 的真实结果返回给 JS —— 此前恒返回 undefined，
+    // 端口冲突/UDP bind 失败/epoll 失败都被吞掉，UI 无条件显示 running。
+    const bool ok = netStack().start(cfg);
     LOGI("native start: deviceId=%s ok=%d", cfg.deviceId.c_str(), ok);
-    return nullptr;
+    napi_value ret = nullptr;
+    if (napi_get_boolean(env, ok, &ret) != napi_ok) {
+        return nullptr;
+    }
+    return ret;
 }
 
 napi_value JsStop(napi_env env, napi_callback_info info)

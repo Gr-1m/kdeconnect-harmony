@@ -1,5 +1,6 @@
 #include "cert_gen.h"
 #include "cert_util.h"
+#include <cassert>
 #include "net_log.h"
 #include <bearssl.h>
 #include <bearssl_ec.h>
@@ -72,6 +73,10 @@ static void derAppend(std::vector<uint8_t> &out, const uint8_t *data, size_t len
 
 static void derAddTag(std::vector<uint8_t> &out, uint8_t tag, const uint8_t *content, size_t len)
 {
+    // F3（代码评审）：长度只支持 1/2 字节形式（≤65535）。当前所有调用方传入的都是
+    // OID/DN/公钥等小字段，远小于 64KB ⇒ 该分支不可达；加断言防止将来有人传入大 buffer 后
+    // 被静默截断成畸形 DER（截断的证书会以「配对验证码不一致」等形式在很远的地方暴露）。
+    assert(len < 0x10000);
     out.push_back(tag);
     if (len < 0x80) {
         out.push_back(static_cast<uint8_t>(len));
