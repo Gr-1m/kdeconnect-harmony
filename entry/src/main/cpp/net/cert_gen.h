@@ -8,6 +8,9 @@
 
 namespace kdeconnect {
 
+// 区间内的闰日数（有效期计算用；导出以便单测）
+int leapDaysBetween(int startYear, int years);
+
 struct CertPair {
     std::string certPem;
     std::string keyPem;

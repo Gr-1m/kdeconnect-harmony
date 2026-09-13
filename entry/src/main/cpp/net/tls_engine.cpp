@@ -1,4 +1,6 @@
 #include "tls_engine.h"
+
+#include "cert_util.h"
 #include "net_log.h"
 #include <bearssl_pem.h>
 #include <sys/socket.h>
@@ -131,53 +133,26 @@ std::string TlsEngine::peerCommonName() const
     return std::string(peerCnBuf_);
 }
 
-static bool pemToDer(const std::string &pem, const char *label,
-                     std::vector<uint8_t> &out)
-{
-    br_pem_decoder_context dec;
-    br_pem_decoder_init(&dec);
-
-    std::vector<uint8_t> result;
-    auto append = [](void *ctx, const void *buf, size_t len) {
-        auto *v = static_cast<std::vector<uint8_t> *>(ctx);
-        v->insert(v->end(), static_cast<const uint8_t *>(buf),
-                  static_cast<const uint8_t *>(buf) + len);
-    };
-    br_pem_decoder_setdest(&dec, append, &result);
-
-    const char *data = pem.c_str();
-    size_t len = pem.size();
-    while (len > 0) {
-        size_t consumed = br_pem_decoder_push(&dec,
-            reinterpret_cast<const unsigned char *>(data), len);
-        data += consumed;
-        len -= consumed;
-
-        if (br_pem_decoder_event(&dec) == BR_PEM_END_OBJ) {
-            if (std::strcmp(dec.name, label) == 0) {
-                out = std::move(result);
-                return true;
-            }
-            result.clear();
-            br_pem_decoder_init(&dec);
-            br_pem_decoder_setdest(&dec, append, &result);
-        }
-    }
-    return false;
-}
-
 bool TlsEngine::loadCertAndKey(const std::string &certPem, const std::string &keyPem)
 {
-    if (!pemToDer(certPem, "CERTIFICATE", certDer_)) {
+    // S2（代码评审）：PEM→DER 统一使用 cert_util 的实现（此前本文件另有一份 BearSSL 版，
+    // 与此处逻辑重复且行为/边界不一致风险高）。cert_util::pemToDer 已覆盖多对象与 '=' 补齐。
+    const std::string certDer = kdeconnect::pemToDer(certPem, "CERTIFICATE");
+    if (certDer.empty()) {
         LOGE("failed to parse CERTIFICATE PEM");
         return false;
     }
-    if (!pemToDer(keyPem, "EC PRIVATE KEY", keyDer_)) {
-        if (!pemToDer(keyPem, "PRIVATE KEY", keyDer_)) {
-            LOGE("failed to parse PRIVATE KEY PEM");
-            return false;
-        }
+    certDer_.assign(certDer.begin(), certDer.end());
+
+    std::string keyDer = kdeconnect::pemToDer(keyPem, "EC PRIVATE KEY");
+    if (keyDer.empty()) {
+        keyDer = kdeconnect::pemToDer(keyPem, "PRIVATE KEY");
     }
+    if (keyDer.empty()) {
+        LOGE("failed to parse PRIVATE KEY PEM");
+        return false;
+    }
+    keyDer_.assign(keyDer.begin(), keyDer.end());
 
     br_skey_decoder_context skeyDec;
     br_skey_decoder_init(&skeyDec);

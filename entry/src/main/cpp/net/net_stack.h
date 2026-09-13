@@ -129,7 +129,10 @@ private:
 
     // 本机证书 SPKI DER 惰性缓存（验证码用）
     std::string ownSpkiDer_;
-    bool ownSpkiDone_ = false;
+    // 一次性初始化本机 SPKI（call_once；见 getPairVerificationCode 注释）
+    std::once_flag ownSpkiOnce_;
+    // UI 触发的立即广播请求（JS 线程置位、事件循环线程消费；避免 JS 线程直改循环线程状态）
+    std::atomic<bool> forceBroadcast_{false};
     // 对端证书 PEM 缓存（按 deviceId，掉线后保留至下次连接覆盖；AP-1b「记住的设备」展示用）
     std::unordered_map<std::string, std::string> peerCertPemCache_;
 

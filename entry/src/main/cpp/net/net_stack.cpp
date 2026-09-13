@@ -431,12 +431,13 @@ void NetStack::eventLoop()
         // 对端只在启动/网络变化时广播 → 后启动的一方必须由我们补齐节奏。
         // 默认在「有活跃链路」时不播（DISCOVERY_BROADCAST_WHILE_LINKED 注释里有证据：
         // KDE 每收到一次广播就会新建链路并销毁同设备旧链路，会把进行中的传输换掉）。
+        const bool forcedBroadcast = forceBroadcast_.exchange(false);
         if (udp_ != nullptr &&
-            (linkedDevices.empty() || DISCOVERY_BROADCAST_WHILE_LINKED)) {
+            (forcedBroadcast || linkedDevices.empty() || DISCOVERY_BROADCAST_WHILE_LINKED)) {
             const int interval = (broadcastCount_ < DISCOVERY_BROADCAST_FAST_COUNT)
                                      ? DISCOVERY_BROADCAST_FAST_MS
                                      : DISCOVERY_LONG_INTERVAL_MS;
-            if (now - lastBroadcastMs_ >= interval) {
+            if (forcedBroadcast || now - lastBroadcastMs_ >= interval) {
                 udp_->broadcast();
                 lastBroadcastMs_ = now;
                 ++broadcastCount_;
@@ -614,14 +615,12 @@ void NetStack::sendIdentityOverTls(TcpConnection &conn)
 
 void NetStack::triggerBroadcast()
 {
-    // UI「扫描 / 下拉刷新」入口：立即广播一次（CodeArts MSG73_TO_OMP 修复 4）。
-    // 调用方是 JS 线程；broadcast() 内部只做 sendto（无锁竞争：identity 快照在锁内取）。
-    if (udp_) {
-        udp_->broadcast();
-        lastBroadcastMs_ = nowMs();
-        ++broadcastCount_;
-        LOGI("udp broadcast triggered by UI");
-    }
+    // UI「扫描 / 下拉刷新」入口（MSG73_TO_OMP 修复 4）。
+    // **实现约束（代码评审 L1）**：本函数由 JS 线程调用，而 lastBroadcastMs_/broadcastCount_
+    // 是事件循环线程私有状态，直接在这里改构成数据竞争。故只置标志 + 唤醒事件循环，
+    // 真正广播由循环线程执行（延迟 ≤ 一个 tick，UI 无感）。
+    forceBroadcast_.store(true);
+    wakeLoop();
 }
 
 // 明文 identity 帧：设置 deviceId/设备信息，派发 pairingRequest，入向连接就地启动 TLS 握手
@@ -1146,14 +1145,15 @@ std::string NetStack::getPairVerificationCode(const std::string &deviceId,
     if (peerSpki.empty()) {
         return std::string();
     }
-    if (!ownSpkiDone_) {
+    // 一次性初始化本机 SPKI（代码评审 L2）：JS 线程可能并发调用，ownSpkiDer_ 的写入需要
+    // happens-before 保证 —— 用 call_once（此前是无锁的 done 标志，双线程可并发写）。
+    std::call_once(ownSpkiOnce_, [this] {
         const std::string ownDer = pemToDer(config_.certPem, "CERTIFICATE");
         ownSpkiDer_ = ownDer.empty()
                           ? std::string()
                           : extractSpkiDer(reinterpret_cast<const uint8_t *>(ownDer.data()),
                                            ownDer.size());
-        ownSpkiDone_ = true;
-    }
+    });
     if (ownSpkiDer_.empty()) {
         return std::string();
     }

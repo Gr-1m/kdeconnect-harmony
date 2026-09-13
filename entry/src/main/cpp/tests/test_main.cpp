@@ -306,6 +306,42 @@ TEST_CASE(subjectDnFromCert)
     CHECK(extractSubjectDnDer(junk, sizeof(junk)).empty());
 }
 
+// —————— 证书有效期：闰日校正（评审 C2）——————
+
+TEST_CASE(leapDaysBetweenYears)
+{
+    // 平年区间：2025→2026 无闰日
+    CHECK(leapDaysBetween(2025, 1) == 0);
+    // 2026→2036：2028/2032/2036 三年闰
+    CHECK(leapDaysBetween(2026, 10) == 3);
+    // 2027→2037：2028/2032/2036 三年闰
+    CHECK(leapDaysBetween(2027, 10) == 3);
+    // 世纪平年：2100 不是闰年 ⇒ 2099→2109 只有 2104/2108
+    CHECK(leapDaysBetween(2099, 10) == 2);
+    // 400 年整除：2000 是闰年
+    CHECK(leapDaysBetween(1999, 1) == 1);
+    // 十年证书的天数 = 365×10 + 闰日
+    CHECK(365 * 10 + leapDaysBetween(2026, 10) == 3653);
+}
+
+// —————— PEM 往返（评审 S1/S2：统一到 cert_util 的 base64/pemToDer）——————
+
+TEST_CASE(pemRoundTripUsesSharedImpl)
+{
+    const CertPair pair = CertGen::generateSelfSignedEc("feedfacefeedfacefeedfacefeedface", 10);
+    // 证书与私钥都能被 cert_util 的 PEM→DER 解析（tls_engine 现在走同一条实现）
+    const std::string certDer = pemToDer(pair.certPem, "CERTIFICATE");
+    CHECK(!certDer.empty());
+    const std::string keyDer = pemToDer(pair.keyPem, "EC PRIVATE KEY");
+    CHECK(!keyDer.empty());
+    // DER→PEM→DER 往返一致（base64 编解码共用同一实现）
+    const std::string back =
+        derToPem("CERTIFICATE", reinterpret_cast<const uint8_t *>(certDer.data()), certDer.size());
+    CHECK(pemToDer(back, "CERTIFICATE") == certDer);
+    // 标签不匹配时必须失败（防止误解析私钥/证书混用）
+    CHECK(pemToDer(pair.certPem, "EC PRIVATE KEY").empty());
+}
+
 int main()
 {
     std::printf("native host tests: %d cases, %d failed\n", g_cases, g_failed);
