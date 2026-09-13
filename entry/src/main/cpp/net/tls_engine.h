@@ -27,6 +27,17 @@ struct X509Ctx {
     bool overflow = false;
 };
 
+// server 角色的对端（TLS 客户端）证书认证配置（P0-2）。
+// 只对 TlsRole::Server 生效；控制连接（tcp_connection）不传即保持旧行为（不请求客户端证书）。
+struct ServerClientAuth {
+    // 写入 CertificateRequest 的可接受 CA 名 = 对端证书 subject DN 的完整 DER
+    // （KDE/Android 均把「对端证书主体」作为 CA 列表，语义对等）。空则用占位名。
+    std::vector<uint8_t> caDnDer;
+    // true = 对端未出示证书/校验失败时容忍（继续握手，由上层做 CN 校验）；
+    // false = 严格模式（BR_SSL_NO_CLIENT_AUTH 直接终止握手）。
+    bool tolerateNoCert = false;
+};
+
 class TlsEngine {
 public:
     TlsEngine(int fd, TlsRole role);
@@ -35,7 +46,9 @@ public:
     TlsEngine(const TlsEngine &) = delete;
     TlsEngine &operator=(const TlsEngine &) = delete;
 
-    bool init(const std::string &certPem, const std::string &keyPem);
+    // clientAuth：仅 Server 角色生效；nullptr = 不请求客户端证书（控制连接语义不变）。
+    bool init(const std::string &certPem, const std::string &keyPem,
+              const ServerClientAuth *clientAuth = nullptr);
     // 推进握手。返回 true 表示完成；false 表示需要更多 socket 数据（EAGAIN）。
     bool doHandshake();
     bool handshakeDone() const { return handshakeDone_; }
@@ -81,6 +94,11 @@ private:
     // 对端 EE 证书的 subject CN 收集槽（由 BearSSL 在解析 EE 证书时填充）
     br_name_element peerCnName_{};
     char peerCnBuf_[128] = {0};
+    // server 角色 client-auth：CertificateRequest 里可接受 CA 名的持有者。
+    // BearSSL 只链指针不拷贝（bearssl_ssl.h br_ssl_server_set_trust_anchor_names），
+    // 故 DN 缓冲与 br_x500_name 都必须是成员。
+    std::vector<uint8_t> clientCaDn_;
+    br_x500_name clientCaName_{};
     // write 路径路过 RECVAPP 时暂存的应用数据（SENDAPP/RECVAPP 互斥，无法原地继续），read() 后续取出
     std::vector<uint8_t> pendingApp_;
 

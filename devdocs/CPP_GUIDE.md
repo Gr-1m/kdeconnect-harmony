@@ -46,6 +46,7 @@ entry/src/main/cpp/
 ├── napi_init.cpp           # 模块注册（NAPI_MODULE 宏）
 ├── napi/                   # tsfn 事件桥、JS↔C++ 类型转换
 ├── net/                    # socket/TLS 连接管理（udp/tcp/tls/net_stack）
+│   └── net_util.*          # 网络地址策略（isPrivateIpv4；安全判定，host 可测）
 ├── proto/                  # 协议编解码：帧读写、identity 构造/解析、跨端常量（从 net/packet_io 拆出）
 ├── payload/                # (新) 二进制 payload 传输通道
 ├── security/               # (新) 连接限流、信任存储、证书钉扎
@@ -54,6 +55,7 @@ entry/src/main/cpp/
 ```
 
 拆分原则：`proto/` 与 `payload/` 必须只依赖 POSIX + cJSON，**不依赖 NAPI/NDK 头**，以便 WP-4 在宿主机编译跑单测；NAPI 依赖只允许出现在 `napi/`、`napi_init.cpp` 与 `net/` 的事件出口处。
+「安全策略判定」类纯函数（当前：`isPrivateIpv4`）放 `net/net_util.*`——它们必须有边界回归用例，不能藏在 `net_stack.cpp` 的匿名命名空间里（P1-1 曾因此在 172.16/12 上写错且无测试可发现）。
 
 ## 3. C++ 工作包分工（M1）
 
@@ -80,6 +82,11 @@ M2（iOS 功能集插件）主体在 ArkTS 侧（插件注册表/插件基类/�
   - 单 epoll 线程处理全部 UDP/TCP/TLS I/O；socket 全部 `SOCK_NONBLOCK | SOCK_CLOEXEC`，`EPOLLET` 边缘触发；
   - 事件出口只有一条：`netStack().setEventCallback(Emit)` → `napi/` tsfn → ArkTS 主线程；
   - **发送侧单写者队列**，禁止多线程直接写同一连接（防帧交错）；
+  - **锁序（P0-3 ABBA 防护）**：`NetStack::connMutex_` → `PayloadManager::mu_` 是唯一合法方向
+    （网络线程 `onConnectionReadable`/`closeConnection` 持 connMutex_ 调 `startReceive`/`onDeviceDown`）。
+    因此 payload 模块**不得在持 `mu_` 时**调用会取 `connMutex_` 的宿主回调
+    （`sendControlFrame`、`peerCertPem`）——这类调用一律在出锁后执行；
+    `epollAdd/epollDel/postPayloadEvent/nowMs` 不取锁，允许在 `mu_` 内调用（契约见 `payload.h`）。
   - 禁止在 ArkTS 主线程（NAPI 方法体内）做阻塞 I/O，方法只做排队/置标志。
 - **JSON**：只用 cJSON；packet `type`/`body` 与 `kdeconnect-meta/schemas/` 逐字一致；改 schema 后在 `kdeconnect-meta/` 内 `make check`。
 - **vendor 目录**（`bearssl/`、`json/`）：不修改、不格式化、不重命名，升级需换整个目录并在消息里说明版本。
@@ -103,10 +110,41 @@ protocolVersion=8；UDP 1716；TCP 1716–1764 顺序探测；payload 端口 ≥
 - 必须忽略自己的 deviceId；未配对设备只收 `kdeconnect.pair`；
 - v8 须在加密通道内二次交换 identity 并校验 deviceId/protocolVersion/证书 CN 一致；
 - TCP 发起方 = TLS server，接收方 = TLS client（三方强制，不可改）。
+- **payload 通道证书认证（P0-2，2026-09-13 定稿）**：发送方（TLS server）**必须**请求并校验对端证书
+  （`ServerClientAuth`：可接受 CA 名 = 对端证书 subject DN，空则占位名；`verifyPeerLocked` 要求 CN == deviceId）。
+  两条 BearSSL 硬事实（host 实验实证，见 `MSG59`）：
+  1. 纯 EC 的 `br_ssl_server_init_full_ec` **不会**在 `CertificateRequest` 里列 ECDSA，
+     必须先 `br_ssl_engine_set_default_rsavrfy/ecdsa(&eng)`（列表由 `supports-rsa-sign?/supports-ecdsa?` 决定），
+     否则对端回空证书 → `ERR_NO_CLIENT_AUTH(29)`；
+  2. Qt/OpenSSL 客户端**不按 CA 列表过滤**（ca=bogus 也照样出示证书），Java(SunJSSE) 会过滤——
+     所以有对端证书时用真实 DN，未知时才降级为占位名 + 容忍缺失。
+- **x509 vtable 必须是静态初始化对象**：不得从 `br_x509_minimal_vtable` 抄字段值（会产生动态初始化，
+  在跨 TU 初始化顺序下前几个槽为 0 → `x509-start-chain` 处 call null，已实测）；
+  用直通转发函数（`capture_start_chain`/`capture_get_pkey`）在运行期查表。
 
 ## 7. 构建与验证
 
 - 构建：工作区根执行 `cd kdeconnect-harmony && hvigorw assembleHap`（**无本地 wrapper，不要 `./hvigorw`**）。
+- **本机构建环境坑（2026-09-13 实测，挡所有 agent）**：系统 libxml2 升到 2.15（soname `libxml2.so.16`），
+  而商用 CLT 的 BiSheng `ld.lld` 依赖 `libxml2.so.2` → CMake 编译器探测阶段
+  `ld.lld: error while loading shared libraries: libxml2.so.2`，表现为
+  `CMake will not be able to correctly generate this project`（**与业务代码无关**）。
+  旁路（不改系统、不需 root）：
+  ```bash
+  mkdir -p /tmp/ohos_libshim && ln -sf /usr/lib/libxml2.so.16 /tmp/ohos_libshim/libxml2.so.2
+  LD_LIBRARY_PATH=/tmp/ohos_libshim hvigorw --no-daemon assembleHap
+  ```
+  注意 `--no-daemon` 必需：已在跑的 hvigor daemon 继承的是旧环境变量，shim 不会生效
+  （`--stop-daemon` 后重起亦可）。
+- host 单测（WP-4，无需 SDK/模拟器，CI 可直接调）：
+  ```bash
+  cd entry/src/main/cpp/tests && ./run.sh
+  ```
+  产出两个二进制：`kdc_native_tests`（纯函数：帧切分/identity/验证码/地址策略/证书工具）与
+  `kdc_payload_tests`（payload 端到端：真实 `PayloadManager` + `TlsEngine` + 假宿主，覆盖
+  发送/接收/落盘/证书 CN 拒绝/`mu_`↔宿主锁序）。BearSSL 由官方 Makefile 构建到 `/tmp`，不写 vendor 目录。
+- 改动 payload/TLS 时，**必须**让 `tests/payload_e2e.cpp` 覆盖的新行为在「回退该修复」后失败
+  （回归用例的必要性验证），再提交。
 - 环境体检（每次开工）：`local.properties` 是否被改成 Windows 路径（对策 `OHOS_BASE_SDK_HOME=/opt/command-line-tools/sdk/default/openharmony`）；`oh_modules/@ohos/hvigor*` 软链是否在位（勿 `ohpm install` 重装）；`hdc list targets` 模拟器是否在线。
 - 模拟器：`setsid nohup … < /dev/null &` 启动（普通 `nohup &` 会被会话回收）；装设备/模拟器操作优先在用户终端执行。
 - 静态检查以 `hvigorw assembleHap` 编译期检查为准（本机 codelinter 类型门禁假象，勿采信）。

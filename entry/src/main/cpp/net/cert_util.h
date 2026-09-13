@@ -23,6 +23,12 @@ std::string pemToDer(const std::string &pem, const std::string &label);
 // 元素即 SPKI（serial/sigAlg/issuer/validity/subject/spki）。失败返回空。
 std::string extractSpkiDer(const uint8_t *certDer, size_t len);
 
+// 从 X.509 证书 DER 提取 subject 字段（DN）的完整 DER 编码（含 tag+len）——同一行走，
+// 取 subject（第 5 个元素）。用途：作为 TLS server 端 CertificateRequest 的可接受 CA 名，
+// 与 KDE（Qt setCaCertificates）/Android（Java keyStore 信任项）把「对端证书主体」
+// 作为 CA 列表的行为对等；对端 OpenSSL/SunJSSE 客户端据此决定是否出示自身证书。
+std::string extractSubjectDnDer(const uint8_t *certDer, size_t len);
+
 // KDE PairingHandler::verificationKey 的等价实现（三端互操作锚点）：
 //   a,b = 双方证书公钥 SPKI DER，按字节序排序（大者在前）
 //   SHA256(a || b [+ 十进制 timestamp 字符串（v8）]) → hex 前 8 位大写

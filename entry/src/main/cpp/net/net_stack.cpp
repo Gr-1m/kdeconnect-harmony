@@ -4,6 +4,7 @@
 #include "tcp_server.h"
 #include "tcp_connection.h"
 #include "packet_io.h"
+#include "net_util.h"
 #include "net_log.h"
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
@@ -11,6 +12,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 
@@ -27,24 +29,8 @@ int64_t nowMs()
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
-// 仅接受私网地址直连（WP-2；公网/非法来源直接拒绝）
-bool isPrivateIpv4(const std::string &host)
-{
-    unsigned a[4] = {0, 0, 0, 0};
-    if (::sscanf(host.c_str(), "%u.%u.%u.%u", &a[0], &a[1], &a[2], &a[3]) != 4) {
-        return false;
-    }
-    for (int i = 0; i < 4; ++i) {
-        if (a[i] > 255) {
-            return false;
-        }
-    }
-    const unsigned ip = (a[0] << 24) | (a[1] << 16) | (a[2] << 8) | a[3];
-    const unsigned t = ip >> 24, t2 = ip >> 20;
-    return t == 10 || t == 127 || (t == 172 && t2 >= 0x171 && t2 <= 0x17F) ||
-           (t == 192 && ((ip >> 16) & 0xFF) == 168) ||
-           (t == 169 && ((ip >> 16) & 0xFF) == 254);
-}
+// 仅接受私网地址直连（WP-2；公网/非法来源直接拒绝）—— 判定实现在 net_util.cpp
+// （P1-1：172.16/12 边界曾写错，故独立成 host 可测单元并配边界回归用例）。
 
 // 对端地址取自 socket（identity JSON 无 host 字段；REVIEW §3.4 建议 11）
 std::string peerHostOf(int fd)
@@ -357,6 +343,8 @@ void NetStack::eventLoop()
         if (payload_) {
             payload_->onTick(now);
         }
+        // 活跃链路集合：DeviceLost 判定以连接状态为主（P1-2）
+        std::vector<std::string> linkedDevices;
         {
             std::lock_guard<std::mutex> lk(connMutex_);
             for (auto it = connections_.begin(); it != connections_.end(); ) {
@@ -377,16 +365,30 @@ void NetStack::eventLoop()
                         it = connections_.erase(it);
                         continue;
                     }
+                    if (!c.deviceId().empty() && !c.isClosed()) {
+                        linkedDevices.push_back(c.deviceId());
+                    }
                     ++it;
                 }
             }
         }
         for (auto it = lastSeenMs_.begin(); it != lastSeenMs_.end(); ) {
+            // P1-2：KDE/Android 只在启动/网络变化时广播（kdeconnect-kde
+            // lanlinkprovider.cpp:149,192；kdeconnect-android LanLinkProvider.java:590,605），
+            // 不周期广播 → 「60s 无广播」不等于离线。有活跃链路即在线：刷新时间戳、
+            // 不派发 DeviceLost（链路断开后重新起算，给 UI 一个宽限窗口）。
+            const bool linked = std::find(linkedDevices.begin(), linkedDevices.end(),
+                                          it->first) != linkedDevices.end();
+            if (linked) {
+                it->second = now;
+                ++it;
+                continue;
+            }
             if (now - it->second > DISCOVERY_TIMEOUT_MS) {
                 NetEvent ev {};
                 ev.type = EventType::DeviceLost;
                 ev.deviceId = it->first;
-                LOGI("device lost (no broadcast for %d ms): %s",
+                LOGI("device lost (no broadcast and no link for %d ms): %s",
                      DISCOVERY_TIMEOUT_MS, it->first.c_str());
                 dispatchEvent(ev);
                 it = lastSeenMs_.erase(it);
@@ -678,9 +680,24 @@ void NetStack::dispatchFrames(TcpConnection &conn)
 
         uint64_t xferId = 0;
         if (payloadSize != 0 && payloadPort != 0 && !conn.deviceId().empty()) {
-            // 收到带 payload 的帧：自动建 payload 拉取任务（spool 落盘，设计 v0.2 §2）
-            xferId = payload_->startReceive(conn.deviceId(), conn.peerHost(),
-                                            payloadPort, payloadSize, body);
+            // P1-3（A10）：只对已配对/已钉扎的设备自动拉取 payload。
+            // 未配对设备推送带 payload 的帧 → 不建拉取任务（spool 不落文件）+ error 事件；
+            // 帧本身仍派发（ArkTS PacketRouter 自行判定策略）。
+            bool trusted = false;
+            {
+                std::lock_guard<std::mutex> lk(trustMutex_);
+                trusted = trustedCertPem_.count(conn.deviceId()) != 0;
+            }
+            if (trusted) {
+                // 收到带 payload 的帧：自动建 payload 拉取任务（spool 落盘，设计 v0.2 §2）
+                xferId = payload_->startReceive(conn.deviceId(), conn.peerHost(),
+                                                payloadPort, payloadSize, body);
+            } else {
+                LOGE("payload push from untrusted device %s rejected (port=%u size=%lld)",
+                     conn.deviceId().c_str(), payloadPort, (long long) payloadSize);
+                dispatchError(conn.deviceId(), EACCES,
+                              "payload rejected: device not paired/trusted");
+            }
         }
 
         NetEvent ev {};
@@ -846,6 +863,36 @@ int64_t NetStack::nowMs()
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
+// 已知的对端证书 PEM：活连接上的对端叶证书（最新）→ 信任存储（ArkTS 回灌，WP-2 钉扎）
+// → 掉线后的缓存。调用链（payload send 方向 → TLS server client-auth 的 CA 名）在
+// NAPI/JS 线程，**不在 PayloadManager::mu_ 内**，故可安全取 connMutex_/trustMutex_（P0-3）。
+std::string NetStack::peerCertPem(const std::string &deviceId)
+{
+    {
+        std::lock_guard<std::mutex> lk(connMutex_);
+        for (auto &p : connections_) {
+            TcpConnection &c = *p.second;
+            if (c.deviceId() != deviceId || c.tlsEngine() == nullptr) {
+                continue;
+            }
+            std::vector<uint8_t> der = c.tlsEngine()->peerLeafCertDer();
+            if (!der.empty()) {
+                return derToPem("CERTIFICATE", der.data(), der.size());
+            }
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(trustMutex_);
+        auto it = trustedCertPem_.find(deviceId);
+        if (it != trustedCertPem_.end()) {
+            return it->second;
+        }
+    }
+    std::lock_guard<std::mutex> lk(connMutex_);
+    auto it = peerCertPemCache_.find(deviceId);
+    return it != peerCertPemCache_.end() ? it->second : std::string();
+}
+
 bool NetStack::epollAdd(int fd, uint32_t events)
 {
     epoll_event ev {};
@@ -902,22 +949,21 @@ void NetStack::removeTrustedCertificate(const std::string &deviceId)
 
 std::string NetStack::getPeerCertificate(const std::string &deviceId)
 {
-    {
-        std::lock_guard<std::mutex> lk(connMutex_);
-        for (auto &p : connections_) {
-            TcpConnection &c = *p.second;
-            if (c.deviceId() == deviceId && c.state() == ConnectionState::Encrypted &&
-                c.tlsEngine() != nullptr) {
-                std::vector<uint8_t> der = c.tlsEngine()->peerLeafCertDer();
-                if (!der.empty()) {
-                    std::string pem = derToPem("CERTIFICATE", der.data(), der.size());
-                    peerCertPemCache_[deviceId] = pem;
-                    return pem;
-                }
+    std::lock_guard<std::mutex> lk(connMutex_);
+    for (auto &p : connections_) {
+        TcpConnection &c = *p.second;
+        if (c.deviceId() == deviceId && c.state() == ConnectionState::Encrypted &&
+            c.tlsEngine() != nullptr) {
+            std::vector<uint8_t> der = c.tlsEngine()->peerLeafCertDer();
+            if (!der.empty()) {
+                std::string pem = derToPem("CERTIFICATE", der.data(), der.size());
+                peerCertPemCache_[deviceId] = pem;
+                return pem;
             }
         }
     }
     // 掉线后保留（MSG43_TO_ZCODE §1.4）：命中缓存则返回，否则空串
+    // （缓存读写一律在 connMutex_ 内，避免与 peerCertPem() 并发访问）
     auto it = peerCertPemCache_.find(deviceId);
     return it != peerCertPemCache_.end() ? it->second : std::string();
 }

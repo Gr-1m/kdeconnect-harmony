@@ -22,6 +22,13 @@ constexpr size_t PAYLOAD_CHUNK = 16 * 1024;
 constexpr int64_t PAYLOAD_PROGRESS_INTERVAL_MS = 100; // 节流 ≤10Hz（WP1 设计 v0.2 §2）
 
 // NetStack 实现的宿主钩子。payload 模块只依赖本接口（host 可测，CPP_GUIDE §2）。
+//
+// 锁序契约（P0-3 ABBA 防护，MSG57）：PayloadManager::mu_ 只保护本模块状态。
+// mu_ → host 回调方向只允许「不取其他锁」的实现（epollAdd/epollDel/postPayloadEvent/nowMs）；
+// 任何会反向取锁的 host 调用（sendControlFrame → NetStack::connMutex_；
+// peerCertPem → NetStack::connMutex_/trustMutex_）**必须在持有 mu_ 之外调用**。
+// 反例（已修）：startSend 曾持 mu_ 调 sendControlFrame，与网络线程
+// connMutex_ → mu_（startReceive/onDeviceDown）构成 ABBA。
 class PayloadHost {
 public:
     virtual ~PayloadHost() = default;
@@ -34,6 +41,9 @@ public:
     // 事件出口（tsfn 桥，线程安全）。
     virtual void postPayloadEvent(NetEvent ev) = 0;
     virtual int64_t nowMs() = 0;
+    // 已知的对端证书 PEM（信任存储/既有连接缓存；空 = 未知）。取锁，禁止在 mu_ 内调用。
+    // 用途：send 方向作为 TLS server 需向对端宣告其证书 subject DN 作为可接受 CA 名。
+    virtual std::string peerCertPem(const std::string &deviceId) = 0;
 };
 
 struct PayloadJob {
@@ -51,6 +61,9 @@ struct PayloadJob {
     int64_t lastProgressMs = 0;
     std::string pending;            // send：TLS 引擎未接收的剩余字节
     std::string spoolPath;          // receive 专用
+    // send 专用（P0-2）：对端证书 subject DN 的 DER（写入 CertificateRequest 的可接受 CA 名）。
+    // 空 = 未知 → 占位名 + 容忍缺失，最终由 CN 校验兜底。
+    std::vector<uint8_t> peerCaDnDer;
     bool started = false;
     bool finished = false;
 };
