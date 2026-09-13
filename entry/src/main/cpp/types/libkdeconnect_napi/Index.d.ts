@@ -56,6 +56,9 @@ export type NetEvent = NetEventBase;
 
 // 注册事件回调（必须在 start 之前调用，且仅在主线程调用一次）。
 export const init: (eventCallback: (event: NetEvent) => void) => void;
+// 拆除事件桥 + 网络栈（幂等）。ArkTS 页面重建时必须先调它：init 严格拒绝二次初始化
+// （否则抛 "already initialized"、事件桥断裂）。shutdown 之后需重新 init() + start()。
+export const shutdown: () => void;
 
 // 启动网络栈：UDP 发现广播 + TCP 监听 + TLS 就绪。
 // 返回 false = 启动失败（端口冲突 / UDP bind 失败 / epoll 失败）——UI 必须据此提示，
