@@ -34,9 +34,11 @@
 
 # --- linkers ---------------------------------------------------------------
 # rustc's target specs for *-unknown-linux-ohos use `linker-flavor = "gnu-cc"`,
-# so a plain clang driver wrapper is sufficient (no `cc`-style adapter), and the
-# wrapper's `-L.../llvm/lib/<arch>-linux-ohos` is what makes rustc's own
-# `-lunwind` (sysroot has no libunwind) resolvable.
+# so a plain clang driver wrapper is sufficient (no `cc`-style adapter). No `-L`
+# is needed for the unwind runtime that rustc's own `-lunwind` pulls in: the
+# clang driver emits `-l:libunwind.a` for this target and already searches its
+# own runtime dir, where the SDK's only libunwind.a lives (the sysroot has
+# none). Measurements are recorded in the wrapper headers.
 [target.aarch64-unknown-linux-ohos]
 linker = "aarch64-linux-ohos-clang"
 
