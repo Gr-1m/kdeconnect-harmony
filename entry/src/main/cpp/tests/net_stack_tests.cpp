@@ -9,9 +9,11 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <csignal>
 #include <cstdlib>
 #include <sys/wait.h>
@@ -27,6 +29,7 @@
 
 #include "../net/cert_gen.h"
 #include "../net/net_stack.h"
+#include "../net/net_util.h"
 
 using namespace kdeconnect;
 
@@ -35,6 +38,8 @@ namespace {
 int g_failed = 0;
 int g_cases = 0;
 const char *g_case = "?";
+// main() 里启动用的基础配置：需要改配置重启 net stack 的用例（端口探测）用完要还原
+NetConfig g_baseCfg;
 
 #define CHECK(cond) \
     do { \
@@ -296,6 +301,124 @@ int runPeerMode(uint16_t targetPort)
     return 0;
 }
 
+// —————— ④ 端口未知（0）的拨号：探测 + 缓存（DevEco 第五次报，2026-09-13）——————
+//
+// 场景：KDE 只在 UDP 广播的 identity 里带 tcpPort，**拨入连接的 identity 不带**
+// （kdeconnect-kde core/backends/lan/lanlinkprovider.cpp:254 vs DeviceInfo::toIdentityPacket()）⇒
+// 「只被对端拨入过」的设备在发现列表里端口恒为 0，用户点连接无从下手。
+// 契约：connectToPeer(host, 0) 必须自己把端口探出来并真的连上（结果仍经 connected/error 事件）。
+
+// 本机回环上起一个监听者，返回 fd 并回填实际端口（0 端口由内核分配）。
+// addr：监听地址，默认 127.0.0.1；端口探测用例用 127.0.0.2 —— 同机同址可能已被别的
+// 监听者/缓存占用（测试进程里真跑着 KDE daemon 与对端栈），换一个回环地址才能确定性验证。
+int listenOnEphemeral(uint16_t &port, const char *addr = "127.0.0.1")
+{
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return -1;
+    }
+    int one = 1;
+    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    struct sockaddr_in a {};
+    a.sin_family = AF_INET;
+    a.sin_port = 0;
+    if (::inet_pton(AF_INET, addr, &a.sin_addr) != 1) {
+        ::close(fd);
+        return -1;
+    }
+    if (::bind(fd, reinterpret_cast<struct sockaddr *>(&a), sizeof(a)) != 0 ||
+        ::listen(fd, 4) != 0) {
+        ::close(fd);
+        return -1;
+    }
+    socklen_t len = sizeof(a);
+    if (::getsockname(fd, reinterpret_cast<struct sockaddr *>(&a), &len) != 0) {
+        ::close(fd);
+        return -1;
+    }
+    port = ntohs(a.sin_port);
+    return fd;
+}
+
+// 探测原语：监听中的端口必须命中；已关闭的端口必须探测不到；区间内多个监听者取其一（升序优先）。
+void portProbeFindsListener()
+{
+    uint16_t live = 0;
+    const int lfd = listenOnEphemeral(live);
+    CHECK_MSG(lfd >= 0, "回环监听端口创建失败");
+    if (lfd < 0) {
+        return;
+    }
+    CHECK_MSG(findListeningTcpPort("127.0.0.1", live, live, 300) == live,
+              "单端口区间未命中监听中的 %u", live);
+
+    // 刚关闭的临时端口：必须探不到（不能把「曾经拿到过」当成在监听）
+    uint16_t dead = 0;
+    const int dfd = listenOnEphemeral(dead);
+    CHECK_MSG(dfd >= 0, "回环监听端口创建失败(dead)");
+    if (dfd >= 0) {
+        ::close(dfd);
+    }
+    CHECK_MSG(findListeningTcpPort("127.0.0.1", dead, dead, 300) == 0,
+              "已关闭端口 %u 被误判为监听中", dead);
+
+    // 区间内两个监听者：结果必须是其中之一（端口升序扫描 ⇒ 通常是较小者）
+    uint16_t live2 = 0;
+    const int lfd2 = listenOnEphemeral(live2);
+    CHECK_MSG(lfd2 >= 0, "回环监听端口创建失败(live2)");
+    if (lfd2 >= 0) {
+        const uint16_t lo = std::min(live, live2);
+        const uint16_t hi = std::max(live, live2);
+        const uint16_t hit = findListeningTcpPort("127.0.0.1", lo, hi, 300);
+        CHECK_MSG(hit == lo || hit == hi, "区间 [%u,%u] 探测结果 %u 不是任一监听端口", lo, hi, hit);
+        ::close(lfd2);
+    }
+
+    // 非法 host：不得误报
+    CHECK(findListeningTcpPort("not-an-ip", 1, 2, 50) == 0);
+    ::close(lfd);
+}
+
+// 端到端：注入单端口探测区间（本机 1716-1764 常被桌面 kdeconnectd 占用）⇒ connectToPeer(host, 0)
+// 必须探到该端口并真的连上（监听者收到握手 = 探测+拨号链路生效）。
+void dialUnknownPortProbesAndConnects()
+{
+    // 用 127.0.0.2：同机 127.0.0.1 上真跑着 KDE daemon 与测试用的对端栈，地址会串味
+    uint16_t port = 0;
+    const int lfd = listenOnEphemeral(port, "127.0.0.2");
+    CHECK_MSG(lfd >= 0, "回环监听端口创建失败");
+    if (lfd < 0) {
+        return;
+    }
+
+    NetStack &ns = netStack();
+    ns.stop();
+    NetConfig cfg = g_baseCfg;
+    cfg.portProbeMin = port;
+    cfg.portProbeMax = port;
+    CHECK_MSG(ns.start(cfg), "按注入探测区间重启 net stack 失败");
+
+    CHECK_MSG(ns.connectToPeer("127.0.0.2", 0), "端口未知的拨号请求被拒绝（应入队后返回 true）");
+
+    struct pollfd pfd {};
+    pfd.fd = lfd;
+    pfd.events = POLLIN;
+    const int pr = ::poll(&pfd, 1, 3000);
+    CHECK_MSG(pr > 0, "端口未知拨号未能连到监听端口 %u（探测或拨号未生效）", port);
+    if (pr > 0) {
+        const int cfd = ::accept(lfd, nullptr, nullptr);
+        CHECK_MSG(cfd >= 0, "accept 失败");
+        if (cfd >= 0) {
+            ::close(cfd);
+        }
+    }
+
+    // 还原基础配置，避免影响同进程后续用例
+    ns.stop();
+    ns.start(g_baseCfg);
+    ::close(lfd);
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -313,6 +436,7 @@ int main(int argc, char **argv)
     cfg.tcpPort = 1745;                      // 避开 1716（可能与在跑的桌面 daemon 冲突）
     cfg.spoolDir = "/tmp/kdc_nettest_spool";
     cfg.connectHandshakeTimeoutMs = 1500;    // 短上限，保证 CI 快
+    g_baseCfg = cfg;
 
     NetStack &ns = netStack();
     ns.setEventCallback(onEvent);
@@ -324,6 +448,8 @@ int main(int argc, char **argv)
     runCase("connectToClosedPortReportsReason", connectToClosedPortReportsReason);
     runCase("muteePeerTimesOutBounded", muteePeerTimesOutBounded);
     runCase("peerIdentityIsDispatchedAsPacket", peerIdentityIsDispatchedAsPacket);
+    runCase("portProbeFindsListener", portProbeFindsListener);
+    runCase("dialUnknownPortProbesAndConnects", dialUnknownPortProbesAndConnects);
 
     ns.stop();
     std::printf("net stack tests: %d cases, %d failed\n", g_cases, g_failed);

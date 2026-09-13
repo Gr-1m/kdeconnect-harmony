@@ -9,6 +9,8 @@
 //   ./run_desktop.sh pair                    # 连 <host>:1716 并发起配对（桌面端需接受）
 //   ./run_desktop.sh pair <host> <port>      # 指定对端
 //   ./run_desktop.sh sendfile <path>         # 配对后发文件（桌面端会收到 share.request）
+//   ./run_desktop.sh probe [host]            # 端口未知（0）拨号：native 自行探测并建链
+//                                            # （KDE 拨入的 identity 不带 tcpPort，见 net_util.h）
 //
 // 退出码：0 = 成功（收到对端 {pair:true} / 传输 finished），1 = 失败/超时。
 
@@ -299,8 +301,10 @@ int main(int argc, char **argv)
     ns.setCapabilities({"kdeconnect.ping", "kdeconnect.identity", "kdeconnect.pair",
                         "kdeconnect.share.request", "kdeconnect.clipboard"},
                        {"kdeconnect.ping", "kdeconnect.share.request", "kdeconnect.clipboard"});
-    note("[*] 本机 deviceId=%s，连接 %s:%u ...", deviceId.c_str(), host.c_str(), port);
-    if (!ns.connectToPeer(host, port)) {
+    note("[*] 本机 deviceId=%s，连接 %s:%u ...", deviceId.c_str(), host.c_str(),
+         mode == "probe" ? 0 : port);
+    // probe：故意传 0，验证「端口未知 ⇒ native 自行探测（KDE 端口区间）⇒ 建链」这条路径
+    if (!ns.connectToPeer(host, mode == "probe" ? 0 : port)) {
         note("[!] connectToPeer failed");
         ns.stop();
         return 1;
@@ -398,6 +402,10 @@ int main(int argc, char **argv)
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
+        rc = 0;
+    } else if (mode == "probe") {
+        // 建链成功即证明：端口探测命中了真实监听端口（对端 identity/TLS 都过了）
+        note("[*] 端口未知拨号成功：native 探测到对端端口并完成 TLS + identity 交换");
         rc = 0;
     } else {
         note("[!] 未知模式: %s", mode.c_str());

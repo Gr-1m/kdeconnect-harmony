@@ -138,23 +138,14 @@ bool NetStack::start(const NetConfig &config)
     ev.data.fd = wakeFd_;
     epoll_ctl(epollFd_, EPOLL_CTL_ADD, wakeFd_, &ev);
 
-    udp_ = std::make_unique<UdpDiscovery>();
+    // TCP server 先建：`listen()` 在目标端口被占时会顺序回退（1716→1764，KDE 同款语义），
+    // 而 identity 里广播的 tcpPort 必须是**实际绑定**的端口 —— 否则本机 1716 被别的实例/桌面
+    // daemon 占用时，我们对外声称 1716、实际在 1717，对端会拨到别人的 daemon 上（实测踩到过）。
+    tcpServer_ = std::make_unique<TcpServer>();
     uint16_t tcpPort = config_.tcpPort;
     if (tcpPort == 0) {
         tcpPort = TCP_PORT_MIN;
     }
-
-    if (!udp_->init(config_.deviceId, config_.deviceName, config_.deviceType, tcpPort)) {
-        LOGE("udp init failed");
-        stop();
-        return false;
-    }
-    struct epoll_event udpEv {};
-    udpEv.events = EPOLLIN;
-    udpEv.data.fd = udp_->fd();
-    epoll_ctl(epollFd_, EPOLL_CTL_ADD, udp_->fd(), &udpEv);
-
-    tcpServer_ = std::make_unique<TcpServer>();
     if (!tcpServer_->listen(tcpPort)) {
         LOGE("tcp listen failed on port %u", tcpPort);
         stop();
@@ -164,6 +155,18 @@ bool NetStack::start(const NetConfig &config)
     srvEv.events = EPOLLIN;
     srvEv.data.fd = tcpServer_->fd();
     epoll_ctl(epollFd_, EPOLL_CTL_ADD, tcpServer_->fd(), &srvEv);
+
+    udp_ = std::make_unique<UdpDiscovery>();
+    if (!udp_->init(config_.deviceId, config_.deviceName, config_.deviceType,
+                    tcpServer_->port())) {
+        LOGE("udp init failed");
+        stop();
+        return false;
+    }
+    struct epoll_event udpEv {};
+    udpEv.events = EPOLLIN;
+    udpEv.data.fd = udp_->fd();
+    epoll_ctl(epollFd_, EPOLL_CTL_ADD, udp_->fd(), &udpEv);
 
     udp_->broadcast();
     lastBroadcastMs_ = nowMs();
@@ -211,6 +214,24 @@ void NetStack::stop()
 
 bool NetStack::connectToPeer(const std::string &host, uint16_t port)
 {
+    // 端口未知（0）：发现列表里「只被对端拨入过」的设备就是这个状态（KDE 拨入的 identity 不带 tcpPort，
+    // 见 net_stack.h PendingDial 注释）。探测会阻塞 ≤PORT_PROBE_TIMEOUT_MS，只能交给事件循环线程，
+    // 所以这里入队即返回 true —— 结果照例经 connected / error 事件回到 ArkTS（契约不变）。
+    if (port == 0) {
+        if (host.empty()) {
+            dispatchError({}, EINVAL, "connectToPeer: host required when port unknown");
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lk(dialMutex_);
+            pendingDials_.push_back(PendingDial {host});
+        }
+        wakeLoop();
+        LOGI("dial with unknown port queued: %s (probe %u-%u)", host.c_str(), TCP_PORT_MIN,
+             TCP_PORT_MAX);
+        return true;
+    }
+
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (fd < 0) {
         LOGE("socket failed: %s", strerror(errno));
@@ -250,7 +271,68 @@ bool NetStack::connectToPeer(const std::string &host, uint16_t port)
     epoll_ctl(epollFd_, EPOLL_CTL_ADD, fd, &ev);
 
     LOGI("connecting to %s:%u (fd=%d)", host.c_str(), port, fd);
+    // 注意：这里**不**缓存 host→port —— 端口必须验证过（建链成功或对端 UDP identity 声明）才可信，
+    // 否则失败拨号的端口会污染缓存，下次「端口未知」的拨号会直接命中那个死端口（实测踩到）。
     return true;
+}
+
+// —— 端口未知拨号：探测 + 缓存（头文件有触发场景说明）——
+void NetStack::rememberPeerPort(const std::string &host, uint16_t port)
+{
+    if (host.empty() || port == 0) {
+        return;
+    }
+    std::lock_guard<std::mutex> lk(dialMutex_);
+    portByHost_[host] = port;
+}
+
+uint16_t NetStack::cachedPortFor(const std::string &host)
+{
+    std::lock_guard<std::mutex> lk(dialMutex_);
+    auto it = portByHost_.find(host);
+    return it == portByHost_.end() ? 0 : it->second;
+}
+
+void NetStack::forgetPeerPort(const std::string &host)
+{
+    std::lock_guard<std::mutex> lk(dialMutex_);
+    portByHost_.erase(host);
+}
+
+void NetStack::processPendingDials()
+{
+    std::vector<PendingDial> dials;
+    {
+        std::lock_guard<std::mutex> lk(dialMutex_);
+        if (pendingDials_.empty()) {
+            return;
+        }
+        dials.swap(pendingDials_);
+    }
+
+    for (const PendingDial &d : dials) {
+        const uint16_t probeMin = config_.portProbeMin != 0 ? config_.portProbeMin : TCP_PORT_MIN;
+        const uint16_t probeMax = config_.portProbeMax != 0 ? config_.portProbeMax : TCP_PORT_MAX;
+        // 缓存只当线索：先单端口校验一次（约 1ms）。同一 host 上可能先后出现不同设备/端口
+        // （对端重启换端口、host 上另跑一个实例），缓存过期必须自愈，否则会**永久**拨死端口。
+        uint16_t port = cachedPortFor(d.host);
+        if (port != 0 && findListeningTcpPort(d.host, port, port, PORT_PROBE_TIMEOUT_MS) == 0) {
+            LOGI("port cache for %s is stale (%u), dropping", d.host.c_str(), port);
+            forgetPeerPort(d.host);
+            port = 0;
+        }
+        if (port == 0) {
+            port = findListeningTcpPort(d.host, probeMin, probeMax, PORT_PROBE_TIMEOUT_MS);
+        }
+        if (port == 0) {
+            LOGI("port probe: no listener on %s in %u-%u", d.host.c_str(), probeMin, probeMax);
+            dispatchConnectError(d.host, 0, EHOSTUNREACH, "port probe");
+            continue;
+        }
+        LOGI("port resolved for %s: %u (%s)", d.host.c_str(), port,
+             cachedPortFor(d.host) == port ? "cache" : "probe");
+        connectToPeer(d.host, port);
+    }
 }
 
 void NetStack::wakeLoop()
@@ -365,6 +447,9 @@ void NetStack::eventLoop()
                 onConnectionWritable(fd);
             }
         }
+
+        // 无端口的拨号请求：探测 + 拨号都在本线程做（≤500ms 阻塞，不能放在 JS 线程）
+        processPendingDials();
 
         // 定时器 tick：identity 超时 + 发现超时（DeviceLost）+ TX 续传
         const int64_t now = nowMs();
@@ -493,6 +578,9 @@ void NetStack::onUdpReadable()
     // 同设备去抖：DISCOVERY_DEBOUNCE_MS 内的重复广播不再派发（AGENTS.md 不变量）
     const bool debounced = !firstSeen && (now - seen->second) < DISCOVERY_DEBOUNCE_MS;
     lastSeenMs_[info.deviceId] = now;
+
+    // KDE 只在 UDP 广播里带 tcpPort：这是最可靠的学习机会（后续拨号即使拿到 0 也能复用）
+    rememberPeerPort(host, info.tcpPort);
 
     if (debounced) {
         LOGI("device rediscovered within %d ms, ignoring: %s",
@@ -642,6 +730,8 @@ bool NetStack::handlePlainIdentity(TcpConnection &conn, const std::string &frame
     conn.setDeviceId(info.deviceId);
     conn.setPeerInfo(conn.peerHost().empty() ? peerHostOf(conn.fd()) : conn.peerHost(),
                      info.tcpPort, info.deviceName, info.deviceType);
+    // KDE 拨入的 identity 不含 tcpPort ⇒ 这里通常为 0（不影响拨入本身）；有值（其他实现）就记缓存
+    rememberPeerPort(conn.peerHost(), info.tcpPort);
 
     // 对端主动连入 = 我们确知该设备在线。这里补发 deviceDiscovered，
     // 使「发现列表」不只依赖对端的 UDP 广播（对端只在启动/网络变化时广播，
@@ -766,6 +856,13 @@ void NetStack::dispatchFrames(TcpConnection &conn)
                     cev.deviceName = conn.peerName();
                     cev.deviceType = conn.peerType();
                     cev.host = conn.peerHost();
+                    // 出向连接：peerPort 即拨号目标端口（对端真实监听端口），供 App 显示真实地址；
+                    // 入向连接的对端端口是临时端口，报了反而误导，故保持 0。
+                    if (!conn.isIncoming()) {
+                        cev.tcpPort = conn.peerPort();
+                        // 建链成功才缓存：这是「验证过的端口」，供后续端口未知的拨号直接复用
+                        rememberPeerPort(conn.peerHost(), conn.peerPort());
+                    }
                     cev.role = conn.tlsRole();
                     dispatchEvent(cev);
                     LOGI("connected device=%s fd=%d role=%s", conn.deviceId().c_str(),
@@ -860,6 +957,10 @@ void NetStack::onConnectionReadable(int fd)
                 ev.deviceName = conn.peerName();
                 ev.deviceType = conn.peerType();
                 ev.host = conn.peerHost();
+                if (!conn.isIncoming()) {
+                    ev.tcpPort = conn.peerPort();   // 同上：仅出向连接的端口有意义
+                    rememberPeerPort(conn.peerHost(), conn.peerPort());
+                }
                 ev.role = conn.tlsRole();
                 dispatchEvent(ev);
                 LOGI("connected device=%s fd=%d role=%s", conn.deviceId().c_str(),

@@ -44,6 +44,11 @@ constexpr int DISCOVERY_LONG_INTERVAL_MS = 60000;      // 稳定期：长期低�
 constexpr bool DISCOVERY_BROADCAST_WHILE_LINKED = false;
 // 等待 socket 可写的单次上限（非阻塞写不可用时的兜底等待）
 constexpr int TLS_WRITE_WAIT_MS = 2000;
+// —— 无端口拨号的端口探测（DevEco 报「KDE 拨入过的设备 tcpPort=0」，2026-09-13）——
+// KDE 只在 UDP 广播里带 tcpPort（lanlinkprovider.cpp:254），拨入连接的 identity 不带 ⇒
+// 只被拨入过的设备端口未知。此时在 [TCP_PORT_MIN, TCP_PORT_MAX] 并行探测真在 listen 的端口，
+// 整轮 poll 的上限即本值（用户在发现页点连接可容忍的半秒级等待；探测跑在事件循环线程上）。
+constexpr int PORT_PROBE_TIMEOUT_MS = 500;
 // 单连接发送队列上限（对端长期不读时防止内存无界增长）
 constexpr size_t MAX_TX_QUEUE_BYTES = 8u * 1024u * 1024u;
 
@@ -89,6 +94,10 @@ struct NetConfig {
     std::string spoolDir;
     // TLS 握手上限（ms；0 = 用 CONNECT_HANDSHAKE_TIMEOUT_MS 默认值）。测试可注入以缩短耗时。
     int connectHandshakeTimeoutMs = 0;
+    // 端口探测区间（0 = 用 TCP_PORT_MIN/TCP_PORT_MAX）。测试可注入：本机 1716-1764 常被
+    // 桌面 kdeconnectd 占用，注入单端口区间才能确定性地验证「端口未知 ⇒ 探测 ⇒ 拨号」这条路径。
+    uint16_t portProbeMin = 0;
+    uint16_t portProbeMax = 0;
 };
 
 enum class EventType {
