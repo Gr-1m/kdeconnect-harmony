@@ -117,7 +117,15 @@ bool TcpConnection::writePlainAll(const uint8_t *data, size_t len)
 bool TcpConnection::startTlsHandshake(const std::string &certPem, const std::string &keyPem)
 {
     tls_ = std::make_unique<TlsEngine>(fd_, tlsRole());
-    if (!tls_->init(certPem, keyPem)) {
+    // 控制连接作为 TLS server 时（= 本机主动发起的连接）请求对端证书：
+    //   - 目的：捕获对端叶证书（验证码/钉扎/CN 校验的数据源）。TLS client 角色由
+    //     client 分支的 capture_x509_vtable 直接拿对端证书，server 角色则必须主动请求。
+    //   - 容忍缺失（tolerateNoCert）：老客户端/Java 客户端可能不出示证书，
+    //     控制连接不能因此失败（与 payload 通道的严格模式区分）。
+    ServerClientAuth clientAuth;
+    clientAuth.tolerateNoCert = true;
+    const ServerClientAuth *authArg = (tlsRole() == TlsRole::Server) ? &clientAuth : nullptr;
+    if (!tls_->init(certPem, keyPem, authArg)) {
         LOGE("tls init failed fd=%d", fd_);
         state_ = ConnectionState::Closing;
         return false;

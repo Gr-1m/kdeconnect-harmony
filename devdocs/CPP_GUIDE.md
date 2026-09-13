@@ -121,6 +121,13 @@ protocolVersion=8；UDP 1716；TCP 1716–1764 顺序探测；payload 端口 ≥
 - **x509 vtable 必须是静态初始化对象**：不得从 `br_x509_minimal_vtable` 抄字段值（会产生动态初始化，
   在跨 TU 初始化顺序下前几个槽为 0 → `x509-start-chain` 处 call null，已实测）；
   用直通转发函数（`capture_start_chain`/`capture_get_pkey`）在运行期查表。
+- **控制连接也必须捕获对端证书（2026-09-13 定稿）**：TLS **server** 角色（= 本机主动发起的连接，
+  手动连接/首次连接的主路径）必须请求对端证书：`startTlsHandshake()` 传
+  `ServerClientAuth{tolerateNoCert=true}`。否则 `getPeerCertificate()`/`getPairVerificationCode()`
+  全返回空 → 配对弹窗**无验证码**、`TrustStore` 存不到对端证书（钉扎失效）、payload 发送方向
+  只能走占位 CA 名 + 容忍缺失的降级路径。**实测**：修前 host 集成工具（`tests/desktop_pair.cpp`）
+  与本机 KDE 配对时验证码为空串，修后为 `F3C16020` 且与 KDE 通知里的 Key 逐字一致。
+  TLS client 角色无需请求（client 分支的 `capture_x509_vtable` 直接拿对端证书）。
 
 ## 7. 构建与验证
 
@@ -145,6 +152,22 @@ protocolVersion=8；UDP 1716；TCP 1716–1764 顺序探测；payload 端口 ≥
   发送/接收/落盘/证书 CN 拒绝/`mu_`↔宿主锁序）。BearSSL 由官方 Makefile 构建到 `/tmp`，不写 vendor 目录。
 - 改动 payload/TLS 时，**必须**让 `tests/payload_e2e.cpp` 覆盖的新行为在「回退该修复」后失败
   （回归用例的必要性验证），再提交。
+- **host 集成工具（对真桌面，不进 CI）**：`entry/src/main/cpp/tests/run_desktop.sh pair|sendfile|serve`
+  用**真实 native 全栈**连真桌面 KDE（默认 `<host>:1716`），把 `tests/desktop_pair.cpp` 当端点：
+  可验证「配对 + 双方验证码一致 + 双向 payload（A1/A1b）」，**不需要模拟器**。四条使用注意：
+  1. 工具固定 `tcpPort=1735`：与本机同时跑的 kdeconnectd 抢 1716 会让局域网其他设备拨错 daemon（实测混淆）；
+  2. spool 目录经 `NetConfig.spoolDir` 指到 `/tmp`（设备默认 spool 是沙箱路径 `/data/storage/...`）；
+  3. 对端（KDE）只把 packet 交给插件的前提是**本机 outgoingCapabilities 含该 packet type**——
+     发文件必须含 `kdeconnect.share.request`，否则 KDE 记 `discarding unsupported packet`、不来拉 payload（30s 超时）；
+  4. 接收方向需先 `setTrustedCertificate(peer, getPeerCertificate(peer))`（模拟 App 的 AP-3），
+     否则被 P1-3 信任门禁拒绝（`payload rejected: device not paired/trusted`）。
+  另：同一桌面端反复跑会累积陈旧 link，KDE 取**首个 link** 发 packet → 偶发丢包；重跑前重启对端 daemon 最干净。
+- 调试对端 KDE：`QT_LOGGING_RULES=kdeconnect.core.debug=true QT_ASSUME_STDERR_HAS_CONSOLE=1 kdeconnectd`
+  （只设前者不会输出到重定向文件，实测）；`gdbus monitor --dest org.kde.kdeconnect` 看状态机，
+  `gdbus call … device.verificationKey` 读对端验证码（与 App 弹窗里的码逐字比对）。
+- **M1 native 侧验证状态（2026-09-13，对真 KDE 实测）**：native→桌面 1 MiB（sha256 一致 ✅）、
+  桌面→native 512 KiB（sha256 一致 + `settle` 落盘 ✅）、配对成功（`pairState` 2→3、双方验证码一致 ✅）。
+  模拟器侧 A1/A1b/A8/A9/A10 仍需 DevEco 在 Win10 跑（NAT 下走手动连接）。
 - 环境体检（每次开工）：`local.properties` 是否被改成 Windows 路径（对策 `OHOS_BASE_SDK_HOME=/opt/command-line-tools/sdk/default/openharmony`）；`oh_modules/@ohos/hvigor*` 软链是否在位（勿 `ohpm install` 重装）；`hdc list targets` 模拟器是否在线。
 - 模拟器：`setsid nohup … < /dev/null &` 启动（普通 `nohup &` 会被会话回收）；装设备/模拟器操作优先在用户终端执行。
 - 静态检查以 `hvigorw assembleHap` 编译期检查为准（本机 codelinter 类型门禁假象，勿采信）。
