@@ -50,3 +50,6 @@ devdocs/reference/
 # DevEco 验证产物与 IDE 重写前的备份（CodeArts MSG70 裁决，不入库）
 .deveco-verify/
 build-profile.json5.bak
+
+# R1：Rust crate 构建产物（host 侧统一构建到 /tmp，这里兜底）
+entry/src/main/cpp/rust/kdc_core/target/

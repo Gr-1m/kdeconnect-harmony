@@ -46,3 +46,48 @@ target_link_libraries(kdeconnect_napi PUBLIC
     libace_napi.z.so
     libhilog_ndk.z.so
 )
+
+# —————— R1：Rust 静态库（rust/kdc_core = packet_io/cert_util 的 Rust 实现）——————
+# PROCESS §8：Rust 产物必须接入 hvigor CMake，不另建独立构建入口 ⇒ 这里用 add_custom_command
+# 调 cargo 交叉编译，再把 .a 链进同一个 .so。
+# 交叉工具链见 rust/wrappers/（clang driver wrapper + llvm-ar + 说明）：
+# 环境变量 CARGO_TARGET_*_LINKER / AR_* 比 .cargo/config.toml 更直接（无需 --config）。
+set(RUST_CRATE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rust/kdc_core)
+set(RUST_WRAPPER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rust/wrappers)
+
+if(OHOS_ARCH STREQUAL "arm64-v8a" OR CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+    set(RUST_TARGET aarch64-unknown-linux-ohos)
+    set(RUST_LINKER ${RUST_WRAPPER_DIR}/aarch64-linux-ohos-clang)
+    set(RUST_AR_ENV AR_aarch64_unknown_linux_ohos=ohos-ar)
+    set(RUST_LINKER_ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER=${RUST_LINKER})
+elseif(OHOS_ARCH STREQUAL "x86_64" OR CMAKE_ANDROID_ARCH_ABI STREQUAL "x86_64")
+    set(RUST_TARGET x86_64-unknown-linux-ohos)
+    set(RUST_LINKER ${RUST_WRAPPER_DIR}/x86_64-linux-ohos-clang)
+    set(RUST_AR_ENV AR_x86_64_unknown_linux_ohos=ohos-ar)
+    set(RUST_LINKER_ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_OHOS_LINKER=${RUST_LINKER})
+else()
+    set(RUST_TARGET "")
+endif()
+
+if(RUST_TARGET)
+    set(RUST_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/rust-target)
+    set(RUST_LIB ${RUST_TARGET_DIR}/${RUST_TARGET}/release/libkdc_core.a)
+    file(GLOB_RECURSE RUST_SRCS CONFIGURE_DEPENDS
+        ${RUST_CRATE_DIR}/src/*.rs ${RUST_CRATE_DIR}/Cargo.toml)
+    add_custom_command(
+        OUTPUT ${RUST_LIB}
+        COMMAND ${CMAKE_COMMAND} -E env
+                "PATH=${RUST_WRAPPER_DIR}:$ENV{PATH}"
+                ${RUST_AR_ENV}
+                ${RUST_LINKER_ENV}
+                cargo build --release --target ${RUST_TARGET} --target-dir ${RUST_TARGET_DIR} --manifest-path ${RUST_CRATE_DIR}/Cargo.toml
+        DEPENDS ${RUST_SRCS}
+        COMMENT "cargo build kdc_core (${RUST_TARGET})"
+        VERBATIM
+    )
+    add_custom_target(kdc_core_rust DEPENDS ${RUST_LIB})
+    add_library(kdc_core STATIC IMPORTED GLOBAL)
+    set_target_properties(kdc_core PROPERTIES IMPORTED_LOCATION ${RUST_LIB})
+    add_dependencies(kdc_core kdc_core_rust)
+    target_link_libraries(kdeconnect_napi PUBLIC kdc_core)
+endif()
