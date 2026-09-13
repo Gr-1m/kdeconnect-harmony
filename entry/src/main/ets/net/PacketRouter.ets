@@ -70,28 +70,31 @@ export class PacketRouter {
 
   // ---- 供 UI 调用的配对动作 ----
 
-  // 本侧发起配对请求（UI：发现/手动连接后的配对确认弹窗、已连接设备行的「配对」按钮）。
+  // 本侧发起配对请求（返回是否真的发出；MSG77 §2：发送失败不能让 UI 停在「等待对端确认」）。
   // timestamp 由 UI 传入：弹窗里显示的验证码必须用同一个值计算（native getPairVerificationCode）。
-  requestPair(deviceId: string, timestamp: number): void {
-    this.requestedPeers.add(deviceId);
+  requestPair(deviceId: string, timestamp: number): boolean {
     let ts: number = timestamp;
     if (ts <= 0) {
       ts = Math.floor(Date.now() / 1000);
     }
     const body: PairBody = { pair: true, timestamp: ts };
-    this.sendFrame(deviceId, PACKET_PAIR, body);
-    this.logFn('pair request sent to ' + deviceId);
+    const ok: boolean = this.sendFrame(deviceId, PACKET_PAIR, body);
+    if (ok) {
+      this.requestedPeers.add(deviceId);
+    }
+    this.logFn('pair request sent to ' + deviceId + ' ok=' + ok);
+    return ok;
   }
 
-  // UI 确认接受对端请求：回 {pair:true}
-  // 注意（AtomCode P0-4 / CodeArts MSG58）：这里**不再自造 identity 帧**——
-  // native 在 TLS 握手完成后会发带正确宽 caps 的 identity，setCapabilities 也会向已建链路重发；
-  // 若此处再发窄 caps identity，会被 KDE 采纳并覆盖，导致对端拒发 ping/share.request。
-  acceptPair(deviceId: string): void {
-    const body: PairBody = { pair: true, timestamp: Math.floor(Date.now() / 1000) };
-    this.sendFrame(deviceId, PACKET_PAIR, body);
-    this.logFn('pairing accepted with ' + deviceId);
+  // UI 确认接受对端请求：回 {pair:true}。
+  // 注意（MSG77 §3）：接受帧**不带 timestamp** —— 带 timestamp 在 v8 里表示「新请求」，
+  // 会让对端把它当成又一次请求（KDE 源码注释：accepting 双方互发会造成循环）。
+  acceptPair(deviceId: string): boolean {
+    const body: PairBody = { pair: true };
+    const ok: boolean = this.sendFrame(deviceId, PACKET_PAIR, body);
+    this.logFn('pairing accepted with ' + deviceId + ' ok=' + ok);
     this.callbacks.onPaired(deviceId);
+    return ok;
   }
 
   // UI 拒绝对端请求
@@ -150,29 +153,38 @@ export class PacketRouter {
     }
   }
 
-  // AP-1：不再自动接受。区分两种 pair:true ——
-  //   本侧曾发起（requestedPeers 命中）= 对端确认 → onPaired；
-  //   否则 = 对端请求 → onPairRequest（UI 弹窗）。
-  // v8 请求必须带 timestamp（秒），时钟偏差超限直接拒绝（Android 参考）。
+  // AP-1：不再自动接受。配对帧语义（MSG77 §3，对齐 KDE/Android v8）：
+  //   {pair:true, timestamp} = **对端的新请求**（即使本侧此前也请求过）
+  //   {pair:true}（无 timestamp） = 对本侧请求的**接受**
+  //   {pair:false} = 解除配对
+  // timestamp 为秒；时钟偏差超限直接拒绝（Android 参考）。
   private handlePair(deviceId: string, body: PairBody): void {
     if (body.pair === true) {
-      const ts: number = body.timestamp ?? -1;
-      if (ts >= 0) {
+      if (body.timestamp !== undefined) {
+        const ts: number = body.timestamp;
         const now: number = Math.floor(Date.now() / 1000);
         if (Math.abs(ts - now) > MAX_TIMESTAMP_DIFF_SECONDS) {
           this.logFn('pair rejected: clock skew ' + (now - ts) + 's from ' + deviceId);
           return;
         }
-      }
-      if (this.requestedPeers.has(deviceId)) {
-        this.requestedPeers.delete(deviceId);
-        // 不再自造 identity（caps 单一来源在 native，见 acceptPair 注释）
-        this.logFn('pairing confirmed by ' + deviceId);
-        this.callbacks.onPaired(deviceId);
+        if (this.requestedPeers.has(deviceId)) {
+          // 双方同时发起：必须回一个**不带 timestamp** 的接受帧，
+          // 否则对端永远停在 Requested（表现为「单边已配对」）。
+          this.requestedPeers.delete(deviceId);
+          const accept: PairBody = { pair: true };
+          const ok: boolean = this.sendFrame(deviceId, PACKET_PAIR, accept);
+          this.logFn('pair race with ' + deviceId + ': sent accept ok=' + ok);
+          this.callbacks.onPaired(deviceId);
+          return;
+        }
+        this.logFn('pair request from ' + deviceId + ' (awaiting user confirmation)');
+        this.callbacks.onPairRequest(deviceId, ts);
         return;
       }
-      this.logFn('pair request from ' + deviceId + ' (awaiting user confirmation)');
-      this.callbacks.onPairRequest(deviceId, ts);
+      // 无 timestamp = 对本侧请求的接受
+      this.requestedPeers.delete(deviceId);
+      this.logFn('pairing confirmed by ' + deviceId);
+      this.callbacks.onPaired(deviceId);
       return;
     }
     // pair:false = 对端解除配对
@@ -191,11 +203,12 @@ export class PacketRouter {
     this.callbacks.onPeerCapabilities(deviceId, incoming, outgoing);
   }
 
-  private sendFrame(deviceId: string, type: string, body: Object): void {
+  private sendFrame(deviceId: string, type: string, body: Object): boolean {
     const pkt: OutPacket = { id: Date.now(), type: type, body: body };
     const ok: boolean = native.sendPacket(deviceId, JSON.stringify(pkt) + '\n');
     if (!ok) {
       this.logFn('sendPacket failed (not encrypted yet?) ' + type + ' -> ' + deviceId);
     }
+    return ok;
   }
 }

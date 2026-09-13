@@ -15,6 +15,11 @@
       },
       {
         "name": "ohos.permission.VIBRATE"
+      },
+      {
+        // 网络状态监听（NetConnection.register/on('netAvailable')）需要；缺它 register 返回 201，
+        // 表现为「切网后不重新广播」。normal 级、系统授予，无运行时弹窗。
+        "name": "ohos.permission.GET_NETWORK_INFO"
       }
     ],
     "pages": "$profile:main_pages",

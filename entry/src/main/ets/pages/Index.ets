@@ -5,6 +5,8 @@ import { preferences } from '@kit.ArkData';
 import { Context } from '@kit.AbilityKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { display } from '@kit.ArkUI';
+import { connection } from '@kit.NetworkKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { HdsTabs, HdsTabsController, hdsMaterial } from '@kit.UIDesignKit';
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import { PacketRouter, RouterCallbacks } from '../net/PacketRouter';
@@ -105,6 +107,9 @@ struct Index {
   @State deviceSection: number = 0;
   private sessionTimerId: number = -1;
   private noticeTimerId: number = -1;
+  // 局域网发现（MSG73/MSG74）：网络变化时触发 native 重新广播 identity
+  private netConnection: connection.NetConnection | undefined = undefined;
+  private netConnRegistered: boolean = false;
   // 失败发生在哪个阶段：connect（TCP/TLS 未建立）| pair（配对未完成）
   private sessionStage: string = 'connect';
   // AP-2 payload 传输（接收/发送进度与处置状态）
@@ -245,6 +250,7 @@ struct Index {
         this.log(msg);
       }, callbacks);
     this.startNative();
+    this.registerNetworkListener();
   }
 
   // 页面显示后应用主题/语言（setColorMode/setLanguage 要求页面已加载完成）。
@@ -264,6 +270,7 @@ struct Index {
   }
 
   aboutToDisappear(): void {
+    this.unregisterNetworkListener();
     try {
       native.stop();
     } catch (e) {
@@ -383,6 +390,64 @@ struct Index {
     if (persist) {
       const langEntries: SettingEntry[] = [{ key: 'language', value: language }];
       this.persistSettings(langEntries);
+    }
+  }
+
+  // 局域网发现（CodeArts MSG73/MSG74）：网络变化时通知 native 重新广播 identity。
+  // 用户真机反馈「发现设备」长时间为空：对端后启动 / 丢包 / 切网后只能等对端再广播，
+  // 这里在 netAvailable 时主动触发一次本侧广播（native.triggerBroadcast，omp 实现后生效）。
+  private registerNetworkListener(): void {
+    if (this.netConnRegistered) {
+      return;
+    }
+    try {
+      const conn: connection.NetConnection = connection.createNetConnection();
+      conn.on('netAvailable', (): void => {
+        this.log('network available — trigger discovery broadcast');
+        this.triggerDiscoveryBroadcast();
+      });
+      conn.on('netLost', (): void => {
+        this.log('network lost');
+      });
+      // 本 SDK（OpenHarmony API 26）只有 callback 形式：register(callback: AsyncCallback<void>)
+      conn.register((err: BusinessError): void => {
+        if (err) {
+          this.log(`net listener register failed: ${err.code}`);
+          return;
+        }
+        this.netConnection = conn;
+        this.netConnRegistered = true;
+        this.log('net change listener registered');
+      });
+    } catch (e) {
+      this.log('net listener failed: ' + (e instanceof Error ? e.message : 'unknown'));
+    }
+  }
+
+  private unregisterNetworkListener(): void {
+    const conn: connection.NetConnection | undefined = this.netConnection;
+    if (conn === undefined || !this.netConnRegistered) {
+      return;
+    }
+    try {
+      conn.unregister((err: BusinessError): void => {
+        if (err) {
+          return;
+        }
+      });
+    } catch (e) {
+      // 忽略：进程退出路径
+    }
+    this.netConnection = undefined;
+    this.netConnRegistered = false;
+  }
+
+  // 触发一次 UDP identity 广播（native 未导出该符号时静默降级，不写屏幕日志）
+  private triggerDiscoveryBroadcast(): void {
+    try {
+      native.triggerBroadcast();
+    } catch (e) {
+      this.log('triggerBroadcast unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
     }
   }
 
@@ -611,7 +676,8 @@ struct Index {
           name: event.deviceName ?? id,
           host: event.host ?? '',
           tcpPort: event.tcpPort ?? 0,
-          deviceType: ''
+          deviceType: '',
+          online: true
         };
         // 发现列表按 id 去重更新（对端周期广播 identity 会重复触发）。
         // 连接由用户从发现列表显式发起（与 iOS 一致），不再发现即自动连接。
@@ -633,12 +699,23 @@ struct Index {
             name: event.deviceName ?? cid,
             host: '',
             tcpPort: 0,
-            deviceType: ''
+            deviceType: '',
+            online: true
           };
           // 同一设备可能重复触发 connected，先去重再追加；并从发现列表移入连接列表
           this.connectedDevices = this.connectedDevices.filter((d: DeviceItem) => d.id !== cid);
           this.connectedDevices = this.connectedDevices.concat([dev]);
           this.discoveredDevices = this.discoveredDevices.filter((d: DeviceItem) => d.id !== cid);
+          // 插件装载兜底（MSG81）：native 目前把 kdeconnect.identity 帧内部消化后**不下发**
+          // packetReceived（net_stack.cpp:725 `continue`）⇒ PacketRouter.handleIdentity /
+          // onPeerCapabilities 永不触发 ⇒ 插件从不装载，ping/battery/clipboard/findmyphone/share
+          // 全部落 "unhandled packet type"。这里在 connected 时若该设备还没装载插件，就按
+          // 「对端 caps 未知 = 全支持」装载（PluginHost.matches 语义），保证配对后功能可用；
+          // native 下发 identity 后真实 caps 会再次 loadForDevice 覆盖（loadForDevice 幂等）。
+          if (this.pluginHost !== undefined && this.pluginHost.pluginsFor(cid).length === 0) {
+            this.loadPlugins(cid, [], []);
+            this.log(`plugins loaded for ${cid} with unknown caps (fallback)`);
+          }
           // 会话：连接阶段完成 → 已配对直接跳过去；未配对则弹配对确认
           if (this.sessionState === 'connecting') {
             if (this.isTrusted(cid)) {
@@ -668,9 +745,12 @@ struct Index {
         break;
       }
       case 'deviceLost': {
+        // CodeArts MSG78 §2 裁决：超时只置离线（灰显），**不从列表删除**——
+        // 对端只在启动时广播，删条会让「发现设备」页在 60s 后永远为空。
         const lid: string = event.deviceId ?? '';
-        this.discoveredDevices = this.discoveredDevices.filter((d: DeviceItem) => d.id !== lid);
-        this.log(`lost ${event.deviceId}`);
+        this.discoveredDevices = this.discoveredDevices.map(
+          (d: DeviceItem) => d.id === lid ? { id: d.id, name: d.name, host: d.host, tcpPort: d.tcpPort, deviceType: d.deviceType, online: false } : d);
+        this.log(`lost ${event.deviceId} (kept in list as offline)`);
         break;
       }
       case 'packetReceived': {
@@ -690,9 +770,9 @@ struct Index {
           if (name !== '') {
             // identity 帧带完整设备名，回填到连接/发现列表（connected 事件可能没带）
             this.connectedDevices = this.connectedDevices.map(
-              (d: DeviceItem) => d.id === pid ? { id: d.id, name: name, host: d.host, tcpPort: d.tcpPort, deviceType: d.deviceType } : d);
+              (d: DeviceItem) => d.id === pid ? { id: d.id, name: name, host: d.host, tcpPort: d.tcpPort, deviceType: d.deviceType, online: d.online } : d);
             this.discoveredDevices = this.discoveredDevices.map(
-              (d: DeviceItem) => d.id === pid ? { id: d.id, name: name, host: d.host, tcpPort: d.tcpPort, deviceType: d.deviceType } : d);
+              (d: DeviceItem) => d.id === pid ? { id: d.id, name: name, host: d.host, tcpPort: d.tcpPort, deviceType: d.deviceType, online: d.online } : d);
           }
           this.log(`peer identity: ${name !== '' ? name : pid}`);
         }
@@ -737,10 +817,22 @@ struct Index {
     this.startSession(d.id, d.name, d.host, d.tcpPort);
   }
 
-  // 连接列表「断开」按钮：先发 unpair {pair:false} 清除 KDE 配对记录再断开
-  // （否则断开后再连会命中 KDE 残留配对态 → "pairing error Timed out"）
+  // 连接列表「断开」按钮：**只断开连接，保留配对状态**（用户裁决 CodeArts MSG69/MSG71 §2）
   private disconnectDevice(d: DeviceItem): void {
-    this.log(`disconnect ${d.id} (unpair first)`);
+    this.log(`disconnect ${d.id} (keep pairing)`);
+    try {
+      native.disconnect(d.id);
+      this.log('disconnect ok');
+    } catch (e) {
+      this.log('disconnect failed: ' + (e instanceof Error ? e.message : 'unknown'));
+    }
+  }
+
+  // 「解除配对」按钮：unpair {pair:false} + 断开 + 从记住列表移除。
+  // 注：AGENTS.md 记录过「对 KDE 必须先发 unpair 再 disconnect，否则桌面残留配对态、
+  // 重连报 pairing timed out」——该语义现在归到本方法，不要再塞回「断开」。
+  private unpairDevice(d: DeviceItem): void {
+    this.log(`unpair ${d.id} (unpair first, then disconnect)`);
     const unpairBody: PairRequestBody = { pair: false };
     const unpairPkt: PairRequestPacket = { id: Date.now(), type: 'kdeconnect.pair', body: unpairBody };
     try {
@@ -755,9 +847,9 @@ struct Index {
     setTimeout(() => {
       try {
         native.disconnect(d.id);
-        this.log('disconnect ok');
+        this.log('disconnect after unpair ok');
       } catch (e) {
-        this.log('disconnect failed: ' + (e instanceof Error ? e.message : 'unknown'));
+        this.log('disconnect after unpair failed: ' + (e instanceof Error ? e.message : 'unknown'));
       }
     }, 200);
   }
@@ -813,7 +905,10 @@ struct Index {
     this.armSessionTimer(CONNECT_TIMEOUT_MS, 'connect timeout');
   }
 
-  // 已连接但未配对 → 弹配对确认（显示验证码，与对端同一 timestamp 计算）
+  // 已连接但未配对 → **自动**发 pair 请求并进入 awaiting。
+  // 用户裁决（CodeArts MSG69/MSG71 §1）：连接成功即代表用户已在弹窗里确认配对意图，
+  // 不再要求再点一次「配对」按钮——否则弹窗只显示验证码、pair 帧从未发出，对端毫无反应。
+  // MSG77 §2：sendPacket 失败时必须立刻失败，不能停在「等待对端确认」造成假象。
   private promptPairing(deviceId: string, name: string): void {
     this.clearSessionTimer();
     this.sessionDeviceId = deviceId;
@@ -822,20 +917,39 @@ struct Index {
     }
     this.sessionTimestamp = Math.floor(Date.now() / 1000);
     this.sessionCode = this.computePairCode(deviceId, this.sessionTimestamp);
-    this.sessionState = 'prompt';
+    this.sessionPeerRequested = false;
     this.sessionStage = 'pair';
-    this.log(`connected ${deviceId} — awaiting pair confirmation`);
+    if (!this.sendPairRequest(deviceId)) {
+      this.failSession('pair request not sent');
+      return;
+    }
+    this.sessionState = 'awaiting';
+    this.armSessionTimer(PAIR_TIMEOUT_MS, 'pair not confirmed');
+    this.log(`connected ${deviceId} — pair request auto-sent, awaiting peer`);
   }
 
-  // 弹窗「配对」：发 pair:true（若对端已先请求，本帧同时充当接受）
+  // 发 pair:true 并记录本侧等待态（对端先发起时，本帧同时充当接受）。返回是否真的发出。
+  private sendPairRequest(deviceId: string): boolean {
+    if (this.router === undefined) {
+      return false;
+    }
+    const ok: boolean = this.router.requestPair(deviceId, this.sessionTimestamp);
+    if (ok && !this.requestedPairIds.includes(deviceId)) {
+      this.requestedPairIds = this.requestedPairIds.concat([deviceId]);
+    }
+    return ok;
+  }
+
+  // 弹窗「配对」：仅在对端先发起（sessionState=prompt）时出现——本侧连接时已自动发过请求
   private confirmPairInSession(): void {
     const id: string = this.sessionDeviceId;
     if (id === '' || this.router === undefined) {
       return;
     }
-    this.router.requestPair(id, this.sessionTimestamp);
-    if (!this.requestedPairIds.includes(id)) {
-      this.requestedPairIds = this.requestedPairIds.concat([id]);
+    this.sessionStage = 'pair';
+    if (!this.sendPairRequest(id)) {
+      this.failSession('pair request not sent');
+      return;
     }
     this.sessionState = 'awaiting';
     this.armSessionTimer(PAIR_TIMEOUT_MS, 'pair not confirmed');
@@ -1077,14 +1191,29 @@ struct Index {
       return;
     }
     const srcUri: string = uris[0];
-    const fileName: string = srcUri.substring(srcUri.lastIndexOf('/') + 1);
-    const cachePath: string = `${hostCtx.cacheDir}/${fileName}`;
+    let fileName: string = srcUri.substring(srcUri.lastIndexOf('/') + 1);
     try {
-      // picker 返回的 URI 直接交给 native 读不到（沙箱外），先复制进 cacheDir
-      await fileIo.copyFile(srcUri, cachePath);
+      fileName = decodeURIComponent(fileName);
     } catch (e) {
-      this.log('send file: copy into sandbox failed');
+      // URI 未编码时 decodeURIComponent 会抛；忽略，沿用原名
+    }
+    const cachePath: string = `${hostCtx.cacheDir}/${fileName}`;
+    // picker 返回的是 URI：必须经 fd 读，直接 copyFile(uri, path) 会失败（实测 "copy into sandbox failed"）。
+    let srcFd: fileIo.File | undefined = undefined;
+    try {
+      srcFd = fileIo.openSync(srcUri, fileIo.OpenMode.READ_ONLY);
+      fileIo.copyFileSync(srcFd.fd, cachePath);
+    } catch (e) {
+      this.log('send file: copy into sandbox failed: ' + (e instanceof Error ? e.message : 'unknown'));
       return;
+    } finally {
+      if (srcFd !== undefined) {
+        try {
+          fileIo.closeSync(srcFd);
+        } catch (e) {
+          // 忽略关闭失败
+        }
+      }
     }
     try {
       const body: SendShareBody = { filename: fileName };
@@ -1223,11 +1352,17 @@ struct Index {
                 onDisconnectDevice: (d: DeviceItem): void => {
                   this.disconnectDevice(d);
                 },
+                onUnpairDevice: (d: DeviceItem): void => {
+                  this.unpairDevice(d);
+                },
                 onConnectDevice: (d: DeviceItem): void => {
                   this.connectDevice(d);
                 },
                 onManualConnect: (host: string, port: number): void => {
                   this.manualConnect(host, port);
+                },
+                onRefreshDiscovery: (): void => {
+                  this.triggerDiscoveryBroadcast();
                 },
                 onPairDevice: (d: DeviceItem): void => {
                   this.requestPairWith(d);

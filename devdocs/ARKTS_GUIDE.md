@@ -54,12 +54,24 @@ entry/src/main/ets/
 UI 结构（对齐 iOS 端 Devices+Settings 两 Tab，鸿蒙扩展为四 Tab）：
 - **底部悬浮胶囊栏**（华为应用商店/我的华为风格，药丸高亮）：设备 / 文件 / 设置 / 日志[开发期]；
 - **设备页**：**左侧收纳/展开竖栏**（已连接 / 发现设备 / 记住的设备 / 手动连接，带数量角标，`‹/›` 折叠为窄条），选中后**右侧主区**展示对应内容；已连接（绿点+断开）、发现设备（蓝点+连接，host 未知时禁用）、记住的设备（紫点+已配对徽标，Preferences 持久化 `rememberedDevices`）；手动连接为侧栏可选项；
-- **连接/配对会话（AP-1c，与 iOS 一致，2026-09-13 用户裁决）**：发现列表「连接」与手动连接**共用一条状态机** `idle → connecting → prompt → awaiting → idle(成功) | failed`：
+- **连接/配对会话（AP-1c，与 iOS 一致，2026-09-13 用户裁决）**：发现列表「连接」与手动连接**共用一条状态机** `idle → connecting → awaiting → idle(成功) | failed`：
   - 点「连接」**立刻**弹居中模态（标题「正在连接…」+ 目标 host:port + 取消），解决"点击后无任何反馈"；
-  - 连上（`connected` 事件）后：已配对 → 直接成功；未配对 → 弹窗切为**配对确认**（设备名 + 验证码 + 取消/配对），验证码用本侧生成的 timestamp 计算（同一值随 pair 帧发给对端）；
-  - 点「配对」→ 状态 `awaiting`（30s 超时）；对端先发 pair 请求时不再叠第二个弹窗，本弹窗的「配对」按钮即接受；
-  - 成功（`onPaired`）→ 提示「配对成功」并**自动把设备分区切回 0 = 已连接设备**（`@Link deviceSection`，此前需手动切回）；失败 → 同一弹窗显示「连接失败」/「配对失败」+ 原因（连接 20s 超时、`error` 事件、`disconnected`、配对 30s 超时）；「取消」只收弹窗、保留已建立的连接；
-  - 分区状态由 `DevicesTab` 的 `@State selectedSection` **改为 `@Link deviceSection`**，供页面在配对成功后跳转。
+  - 连上（`connected` 事件）后：已配对 → 直接成功；未配对 → **自动发 pair 请求**并切到等待态（CodeArts MSG69/MSG71 §1：此前只弹窗不发帧，用户看到验证码却对端无反应），弹窗显示设备名 + 验证码 + 「等待对端确认」+「请在 30 秒内到对端设备上点『接受』」，**只有「取消」按钮**；
+  - 用户点「取消」→ 只收弹窗、保留已建立的连接（之后可在「已连接设备」再配对）；对端先发 pair 请求时，`PacketRouter.requestedPeers` 命中即 `onPaired`（本侧已先发帧，无需二次确认），若本侧尚未发帧则走 `prompt` 态弹窗（保留「配对/取消」= 接受/拒绝）；
+  - 成功（`onPaired`）→ 提示「配对成功」并**自动把设备分区切回 0 = 已连接设备**（`@Link deviceSection`）；失败 → 同一弹窗显示「连接失败」/「配对失败」+ 原因（连接 20s 超时、`error` 事件、`disconnected`、配对 **45s** 超时，比 KDE 的 30s 长以免抢先判失败）；
+  - 分区状态由 `DevicesTab` 的 `@State selectedSection` 改为 `@Link deviceSection`，供页面在配对成功后跳转。
+- **配对帧语义（MSG77 §3，必须按 timestamp 判别，v8 参考实现口径）**：
+  | 帧 | 含义 | 处理 |
+  |---|---|---|
+  | `{pair:true, timestamp}` | 对端**新请求**（即使本侧此前也请求过） | 本侧已请求过 → **回不带 timestamp 的接受帧** + `onPaired`（双方同时发起）；否则 → `onPairRequest` 交 UI 弹窗 |
+  | `{pair:true}`（无 timestamp） | 对本侧请求的**接受** | `onPaired` |
+  | `{pair:false}` | 解除配对 | `onUnpaired` |
+  反例（已修）：旧实现只看 `requestedPeers.has(id)` 就判为「接受」，会把对端的**带 ts 新请求**误当接受 → 单边配对（本侧显示已连、对端仍停在 `Requested`、`trusted_devices` 为空）。**接受帧一律不带 timestamp**（带 ts 在 v8 表示新请求）。发送失败必须 `failSession('pair request not sent')`，不能停在「等待对端确认」（`sendFrame` 返回 boolean）。
+- **已连接设备行按钮语义（CodeArts MSG69/MSG71 §2）**：已配对 → 「已配对」徽标 + 「断开」（`native.disconnect`，**保留配对**）+ 「解除配对」（unpair `{pair:false}` + 断开 + 移出记住列表）；等待确认 → 「等待确认」+ 「断开」；未配对 → 「配对」+ 「断开」。手动连接的 host 默认值为空（`10.0.2.2` 是 QEMU NAT 网关，真机无意义）。
+- **局域网发现（MSG73/MSG74，ArkTS 侧）**：
+  - **网络变化重播**：`connection.createNetConnection()` + `on('netAvailable'|'netLost')` + `register()`；`netAvailable` → `native.triggerBroadcast()`（d.ts 已补 `export const triggerBroadcast: () => void;`，未实现时 try/catch 降级为日志）。**必须声明 `ohos.permission.GET_NETWORK_INFO`**（normal 级、系统授予）：缺它 `register` 回调返回 **201**（实测），表现为「切网后不重播」。
+  - **发现列表下拉刷新**：`Refresh({ refreshing: $$this.discoveryRefreshing })` + 内层 `Scroll`（Refresh 需可滚动子组件才识别下拉手势）+ `onRefreshing → onRefreshDiscovery()`；合成手势（hdc swipe）在模拟器上未触发，待真机手测。
+  - 已知体验问题（真机日志实证）：`discovered`/`lost` 事件正常派发，但对端只在启动时广播 → 约 60s 后 `DeviceLost` 清空列表 → 「发现页为空」。native 侧可选改法（长期低频重播 / DeviceLost 不清列表）见 `AgentsConversion/MSG77_TO_OMP.md`。
 - **文件页**：连接后可收发（kdeconnect.share + payload），当前占位；
 - **设置页**：本机身份与协议信息（deviceId 等）+ **可自定义设备名**（持久化 `deviceName` 并重启 native 栈，使 identity 广播用新名，deviceId/证书不变）+ **主题**（跟随系统 / 亮 / 暗）+ **语言**（默认跟随系统）；
 - **沉浸光感（API 26 `uiMaterial`）已知坑（官方文档实证）**：`systemMaterial` **只在两类区域生效**——Navigation/NavDestination 标题栏、或「横向 Tabs + `barPosition: BarPosition.End` 的底部 TabBar」（弹窗类/Slider/Toggle 除外）；**范围外组件材质失活，现象=完全透明/无效果，且控制台会打印 `Material inactive: out of scope`**。此外 `backgroundColor` 不透明、`backgroundBlurStyle` 会盖住材质层；`materialColor` 必须带透明度。→ 本项目自绘卡片/悬浮胶囊栏**不在范围内**，故统一走毛玻璃降级；将来启用材质的正解是把底部栏改成真正的 `Tabs` 底部 TabBar（官方 FAQ《基于 Tabs 组件实现胶囊样式、悬浮留空及重叠毛玻璃等常见 TabBar 自定义样式》：`Stack{ Tabs(barHeight 0) + 自绘栏 }` 或 `TabContent.tabBar(自定义 builder)`）。

@@ -81,6 +81,11 @@ export const generateCert: (deviceId: string) => CertPair;
 // 未调用时沿用骨架默认：incoming=[ping, identity, pair]，outgoing=[ping]。
 export const setCapabilities: (incoming: string[], outgoing: string[]) => void;
 
+// 主动触发一次 UDP identity 广播（局域网发现，WP-2 / MSG73-MSG74）。
+// 用途：网络变化（netAvailable）或用户在发现列表下拉刷新时，不必等对端下次广播。
+// 无副作用（不重置栈）；native 未实现时 ArkTS 侧 try/catch 降级。
+export const triggerBroadcast: () => void;
+
 // --- payload 二进制传输（WP-1b 契约，v2） ---
 
 // 组帧发送：native 注入 payloadSize / payloadTransferInfo.port；返回 transferId，0=失败。
