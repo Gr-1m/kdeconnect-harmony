@@ -60,6 +60,49 @@ bool writeAll(int fd, const uint8_t *data, size_t len)
 
 } // namespace
 
+// 跨文件系统保存兜底：`rename()` 跨挂载点（EXDEV）必然失败，而设备上 spool 在 cacheDir、
+// 目标常在不同挂载点 ⇒ 必须支持「拷贝 + 删源」。成功才删源，失败清理半成品。
+bool copyFileAndRemove(const std::string &src, const std::string &dst)
+{
+    const int in = ::open(src.c_str(), O_RDONLY | O_CLOEXEC);
+    if (in < 0) {
+        return false;
+    }
+    const int out = ::open(dst.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (out < 0) {
+        ::close(in);
+        return false;
+    }
+    char buf[PAYLOAD_CHUNK];
+    bool ok = true;
+    for (;;) {
+        const ssize_t n = ::read(in, buf, sizeof(buf));
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            ok = false;
+            break;
+        }
+        if (n == 0) {
+            break;
+        }
+        if (!writeAll(out, reinterpret_cast<const uint8_t *>(buf), static_cast<size_t>(n))) {
+            ok = false;
+            break;
+        }
+    }
+    ::close(out);
+    ::close(in);
+    if (ok) {
+        ok = ::unlink(src.c_str()) == 0;
+    }
+    if (!ok) {
+        ::unlink(dst.c_str());
+    }
+    return ok;
+}
+
 PayloadManager::PayloadManager(PayloadHost *host, std::string spoolDir)
     : host_(host), spoolDir_(std::move(spoolDir))
 {
@@ -563,18 +606,36 @@ bool PayloadManager::settle(uint64_t id, const std::string &destPath, bool keep)
     if (j == jobs_.end() || !j->second->finished || j->second->send) {
         return false;
     }
-    bool ok = true;
-    if (keep) {
-        if (!destPath.empty() && destPath.find("..") == std::string::npos) {
-            ok = ::rename(j->second->spoolPath.c_str(), destPath.c_str()) == 0;
-        } else {
-            ok = false;
+    const std::string spool = j->second->spoolPath;
+    if (keep && (destPath.empty() || destPath.find("..") != std::string::npos)) {
+        // 路径非法：**不擦除任务**，App 可以换一个合法路径重试
+        LOGE("payload settle: invalid destPath '%s' (id=%llu)", destPath.c_str(),
+             (unsigned long long) id);
+        return false;
+    }
+    if (!keep) {
+        if (::unlink(spool.c_str()) != 0) {
+            LOGE("payload settle: discard failed id=%llu spool='%s' err=%d(%s)",
+                 (unsigned long long) id, spool.c_str(), errno, strerror(errno));
+            return false;
         }
-    } else {
-        ok = ::unlink(j->second->spoolPath.c_str()) == 0;
+        jobs_.erase(j);
+        return true;
+    }
+    if (::rename(spool.c_str(), destPath.c_str()) != 0) {
+        const int err = errno;
+        // 跨文件系统（EXDEV）等场景 rename 必失败 —— 设备上 spool 在 cacheDir，
+        // 目标常在不同挂载点，必须退回「拷贝 + 删除 spool」，否则「保存」静默失败。
+        if (!copyFileAndRemove(spool, destPath)) {
+            LOGE("payload settle: save failed id=%llu '%s' -> '%s' rename_err=%d(%s)",
+                 (unsigned long long) id, spool.c_str(), destPath.c_str(), err, strerror(err));
+            return false;   // 保留任务与 spool，允许 App 重试
+        }
+        LOGI("payload settle: saved via copy id=%llu rename_err=%d(%s) -> '%s'",
+             (unsigned long long) id, err, strerror(err), destPath.c_str());
     }
     jobs_.erase(j);
-    return ok;
+    return true;
 }
 
 void PayloadManager::cancel(uint64_t id)
