@@ -287,6 +287,17 @@
 
 ---
 
+## 8. Rust 模块契约约束（2026-09-13 CodeArts 预写入，基于 MSG91 裁决）
+
+> 当前 native 侧为 C++（约 6,800 行），Rust 替代评估已完成（AtomCode §12），裁决为 C+D（维持 C++ + /tmp spike 试点）。若将来走渐进引入（选项 B），Rust 新模块须遵守以下约束：
+
+- **NAPI 契约源不变**：Rust 模块的 NAPI 导出仍必须走 `Index.d.ts` 单一定义源，与 C++ 模块同等约束
+- **构建链整合**：Rust 产物（`.a`/`.so`）须接入 hvigor CMake（`add_custom_command` 或 `libs/`），不另建独立构建入口
+- **共存原则**：Rust 模块与 C++ 模块共存，不替换已有 C++ 模块（除非该模块有明确重写决议）
+- **spike 验证前提**：在 ohos-rs 编译可行性 + rustls/ring client-auth 可行性经 /tmp spike 验证通过前，不启动任何 Rust 模块的正式开发
+
+---
+
 ## 维护
 
 本文由 CodeArts 维护。工作流规则变化时同改动更新本文并通知各 agent。

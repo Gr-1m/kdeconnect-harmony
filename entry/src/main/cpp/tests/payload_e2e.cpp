@@ -15,6 +15,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <sys/epoll.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -378,6 +379,38 @@ void pullOnFrame(FakeHost &receiver, const std::string &senderId,
     cJSON_Delete(root);
 }
 
+// —————— 5. spool 孤儿清理（评审 F4）——————
+//
+// 进程重启后，上次运行遗留的 payload_*.bin 永远不会被 settle() 消费 ⇒ 启动时清理。
+// 必须只删本模块命名模式，不能误删同目录其他文件。
+void spoolPurgesStaleOrphans()
+{
+    const std::string dir = makeTempDir("payload_spool");
+    CHECK(!dir.empty());
+    auto touch = [&](const std::string &name) {
+        FILE *f = ::fopen((dir + "/" + name).c_str(), "wb");
+        CHECK(f != nullptr);
+        if (f != nullptr) {
+            ::fwrite("x", 1, 1, f);
+            ::fclose(f);
+        }
+    };
+    touch("payload_42.bin");     // 孤儿（应被清）
+    touch("payload_7.bin");      // 孤儿（应被清）
+    touch("keepme.txt");         // 无关文件（应保留）
+    touch("payload_note.log");   // 名字前缀像但不是 .bin（应保留）
+
+    FakeHost host(kIdA, dir);    // ctor 内构造 PayloadManager → 触发清理
+    (void) host;
+
+    struct stat st {};
+    CHECK_MSG(::stat((dir + "/payload_42.bin").c_str(), &st) != 0, "孤儿 payload_42.bin 未被清理");
+    CHECK_MSG(::stat((dir + "/payload_7.bin").c_str(), &st) != 0, "孤儿 payload_7.bin 未被清理");
+    CHECK_MSG(::stat((dir + "/keepme.txt").c_str(), &st) == 0, "无关文件 keepme.txt 被误删");
+    CHECK_MSG(::stat((dir + "/payload_note.log").c_str(), &st) == 0,
+              "非 .bin 文件 payload_note.log 被误删");
+}
+
 // —————— 1. 端到端：发送 → 接收 → 落盘 ——————
 
 void payloadE2eSendReceive()
@@ -595,6 +628,7 @@ int main()
     runCase("payloadPeerCertMismatch", payloadPeerCertMismatch);
     runCase("payloadLockOrder", payloadLockOrder);
     runCase("tlsServerCapturesPeerCert", tlsServerCapturesPeerCert);
+    runCase("spoolPurgesStaleOrphans", spoolPurgesStaleOrphans);
     std::printf("payload integration tests (host): %d cases, %d failed\n", g_cases, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

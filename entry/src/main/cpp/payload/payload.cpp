@@ -4,6 +4,7 @@
 #include <sys/epoll.h>
 #include <cerrno>
 #include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -103,6 +104,32 @@ bool copyFileAndRemove(const std::string &src, const std::string &dst)
     return ok;
 }
 
+// F4（代码评审）：清理上次运行遗留的 spool 孤儿。进程重启后不存在对应的接收任务，
+// 这些文件永远不会被 settle() 消费。只删本模块自己的命名模式（payload_*.bin），
+// 避免误删 spool 目录里的其他内容。
+static void purgeStaleSpool(const std::string &dir)
+{
+    DIR *d = ::opendir(dir.c_str());
+    if (d == nullptr) {
+        return;
+    }
+    int removed = 0;
+    while (struct dirent *e = ::readdir(d)) {
+        const std::string name = e->d_name;
+        if (name.rfind("payload_", 0) != 0 || name.size() <= 8 ||
+            name.compare(name.size() - 4, 4, ".bin") != 0) {
+            continue;
+        }
+        if (::unlink((dir + "/" + name).c_str()) == 0) {
+            ++removed;
+        }
+    }
+    ::closedir(d);
+    if (removed > 0) {
+        LOGI("payload spool: purged %d stale file(s) in %s", removed, dir.c_str());
+    }
+}
+
 PayloadManager::PayloadManager(PayloadHost *host, std::string spoolDir)
     : host_(host), spoolDir_(std::move(spoolDir))
 {
@@ -116,6 +143,7 @@ PayloadManager::PayloadManager(PayloadHost *host, std::string spoolDir)
         }
     }
     ::mkdir(p.c_str(), 0755);
+    purgeStaleSpool(spoolDir_);
 }
 
 uint64_t PayloadManager::allocIdLocked()
