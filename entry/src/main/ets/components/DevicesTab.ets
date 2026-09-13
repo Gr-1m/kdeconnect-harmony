@@ -17,11 +17,17 @@ export struct DevicesTab {
   // 插件推来的展示项（电量）
   @Prop batteryItems: BatteryItem[] = [];
   cardMaterial: uiMaterial.Material | undefined = undefined;
-  onDisconnectDevice: (d: DeviceItem) => void = () => {
-  };
   onUnpairDevice: (d: DeviceItem) => void = () => {
   };
-  onConnectDevice: (d: DeviceItem) => void = () => {
+  // 手机窄屏：汉堡按钮已上移到页面标题旁（Index.menuButton），组件内不再渲染；
+  // wide（平板）仍用组件内常驻侧栏，靠 railExpanded 伸缩。
+  // 抽屉里选中的设备（Index 持有）：非空时「已连接设备」分区改渲染设备详情 + 大按钮
+  @Prop selectedDeviceId: string = '';
+  // 大按钮占位回调（功能暂未实现）
+  onPlaceholderAction: (key: string) => void = () => {
+  };
+  // 点设备行（发现页/已连接列表）→ 回到该设备的「功能页」（设备信息 + 大按钮）
+  onOpenDevice: (d: DeviceItem) => void = () => {
   };
   onManualConnect: (host: string, port: number) => void = () => {
   };
@@ -33,7 +39,6 @@ export struct DevicesTab {
   // 侧栏选中项：0 已连接 / 1 发现 / 2 记住的 / 3 手动连接
   // @Link：连接/配对成功后由 Index 切回「已连接设备」分区
   @Link deviceSection: number;
-  @State drawerOpen: boolean = false;
   @State railExpanded: boolean = true;
   // 手动连接默认值：host 留空（10.0.2.2 只是 QEMU 模拟器的 NAT 网关，真机无意义），port 用默认端口
   @State manualHost: string = '';
@@ -41,23 +46,23 @@ export struct DevicesTab {
   // 发现列表下拉刷新态（触发广播后自动收起）
   @State discoveryRefreshing: boolean = false;
 
+  // 侧栏开合：宽屏（平板）由本组件常驻侧栏自行伸缩；窄屏（手机）由页面标题旁的汉堡开抽屉
   private openSide(): void {
     if (this.isWide) {
-      this.railExpanded = !this.railExpanded;
-    } else {
-      this.drawerOpen = true;
+      animateTo({ duration: 220, curve: Curve.EaseInOut }, () => {
+        this.railExpanded = !this.railExpanded;
+      });
     }
   }
 
   private pickSection(index: number): void {
     this.deviceSection = index;
-    if (!this.isWide) {
-      this.drawerOpen = false;
-    }
   }
 
+  // 是否处于配对态：**必须看 paired 标记**（需求 3 后条目会永久保留，
+  // 只判断"存在条目"会把已解除配对的设备误判为已配对——用户实测反馈的 bug）
   private isPaired(deviceId: string): boolean {
-    return this.rememberedDevices.some((r: RememberedDevice) => r.id === deviceId);
+    return this.rememberedDevices.some((r: RememberedDevice) => r.id === deviceId && r.paired);
   }
 
   private batteryOf(deviceId: string): string {
@@ -168,19 +173,89 @@ export struct DevicesTab {
             .fontSize(10)
             .fontColor($r('app.color.dot_connected'))
         }
-        // CodeArts MSG75 裁决 2 补充：说明「断开」与「解除配对」的差别
-        if (this.isPaired(d.id)) {
-          Text($r('app.string.disconnect_hint'))
-            .fontSize(9)
-            .fontColor($r('app.color.text_muted'))
-            .maxLines(2)
-        }
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
-      // AP-1 配对状态（CodeArts MSG69/MSG71 §2）：
-      //   已配对 → 徽标 + 断开（只断链）+ 解除配对（unpair+断链）；
-      //   等待确认 → 提示 + 断开；否则 → 配对 + 断开
+      // 已连接设备只保留**配对 / 解除配对**（用户 2026-09-13 裁决：对齐 iOS；
+      // 不再提供「断开」——链路由 KDE 自行管理，对端重拨/重连都与 UI 无关）
+      if (this.isPaired(d.id)) {
+        Text($r('app.string.remembered_hint'))
+          .fontSize(10)
+          .fontColor($r('app.color.dot_remembered'))
+          .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+          .borderRadius(999)
+          .backgroundColor($r('app.color.chip_bg'))
+        Button($r('app.string.unpair_action'))
+          .fontSize(12)
+          .height(32)
+          .backgroundColor($r('app.color.chip_bg'))
+          .fontColor($r('app.color.text_secondary'))
+          .borderRadius(8)
+          .onClick(() => {
+            this.onUnpairDevice(d);
+          })
+      } else if (this.requestedPairIds.includes(d.id)) {
+        Text($r('app.string.pair_pending'))
+          .fontSize(10)
+          .fontColor($r('app.color.accent_text'))
+          .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+          .borderRadius(999)
+          .backgroundColor($r('app.color.accent_soft'))
+      } else {
+        // 已连接但未配对：只显示状态徽标（**配对入口在「发现设备」页**，用户 2026-09-13 裁决）
+        Text($r('app.string.remembered_unpaired'))
+          .fontSize(10)
+          .fontColor($r('app.color.text_muted'))
+          .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+          .borderRadius(999)
+          .backgroundColor($r('app.color.chip_bg'))
+      }
+    }
+    .width('100%')
+    .padding({ top: 6, bottom: 6 })
+    // 点整行 = 打开该设备的「功能页」（设备信息 + 大按钮）
+    .onClick(() => {
+      this.onOpenDevice(d);
+    })
+  }
+
+  @Builder
+  discoveredRow(d: DeviceItem) {
+    Row({ space: 10 }) {
+      Circle({ width: 8, height: 8 })
+        .fill(d.online ? $r('app.color.dot_discovered') : $r('app.color.text_muted'))
+      Column({ space: 2 }) {
+        Row({ space: 6 }) {
+          Text(d.name)
+            .fontSize(13)
+            .fontColor(d.online ? $r('app.color.text_primary') : $r('app.color.text_muted'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          // 离线标记（超时不删条目，只标离线）
+          if (!d.online) {
+            Text($r('app.string.device_offline'))
+              .fontSize(9)
+              .fontColor($r('app.color.text_muted'))
+              .padding({ left: 6, right: 6, top: 1, bottom: 1 })
+              .borderRadius(999)
+              .backgroundColor($r('app.color.chip_bg'))
+          }
+        }
+        Text(d.id)
+          .fontSize(10)
+          .fontColor($r('app.color.text_muted'))
+          .fontFamily('monospace')
+          .maxLines(1)
+        Text(d.host !== '' ? `${d.host}:${d.tcpPort}` : $r('app.string.address_pending'))
+          .fontSize(10)
+          .fontColor($r('app.color.text_muted'))
+          .fontFamily('monospace')
+          .maxLines(1)
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      // 用户 2026-09-13 裁决：配对统一在「发现设备」页（KDE 发现后会自动连接 ⇒ 不再提供「连接」按钮）。
+      // 行内信息：设备名称 + uuid + ip:port；按钮：配对 / 已配对（解除配对）/ 等待确认。
       if (this.isPaired(d.id)) {
         Text($r('app.string.remembered_hint'))
           .fontSize(10)
@@ -208,69 +283,20 @@ export struct DevicesTab {
         Button($r('app.string.pair_action'))
           .fontSize(12)
           .height(32)
-          .backgroundColor($r('app.color.accent_soft'))
-          .fontColor($r('app.color.accent_text'))
+          .backgroundColor($r('app.color.accent'))
           .borderRadius(8)
           .onClick(() => {
             this.onPairDevice(d);
           })
       }
-      Button($r('app.string.disconnect'))
-        .fontSize(12)
-        .height(32)
-        .backgroundColor($r('app.color.danger_bg'))
-        .fontColor($r('app.color.danger_text'))
-        .borderRadius(8)
-        .onClick(() => {
-          this.onDisconnectDevice(d);
-        })
     }
     .width('100%')
     .padding({ top: 6, bottom: 6 })
-  }
-
-  @Builder
-  discoveredRow(d: DeviceItem) {
-    Row({ space: 10 }) {
-      Circle({ width: 8, height: 8 })
-        .fill(d.online ? $r('app.color.dot_discovered') : $r('app.color.text_muted'))
-      Column({ space: 2 }) {
-        Row({ space: 6 }) {
-          Text(d.name)
-            .fontSize(13)
-            .fontColor(d.online ? $r('app.color.text_primary') : $r('app.color.text_muted'))
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-          // 离线标记（MSG78 §2：超时不删条目，只标离线）
-          if (!d.online) {
-            Text($r('app.string.device_offline'))
-              .fontSize(9)
-              .fontColor($r('app.color.text_muted'))
-              .padding({ left: 6, right: 6, top: 1, bottom: 1 })
-              .borderRadius(999)
-              .backgroundColor($r('app.color.chip_bg'))
-          }
-        }
-        Text(d.host !== '' ? `${d.host}:${d.tcpPort}` : $r('app.string.address_pending'))
-          .fontSize(10)
-          .fontColor($r('app.color.text_muted'))
-          .fontFamily('monospace')
-          .maxLines(1)
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-      Button($r('app.string.connect'))
-        .fontSize(12)
-        .height(32)
-        .backgroundColor($r('app.color.accent'))
-        .borderRadius(8)
-        .enabled(d.host !== '' && d.tcpPort > 0)
-        .onClick(() => {
-          this.onConnectDevice(d);
-        })
-    }
-    .width('100%')
-    .padding({ top: 6, bottom: 6 })
+    // 点整行 = 打开该设备的「功能页」（已连接时）；未连接由页面层提示离线。
+    // 配对仍只由行内「配对」按钮触发，避免误触发配对。
+    .onClick(() => {
+      this.onOpenDevice(d);
+    })
   }
 
   @Builder
@@ -310,6 +336,126 @@ export struct DevicesTab {
       .fontSize(12)
       .fontColor($r('app.color.text_muted'))
       .padding({ top: 4, bottom: 4 })
+  }
+
+  // 大按钮（对齐参考稿主页面的「检测与帮助 / 我要换电池」卡片：图标 + 标题 + 副标题）。
+  // 功能暂未实现：点击只回调占位 key（Index 侧给 toast）。
+  @Builder
+  actionCard(key: string, icon: Resource, title: ResourceStr, desc: ResourceStr) {
+    Column({ space: 6 }) {
+      SymbolGlyph(icon)
+        .fontSize(24)
+        .fontColor([$r('app.color.accent_text')])
+      Text(title)
+        .fontSize(14)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .maxLines(1)
+      Text(desc)
+        .fontSize(11)
+        .fontColor($r('app.color.text_muted'))
+        .maxLines(2)
+    }
+    .layoutWeight(1)
+    .alignItems(HorizontalAlign.Start)
+    .padding({ left: 14, right: 14, top: 14, bottom: 14 })
+    .borderRadius(16)
+    .backgroundColor($r('app.color.card_bg'))
+    .backgroundBlurStyle(BlurStyle.BACKGROUND_THIN)
+    .border({ width: 1, color: $r('app.color.card_border') })
+    .onClick(() => {
+      this.onPlaceholderAction(key);
+    })
+  }
+
+  // 设备详情（对齐参考稿主页面）：上方设备信息 + 下方大按钮
+  @Builder
+  deviceDetail(d: DeviceItem) {
+    Column({ space: 14 }) {
+      Row({ space: 12 }) {
+        Column() {
+          SymbolGlyph($r('sys.symbol.computer'))
+            .fontSize(26)
+            .fontColor([$r('app.color.text_primary')])
+        }
+        .width(56)
+        .height(56)
+        .borderRadius(16)
+        .backgroundColor($r('app.color.chip_bg'))
+        .justifyContent(FlexAlign.Center)
+
+        Column({ space: 4 }) {
+          Text(d.name)
+            .fontSize(18)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(d.id)
+            .fontSize(10)
+            .fontColor($r('app.color.text_muted'))
+            .fontFamily('monospace')
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Row({ space: 8 }) {
+            Text(this.isPaired(d.id) ? $r('app.string.remembered_hint') : $r('app.string.remembered_unpaired'))
+              .fontSize(10)
+              .fontColor(this.isPaired(d.id) ? $r('app.color.dot_remembered') : $r('app.color.text_muted'))
+              .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+              .borderRadius(999)
+              .backgroundColor($r('app.color.chip_bg'))
+            if (this.batteryOf(d.id).length > 0) {
+              Text(this.batteryOf(d.id))
+                .fontSize(10)
+                .fontColor($r('app.color.dot_connected'))
+                .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+                .borderRadius(999)
+                .backgroundColor($r('app.color.chip_bg'))
+            }
+          }
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+      }
+      .width('100%')
+
+      // 大按钮：暂为占位（功能未实现）
+      Row({ space: 10 }) {
+        this.actionCard('send_file', $r('sys.symbol.paperplane'),
+          $r('app.string.action_send_file'), $r('app.string.action_send_file_desc'))
+        this.actionCard('clipboard', $r('sys.symbol.text_clipboard'),
+          $r('app.string.action_clipboard'), $r('app.string.action_clipboard_desc'))
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Top)
+
+      Row({ space: 10 }) {
+        this.actionCard('find_phone', $r('sys.symbol.location_up'),
+          $r('app.string.action_find_phone'), $r('app.string.action_find_phone_desc'))
+        this.actionCard('ring', $r('sys.symbol.bell'),
+          $r('app.string.action_ring'), $r('app.string.action_ring_desc'))
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Top)
+
+      Row({ space: 10 }) {
+        this.actionCard('battery', $r('sys.symbol.battery'),
+          $r('app.string.action_battery'), $r('app.string.action_battery_desc'))
+        this.actionCard('media', $r('sys.symbol.screen_share'),
+          $r('app.string.action_media'), $r('app.string.action_media_desc'))
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Top)
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  private selectedDeviceVisible(): boolean {
+    if (this.selectedDeviceId.length === 0) {
+      return false;
+    }
+    return this.connectedDevices.some((d: DeviceItem) => d.id === this.selectedDeviceId);
   }
 
   @Builder
@@ -361,34 +507,27 @@ export struct DevicesTab {
           .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
           .layoutWeight(1)
-        // 显式「刷新」按钮（CodeArts MSG78 §3）：与下拉刷新同源，但可靠、可自动化验证
-        if (this.deviceSection === 1) {
-          Button($r('app.string.discovery_refresh'))
-            .fontSize(12)
-            .height(30)
-            .backgroundColor($r('app.color.accent_soft'))
-            .fontColor($r('app.color.accent_text'))
-            .borderRadius(8)
-            .onClick(() => {
-              this.discoveryRefreshing = true;
-              this.onRefreshDiscovery();
-              setTimeout((): void => {
-                this.discoveryRefreshing = false;
-              }, 1500);
-            })
-        }
       }
       .width('100%')
       if (this.deviceSection === 0) {
-        if (this.connectedDevices.length === 0) {
-          this.emptyHint($r('app.string.group_empty'))
+        // 抽屉里选中了设备 → 详情（信息 + 大按钮）；否则维持原来的已连接列表
+        if (this.selectedDeviceVisible()) {
+          ForEach(this.connectedDevices.filter((d: DeviceItem) => d.id === this.selectedDeviceId),
+            (d: DeviceItem) => {
+              this.deviceDetail(d)
+            }, (d: DeviceItem) => d.id)
+        } else {
+          if (this.connectedDevices.length === 0) {
+            this.emptyHint($r('app.string.group_empty'))
+          }
+          ForEach(this.connectedDevices, (d: DeviceItem) => {
+            this.connectedRow(d)
+          }, (d: DeviceItem) => d.id)
         }
-        ForEach(this.connectedDevices, (d: DeviceItem) => {
-          this.connectedRow(d)
-        }, (d: DeviceItem) => d.id)
       } else if (this.deviceSection === 1) {
         // 下拉刷新：手动触发一次 identity 广播（对端后启动/丢包时用）。
-        // Refresh 需要可滚动子组件才能识别下拉手势，故内层包一个 Scroll。
+        // 用官方组合 Refresh + List：List 是可滚动子组件（下拉手势生效），且内容**从顶部排列**
+        // （此前 Refresh + Scroll + height('100%') 高度解析失败 → 内容被垂直居中，用户反馈"从中间开始"）。
         Refresh({ refreshing: $$this.discoveryRefreshing }) {
           Scroll() {
             Column({ space: 8 }) {
@@ -400,7 +539,11 @@ export struct DevicesTab {
               }, (d: DeviceItem) => d.id)
             }
             .width('100%')
+            // 关键：填满 Scroll 并顶部对齐。若不给高度，Scroll 会把内容**垂直居中**
+            // （真机/模拟器实测：卡片内只剩 77px 内容却居中在卡片中间 → 用户反馈"列表从中间开始"）。
+            .height('100%')
             .alignItems(HorizontalAlign.Start)
+            .justifyContent(FlexAlign.Start)
           }
           .width('100%')
           .height('100%')
@@ -408,7 +551,8 @@ export struct DevicesTab {
           .edgeEffect(EdgeEffect.Spring)
         }
         .width('100%')
-        .layoutWeight(1)
+        // 不再 layoutWeight(1)：Refresh 按内容高度布局（撑满时其内部会把内容垂直居中，
+        // 实测表现为「列表从卡片中间开始」）；内容高度即下拉手势区域。
         .onRefreshing(() => {
           this.onRefreshDiscovery();
           setTimeout((): void => {
@@ -472,20 +616,8 @@ export struct DevicesTab {
         .layoutWeight(1)
         .alignItems(VerticalAlign.Top)
       } else {
-        // 手机：顶部三条横线 + 主区；侧栏以抽屉形式拉出
+        // 手机：标题旁汉堡已在页面层（Index）；此处只剩主区
         Column({ space: 10 }) {
-          Row({ space: 10 }) {
-            this.hamburger()
-            Text(this.sectionTitleOf(this.deviceSection))
-              .fontSize(13)
-              .fontColor($r('app.color.text_muted'))
-              .layoutWeight(1)
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-          }
-          .width('100%')
-          .alignItems(VerticalAlign.Center)
-
           Column() {
             this.mainArea()
           }
@@ -497,45 +629,6 @@ export struct DevicesTab {
         .layoutWeight(1)
       }
 
-      // 抽屉（仅手机）：背景变暗 + 侧栏占屏大部分，选中后收起
-      if (!this.isWide && this.drawerOpen) {
-        Column()
-          .width('100%')
-          .height('100%')
-          .backgroundColor('#66000000')
-          .onClick(() => {
-            this.drawerOpen = false;
-          })
-          .transition(TransitionEffect.OPACITY)
-
-        Column({ space: 12 }) {
-          Row({ space: 10 }) {
-            Text($r('app.string.tab_devices'))
-              .fontSize(15)
-              .fontWeight(FontWeight.Medium)
-              .fontColor($r('app.color.text_primary'))
-              .layoutWeight(1)
-            Text('✕')
-              .fontSize(16)
-              .fontColor($r('app.color.text_secondary'))
-              .padding(6)
-              .onClick(() => {
-                this.drawerOpen = false;
-              })
-          }
-          .width('100%')
-          this.railList(true)
-        }
-        .width('78%')
-        .height('100%')
-        .padding(16)
-        .backgroundColor($r('app.color.bar_bg'))
-        .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
-        .borderRadius({ topRight: 22, bottomRight: 22 })
-        .border({ width: 1, color: $r('app.color.bar_border') })
-        .alignItems(HorizontalAlign.Start)
-        .transition(TransitionEffect.translate({ x: -360 }))
-      }
     }
     .width('100%')
     .layoutWeight(1)
