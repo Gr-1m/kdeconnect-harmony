@@ -100,6 +100,25 @@ M2（iOS 功能集插件）主体在 ArkTS 侧（插件注册表/插件基类/�
 5. 事件回调必须走 tsfn；构造事件对象用 `napi_create_object` 逐字段组装（与 d.ts 字段一一对应），字符串走 UTF8；回调体内必须建 `napi_handle_scope`。
 6. 事件 `type` 命名与 d.ts 字面量联合类型严格一致；新增事件先改 d.ts 再实现。
 
+## 5b. UDP 发现（2026-09-13，CodeArts MSG73_TO_OMP + 本轮实测）
+
+- **发送**：`UdpDiscovery::broadcast()` = 逐网卡**子网定向广播**（`getifaddrs()` → `IP | ~mask`）+ 全局广播兜底。
+  原因：全局广播 `255.255.255.255` 在部分 HarmonyOS 版本被拒（docs/14 §2.2，errno 13）。
+- **节奏**：`NetStack` tick 周期重播（启动初期 `DISCOVERY_BROADCAST_FAST_MS`×`COUNT`，随后 `…SLOW_MS`）。
+  原因：KDE/Android **只在启动/网络变化**广播（`lanlinkprovider.cpp:149,192`），后启动的一方永远等不到。
+- **护栏（勿删）**：`DISCOVERY_BROADCAST_WHILE_LINKED = false` —— 已建链时不重播。
+  **证据**：KDE 收到任意 identity 广播都会新建 TCP 连接，并对同设备**新链路替换旧链路**
+  （实测 `deviceLinkDestroyed` → 我方 `error tls read failed` + `disconnected`）；
+  持续重播 ⇒ 周期性换链路 ⇒ 进行中的 payload 被 `onDeviceDown` 中止、会话弹窗被判失败。
+  需要「对端后加入也能发现我们」时改为 `true`，代价即上述链路替换。
+- **发现事件的两条来源（都要保留）**：① 收到对端 UDP 广播（`onUdpReadable` → `DeviceDiscovered`）；
+  ② **对端主动拨入**（`handlePlainIdentity` → 补发 `DeviceDiscovered`）。只有 ① 会让「发现页」在
+  对端不广播时永远为空——这是用户报告「局域网扫描不到任何设备」的直接成因。
+- **UI 主动触发**：`native.triggerBroadcast()`（`NetStack::triggerBroadcast` → `udp_->broadcast()`）。
+  d.ts 声明归 DevEco（契约流）；**不要在 ArkTS 里做定时无条件广播**（同护栏理由）。
+- 验证手法（host，可复现）：UDP 监听器绑 1716（`SO_REUSEADDR`，Linux 会把广播副本投递给所有同绑 socket）→
+  能逐条看到「几个网卡定向 + 全局兜底」以及周期重播节奏（实测 5s 快速阶段 4 条/轮）。
+
 ## 6. 协议一致性常量（改一处必须核对三端 + meta）
 
 protocolVersion=8；UDP 1716；TCP 1716–1764 顺序探测；payload 端口 ≥1739；单包 32 MiB；identity 包 ≤8 KiB；配对 timestamp 容差 ±1800 秒；deviceId 正则 `^[a-zA-Z0-9_-]{32,38}$` 且 = 证书 CN 且必须持久化；证书有效期 −1y→+10y；验证码 = 双方公钥 DER 按字节序排序拼接 + SHA256 前 8 位 hex 大写（v8 追加配对 timestamp）。

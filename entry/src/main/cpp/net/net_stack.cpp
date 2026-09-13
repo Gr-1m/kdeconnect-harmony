@@ -144,6 +144,8 @@ bool NetStack::start(const NetConfig &config)
     epoll_ctl(epollFd_, EPOLL_CTL_ADD, tcpServer_->fd(), &srvEv);
 
     udp_->broadcast();
+    lastBroadcastMs_ = nowMs();
+    broadcastCount_ = 1;
 
     running_.store(true);
     loopThread_ = std::thread(&NetStack::eventLoop, this);
@@ -376,6 +378,21 @@ void NetStack::eventLoop()
                 }
             }
         }
+        // 周期重播 UDP 发现广播（CodeArts MSG73_TO_OMP 修复 2）：
+        // 对端只在启动/网络变化时广播 → 后启动的一方必须由我们补齐节奏。
+        // 默认在「有活跃链路」时不播（DISCOVERY_BROADCAST_WHILE_LINKED 注释里有证据：
+        // KDE 每收到一次广播就会新建链路并销毁同设备旧链路，会把进行中的传输换掉）。
+        if (udp_ != nullptr &&
+            (linkedDevices.empty() || DISCOVERY_BROADCAST_WHILE_LINKED)) {
+            const int interval = (broadcastCount_ < DISCOVERY_BROADCAST_FAST_COUNT)
+                                     ? DISCOVERY_BROADCAST_FAST_MS
+                                     : DISCOVERY_BROADCAST_SLOW_MS;
+            if (now - lastBroadcastMs_ >= interval) {
+                udp_->broadcast();
+                lastBroadcastMs_ = now;
+                ++broadcastCount_;
+            }
+        }
         for (auto it = lastSeenMs_.begin(); it != lastSeenMs_.end(); ) {
             // P1-2：KDE/Android 只在启动/网络变化时广播（kdeconnect-kde
             // lanlinkprovider.cpp:149,192；kdeconnect-android LanLinkProvider.java:590,605），
@@ -546,6 +563,18 @@ void NetStack::sendIdentityOverTls(TcpConnection &conn)
     }
 }
 
+void NetStack::triggerBroadcast()
+{
+    // UI「扫描 / 下拉刷新」入口：立即广播一次（CodeArts MSG73_TO_OMP 修复 4）。
+    // 调用方是 JS 线程；broadcast() 内部只做 sendto（无锁竞争：identity 快照在锁内取）。
+    if (udp_) {
+        udp_->broadcast();
+        lastBroadcastMs_ = nowMs();
+        ++broadcastCount_;
+        LOGI("udp broadcast triggered by UI");
+    }
+}
+
 // 明文 identity 帧：设置 deviceId/设备信息，派发 pairingRequest，入向连接就地启动 TLS 握手
 bool NetStack::handlePlainIdentity(TcpConnection &conn, const std::string &frame)
 {
@@ -565,6 +594,20 @@ bool NetStack::handlePlainIdentity(TcpConnection &conn, const std::string &frame
     conn.setDeviceId(info.deviceId);
     conn.setPeerInfo(conn.peerHost().empty() ? peerHostOf(conn.fd()) : conn.peerHost(),
                      info.tcpPort, info.deviceName, info.deviceType);
+
+    // 对端主动连入 = 我们确知该设备在线。这里补发 deviceDiscovered，
+    // 使「发现列表」不只依赖对端的 UDP 广播（对端只在启动/网络变化时广播，
+    // 后启动的一方会永远看不到它——这正是「发现页空」的成因）。
+    {
+        NetEvent dev {};
+        dev.type = EventType::DeviceDiscovered;
+        dev.deviceId = info.deviceId;
+        dev.deviceName = info.deviceName;
+        dev.deviceType = info.deviceType;
+        dev.host = conn.peerHost();
+        dev.tcpPort = info.tcpPort;
+        dispatchEvent(dev);
+    }
 
     NetEvent ev {};
     ev.type = EventType::PairingRequest;

@@ -65,6 +65,8 @@ static napi_value RegisterModule(napi_env env, napi_value exports)
          nullptr, napi_default, nullptr},
         {"getPairVerificationCode", nullptr, JsGetPairVerificationCode, nullptr, nullptr,
          nullptr, napi_default, nullptr},
+        {"triggerBroadcast", nullptr, JsTriggerBroadcast, nullptr, nullptr, nullptr,
+         napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     return exports;
