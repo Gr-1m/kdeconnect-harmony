@@ -362,6 +362,17 @@ int main(int argc, char **argv)
         } else {
             rc = 1;
         }
+    } else if (mode == "ping") {
+        // A9：配对完成后「我方能否主动发 ping 给对端」的 native 半边（对端插件加载情况用
+        // 桌面端 DBus `device.loadedPlugins` / `kdeconnect-cli --ping` 侧证）。
+        char frame[256];
+        std::snprintf(frame, sizeof frame,
+                      "{\"id\":%lld,\"type\":\"kdeconnect.ping\",\"body\":{}}\n",
+                      (long long) nowMs());
+        const bool sent = ns.sendPacket(peer, frame);
+        note("[*] sendPacket(kdeconnect.ping) → %s", sent ? "OK" : "FAILED");
+        rc = sent ? 0 : 1;
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
     } else if (mode == "serve") {
         // 保持连接 N 秒，并把收到的 payload 落盘（模拟 ArkTS 的 keep 决策），
         // 用于验证接收方向：桌面端执行
