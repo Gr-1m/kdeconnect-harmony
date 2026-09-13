@@ -51,7 +51,8 @@ export class TrustStore {
             id: d.id,
             name: d.name ?? d.id,
             certPem: d.certPem ?? '',
-            pairedAt: d.pairedAt ?? 0
+            pairedAt: d.pairedAt ?? 0,
+            paired: d.paired ?? true
           });
         }
       }
@@ -69,7 +70,7 @@ export class TrustStore {
       for (const it of arr) {
         const id: string = it['id'] ?? '';
         if (id !== '') {
-          out.push({ id: id, name: it['name'] ?? id, certPem: '', pairedAt: 0 });
+          out.push({ id: id, name: it['name'] ?? id, certPem: '', pairedAt: 0, paired: true });
         }
       }
     } catch (e) {

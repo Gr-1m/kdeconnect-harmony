@@ -281,6 +281,14 @@
       "value": "请在 30 秒内到对端设备上点「接受」"
     },
     {
+      "name": "connect_success",
+      "value": "连接成功"
+    },
+    {
+      "name": "remembered_unpaired",
+      "value": "未配对"
+    },
+    {
       "name": "discovery_refresh",
       "value": "刷新"
     },

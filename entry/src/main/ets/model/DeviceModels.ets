@@ -16,6 +16,8 @@ export interface DeviceItem {
 export interface RememberedDevice {
   id: string;
   name: string;
+  // 是否仍处于配对态（需求 3：解除配对后条目保留，仅置 false，便于后续重新配对）
+  paired: boolean;
 }
 
 // 插件推给 UI 的展示项（如电量）；由 Index 维护、DevicesTab 渲染
