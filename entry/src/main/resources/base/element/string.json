@@ -289,6 +289,10 @@
       "value": "Waiting for the other device to confirm…"
     },
     {
+      "name": "pair_waiting_hint",
+      "value": "Accept the request on the other device within 30 seconds"
+    },
+    {
       "name": "action_cancel",
       "value": "Cancel"
     },

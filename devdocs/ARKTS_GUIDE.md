@@ -54,6 +54,12 @@ entry/src/main/ets/
 UI 结构（对齐 iOS 端 Devices+Settings 两 Tab，鸿蒙扩展为四 Tab）：
 - **底部悬浮胶囊栏**（华为应用商店/我的华为风格，药丸高亮）：设备 / 文件 / 设置 / 日志[开发期]；
 - **设备页**：**左侧收纳/展开竖栏**（已连接 / 发现设备 / 记住的设备 / 手动连接，带数量角标，`‹/›` 折叠为窄条），选中后**右侧主区**展示对应内容；已连接（绿点+断开）、发现设备（蓝点+连接，host 未知时禁用）、记住的设备（紫点+已配对徽标，Preferences 持久化 `rememberedDevices`）；手动连接为侧栏可选项；
+- **连接/配对会话（AP-1c，与 iOS 一致，2026-09-13 用户裁决）**：发现列表「连接」与手动连接**共用一条状态机** `idle → connecting → prompt → awaiting → idle(成功) | failed`：
+  - 点「连接」**立刻**弹居中模态（标题「正在连接…」+ 目标 host:port + 取消），解决"点击后无任何反馈"；
+  - 连上（`connected` 事件）后：已配对 → 直接成功；未配对 → 弹窗切为**配对确认**（设备名 + 验证码 + 取消/配对），验证码用本侧生成的 timestamp 计算（同一值随 pair 帧发给对端）；
+  - 点「配对」→ 状态 `awaiting`（30s 超时）；对端先发 pair 请求时不再叠第二个弹窗，本弹窗的「配对」按钮即接受；
+  - 成功（`onPaired`）→ 提示「配对成功」并**自动把设备分区切回 0 = 已连接设备**（`@Link deviceSection`，此前需手动切回）；失败 → 同一弹窗显示「连接失败」/「配对失败」+ 原因（连接 20s 超时、`error` 事件、`disconnected`、配对 30s 超时）；「取消」只收弹窗、保留已建立的连接；
+  - 分区状态由 `DevicesTab` 的 `@State selectedSection` **改为 `@Link deviceSection`**，供页面在配对成功后跳转。
 - **文件页**：连接后可收发（kdeconnect.share + payload），当前占位；
 - **设置页**：本机身份与协议信息（deviceId 等）+ **可自定义设备名**（持久化 `deviceName` 并重启 native 栈，使 identity 广播用新名，deviceId/证书不变）+ **主题**（跟随系统 / 亮 / 暗）+ **语言**（默认跟随系统）；
 - **沉浸光感（API 26 `uiMaterial`）已知坑（官方文档实证）**：`systemMaterial` **只在两类区域生效**——Navigation/NavDestination 标题栏、或「横向 Tabs + `barPosition: BarPosition.End` 的底部 TabBar」（弹窗类/Slider/Toggle 除外）；**范围外组件材质失活，现象=完全透明/无效果，且控制台会打印 `Material inactive: out of scope`**。此外 `backgroundColor` 不透明、`backgroundBlurStyle` 会盖住材质层；`materialColor` 必须带透明度。→ 本项目自绘卡片/悬浮胶囊栏**不在范围内**，故统一走毛玻璃降级；将来启用材质的正解是把底部栏改成真正的 `Tabs` 底部 TabBar（官方 FAQ《基于 Tabs 组件实现胶囊样式、悬浮留空及重叠毛玻璃等常见 TabBar 自定义样式》：`Stack{ Tabs(barHeight 0) + 自绘栏 }` 或 `TabContent.tabBar(自定义 builder)`）。
