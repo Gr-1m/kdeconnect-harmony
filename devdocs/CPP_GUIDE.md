@@ -121,13 +121,18 @@ protocolVersion=8；UDP 1716；TCP 1716–1764 顺序探测；payload 端口 ≥
 - **x509 vtable 必须是静态初始化对象**：不得从 `br_x509_minimal_vtable` 抄字段值（会产生动态初始化，
   在跨 TU 初始化顺序下前几个槽为 0 → `x509-start-chain` 处 call null，已实测）；
   用直通转发函数（`capture_start_chain`/`capture_get_pkey`）在运行期查表。
-- **控制连接也必须捕获对端证书（2026-09-13 定稿）**：TLS **server** 角色（= 本机主动发起的连接，
-  手动连接/首次连接的主路径）必须请求对端证书：`startTlsHandshake()` 传
-  `ServerClientAuth{tolerateNoCert=true}`。否则 `getPeerCertificate()`/`getPairVerificationCode()`
-  全返回空 → 配对弹窗**无验证码**、`TrustStore` 存不到对端证书（钉扎失效）、payload 发送方向
-  只能走占位 CA 名 + 容忍缺失的降级路径。**实测**：修前 host 集成工具（`tests/desktop_pair.cpp`）
-  与本机 KDE 配对时验证码为空串，修后为 `F3C16020` 且与 KDE 通知里的 Key 逐字一致。
-  TLS client 角色无需请求（client 分支的 `capture_x509_vtable` 直接拿对端证书）。
+- **控制连接必须捕获对端证书（CodeArts MSG70 评审确认，2026-09-13）**：
+  **无论 TLS server 还是 client 角色**，控制连接都必须请求并捕获对端叶证书 DER 与 subject CN。
+  - TLS **server** 角色（= 本机主动发起的连接，手动连接/首次连接的主路径）：`startTlsHandshake()` 传
+    `ServerClientAuth{tolerateNoCert=true}`，由 `capture_x509_vtable` 捕获；
+  - TLS **client** 角色（= 对端发起的连接）：`client 分支` 的 `capture_x509_vtable` + X.509 验证器链已自动获得；
+  - **依据**：配对验证码 = 双方证书 SPKI DER 排序拼接 + SHA256 前 8 位 hex（v8 追加十进制度秒 timestamp）。
+    任一方未捕获对端证书 → 验证码为空 → 配对弹窗无码 → `TrustStore` 无证书 → WP-2 钉扎失效 →
+    payload 发送方向只能走占位 CA 名 + 容忍缺失的降级路径；
+  - **实测**：修前 host 集成工具与本机 KDE 配对验证码为空串，修后 `F3C16020` 与 KDE 通知里的 Key 逐字一致；
+    App 侧（DevEco 模拟器）同步确认为 `D7 C3 D4 46`（MSG71_TO_OMP §1）；
+  - **回归**：`tests/payload_e2e.cpp::tlsServerCapturesPeerCert`（走真实 `TcpConnection::startTlsHandshake`
+    路径，回退修复必红：`server 未捕获对端 CN：''`）。
 
 ## 7. 构建与验证
 

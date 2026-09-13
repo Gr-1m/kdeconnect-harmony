@@ -46,3 +46,7 @@ devdocs/reference/
 
 # Syncthing 本机忽略配置（机器本地，Win10 侧手动镜像）
 .stignore
+
+# DevEco 验证产物与 IDE 重写前的备份（CodeArts MSG70 裁决，不入库）
+.deveco-verify/
+build-profile.json5.bak
