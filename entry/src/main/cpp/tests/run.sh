@@ -43,4 +43,24 @@ g++ -std=c++17 -Wall -Wextra -O1 \
     -lpthread \
     -o "$OUT/kdc_payload_tests"
 
+# 3) net 栈测试（连接失败可解释性 + 有界握手；不需局域网/设备）
+g++ -std=c++17 -Wall -Wextra -O1 \
+    -I. -I.. -Istub -I../bearssl/inc \
+    net_stack_tests.cpp \
+    ../net/net_stack.cpp \
+    ../net/tcp_connection.cpp \
+    ../net/tcp_server.cpp \
+    ../net/udp_discovery.cpp \
+    ../net/tls_engine.cpp \
+    ../net/cert_gen.cpp \
+    ../net/cert_util.cpp \
+    ../net/net_util.cpp \
+    ../net/packet_io.cpp \
+    ../payload/payload.cpp \
+    "$OUT/cJSON.o" "$BEARSSL_LIB" \
+    -lpthread \
+    -o "$OUT/kdc_net_tests"
+
+"$OUT/kdc_net_tests"
+
 "$OUT/kdc_payload_tests"

@@ -61,6 +61,13 @@ enum class ConnectionState {
     Closed,
 };
 
+// 明文 identity 等待上限：accept 后超时未收到 identity 即断开（AGENTS.md 不变量）
+constexpr int PLAIN_IDENTITY_TIMEOUT_MS = 1000;
+
+// TLS 握手上限：对端 TCP 能连上但不应答（不是 KDE Connect / 半死 / 黑洞 IP）时必须有界失败，
+// 否则连接悬挂、用户也看不到「连接失败」（用户 UX 规格 #1/#2：连接要明确成功或失败）。
+constexpr int CONNECT_HANDSHAKE_TIMEOUT_MS = 10000;
+
 struct DeviceInfo {
     std::string deviceId;
     std::string deviceName;
@@ -80,6 +87,8 @@ struct NetConfig {
     // 设计 v0.2 §3 要求由 ArkTS 传入；当前 ArkTS 未传，native 保留可注入能力
     // （host 集成工具 tests/desktop_pair.cpp 用它把 spool 指到 /tmp）。
     std::string spoolDir;
+    // TLS 握手上限（ms；0 = 用 CONNECT_HANDSHAKE_TIMEOUT_MS 默认值）。测试可注入以缩短耗时。
+    int connectHandshakeTimeoutMs = 0;
 };
 
 enum class EventType {

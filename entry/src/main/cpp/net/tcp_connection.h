@@ -35,7 +35,9 @@ public:
     // 明文 identity 帧：MSG_PEEK 精确定位 '\n' 后按需读取。
     // 关键：不接受超过一帧的数据，避免把紧随其后的 TLS 记录头吞进明文缓冲。
     // 返回 >0：帧字节数（out 含结尾 '\n'）；0：数据不足（等待）；-1：对端关闭/帧超限/错误。
-    ssize_t readPlainFrame(std::string &out, size_t maxSize);
+    // errOut（可选）：失败时回填真实 errno（ECONNREFUSED/ECONNRESET/EMSGSIZE…），
+    // 供上层把「连不上」的原因如实报给用户（strerror 会覆盖 errno，故必须就地捕获）。
+    ssize_t readPlainFrame(std::string &out, size_t maxSize, int *errOut = nullptr);
     // 明文全写（identity 发送）；返回 true 表示 len 字节全部写出。
     bool writePlainAll(const uint8_t *data, size_t len);
 
@@ -74,6 +76,14 @@ public:
     // 明文 identity 超时（accept 后 1s 未收到 identity → 断开；AGENTS.md 不变量）
     bool plainExpired(int64_t nowMs) const { return plainDeadlineMs_ > 0 && nowMs > plainDeadlineMs_; }
 
+    // TLS 握手上限（出向连接尤其需要：对端不应答时必须**有界**失败并回报可解释错误，
+    // 见 CONNECT_HANDSHAKE_TIMEOUT_MS）。setHandshakeDeadline(0) = 不设限。
+    void setHandshakeDeadline(int64_t deadlineMs) { handshakeDeadlineMs_ = deadlineMs; }
+    bool handshakeExpired(int64_t nowMs) const
+    {
+        return handshakeDeadlineMs_ > 0 && nowMs > handshakeDeadlineMs_;
+    }
+
 private:
     int fd_ = -1;
     bool isIncoming_ = false;
@@ -86,6 +96,7 @@ private:
     bool needsSendIdentity_ = false;
     bool connectedNotified_ = false;
     int64_t plainDeadlineMs_ = 0;
+    int64_t handshakeDeadlineMs_ = 0;
     std::unique_ptr<TlsEngine> tls_;
     // 明文/解密后的接收缓冲：按 '\n' 切分后剩余的半帧留在这里等下次数据。
     std::string rxBuf_;

@@ -23,12 +23,6 @@ namespace {
 // 事件循环 tick：定时器检查周期（REVIEW §4 P1-7 最小定时器基建）
 constexpr int LOOP_TICK_MS = 200;
 
-int64_t nowMs()
-{
-    using namespace std::chrono;
-    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
-}
-
 // 仅接受私网地址直连（WP-2；公网/非法来源直接拒绝）—— 判定实现在 net_util.cpp
 // （P1-1：172.16/12 边界曾写错，故独立成 host 可测单元并配边界回归用例）。
 
@@ -73,16 +67,44 @@ void NetStack::dispatchEvent(const NetEvent &event)
     }
 }
 
-void NetStack::dispatchError(const std::string &deviceId, int code, const std::string &message)
+// 出向连接失败时取真实原因：非阻塞 connect 的失败通过 SO_ERROR 暴露，
+// 不看它就只能报出「写 identity 失败」这类对用户无意义的错误（实测：连不上时报
+// code=5 "plain identity read failed"，App 无法提示「找不到对应 IP / 连接失败」）。
+static int socketSoError(int fd)
+{
+    int err = 0;
+    socklen_t len = sizeof(err);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) != 0) {
+        return errno;
+    }
+    return err;
+}
+
+void NetStack::dispatchError(const std::string &deviceId, int code, const std::string &message,
+                             const std::string &host, uint16_t port)
 {
     NetEvent ev {};
     ev.type = EventType::Error;
     ev.deviceId = deviceId;
+    ev.host = host;
+    ev.tcpPort = port;
     ev.errorCode = code;
     ev.errorMessage = message;
     dispatchEvent(ev);
-    LOGE("error event: device=%s code=%d msg=%s",
-         deviceId.empty() ? "?" : deviceId.c_str(), code, message.c_str());
+    LOGE("error event: device=%s host=%s:%u code=%d msg=%s",
+         deviceId.empty() ? "?" : deviceId.c_str(), host.empty() ? "?" : host.c_str(), port, code,
+         message.c_str());
+}
+
+// 出向连接在握手阶段的失败统一走这里：带上用户输入的目标地址 + 真实 errno，
+// 使 App 能明确显示「连接失败/对端无响应」（用户 UX 规格 #1/#2）。
+void NetStack::dispatchConnectError(const std::string &host, uint16_t port, int code,
+                                    const char *stage)
+{
+    dispatchError({}, code,
+                  std::string(stage) + " (" + host + ":" + std::to_string(port) + "): " +
+                      strerror(code),
+                  host, port);
 }
 
 bool NetStack::start(const NetConfig &config)
@@ -355,6 +377,22 @@ void NetStack::eventLoop()
             std::lock_guard<std::mutex> lk(connMutex_);
             for (auto it = connections_.begin(); it != connections_.end(); ) {
                 TcpConnection &c = *it->second;
+                if (c.state() == ConnectionState::TlsHandshake && c.handshakeExpired(now)) {
+                    const int tfd = it->first;
+                    const std::string thost = c.peerHost();
+                    const uint16_t tport = c.peerPort();
+                    const bool tincoming = c.isIncoming();
+                    LOGI("tls handshake timeout fd=%d host=%s:%u incoming=%d", tfd, thost.c_str(),
+                         tport, tincoming ? 1 : 0);
+                    epoll_ctl(epollFd_, EPOLL_CTL_DEL, tfd, nullptr);
+                    c.close();
+                    it = connections_.erase(it);
+                    if (!tincoming) {
+                        // 用户可见的「连接失败」：对端无响应（黑洞 IP / 非 KDE Connect / 半死）
+                        dispatchConnectError(thost, tport, ETIMEDOUT, "connect timeout");
+                    }
+                    continue;
+                }
                 if (c.state() == ConnectionState::PlainIdentity && c.plainExpired(now)) {
                     const int fd = it->first;
                     LOGI("identity timeout fd=%d (host=%s)", fd, c.peerHost().c_str());
@@ -619,6 +657,8 @@ bool NetStack::handlePlainIdentity(TcpConnection &conn, const std::string &frame
     dispatchEvent(ev);
 
     if (conn.isIncoming()) {
+        // 入向连接同样设握手上限：半死/恶意连接不应长期占用一个连接槽
+        conn.setHandshakeDeadline(nowMs() + handshakeTimeoutMs());
         if (!conn.startTlsHandshake(config_.certPem, config_.keyPem)) {
             dispatchError(info.deviceId, EIO, "tls init failed");
             epoll_ctl(epollFd_, EPOLL_CTL_DEL, conn.fd(), nullptr);
@@ -770,9 +810,17 @@ void NetStack::onConnectionReadable(int fd)
 
     if (conn.state() == ConnectionState::Idle || conn.state() == ConnectionState::PlainIdentity) {
         std::string frame;
-        ssize_t n = conn.readPlainFrame(frame, MAX_IDENTITY_PACKET_SIZE);
+        int plainErr = EIO;
+        ssize_t n = conn.readPlainFrame(frame, MAX_IDENTITY_PACKET_SIZE, &plainErr);
         if (n < 0) {
-            dispatchError(conn.deviceId(), EIO, "plain identity read failed");
+            if (conn.isIncoming()) {
+                dispatchError(conn.deviceId(), EIO, "plain identity read failed");
+            } else {
+                // 出向：这才是用户「点连接」失败的真实原因（拒绝/不可达/对端立刻关闭）
+                const int soErr = socketSoError(fd);
+                dispatchConnectError(conn.peerHost(), conn.peerPort(),
+                                     soErr != 0 ? soErr : plainErr, "connect failed");
+            }
             closeConnection(fd, "plain identity failed");
             return;
         }
@@ -807,7 +855,11 @@ void NetStack::onConnectionReadable(int fd)
                 sendIdentityOverTls(conn);
             }
         } else if (conn.state() == ConnectionState::Closing) {
-            dispatchError(conn.deviceId(), EIO, "tls handshake failed");
+            if (conn.isIncoming()) {
+                dispatchError(conn.deviceId(), EIO, "tls handshake failed");
+            } else {
+                dispatchConnectError(conn.peerHost(), conn.peerPort(), EIO, "tls handshake failed");
+            }
             closeConnection(fd, "tls handshake failed");
         }
         return;
@@ -840,6 +892,16 @@ void NetStack::onConnectionWritable(int fd)
     TcpConnection &conn = *it->second;
 
     if (conn.state() == ConnectionState::Idle && !conn.isIncoming()) {
+        // 先看 connect 的真实结果：非阻塞 connect 失败会以 EPOLLOUT/EPOLLERR 唤醒，
+        // 若此处当成功继续写 identity，最终只会报出无意义的「plain identity read failed」。
+        const int soErr = socketSoError(fd);
+        if (soErr != 0) {
+            dispatchConnectError(conn.peerHost(), conn.peerPort(), soErr, "connect failed");
+            epoll_ctl(epollFd_, EPOLL_CTL_DEL, fd, nullptr);
+            conn.close();
+            connections_.erase(it);
+            return;
+        }
         // TCP 已连上（EPOLLOUT 就绪）：发明文 identity，然后立刻起 TLS server 握手
         std::vector<std::string> inC, outC;
         {
@@ -852,16 +914,20 @@ void NetStack::onConnectionWritable(int fd)
             tcpServer_ ? tcpServer_->port() : 0, PROTOCOL_VERSION, inC, outC);
         if (!conn.writePlainAll(reinterpret_cast<const uint8_t *>(identity.data()),
                                 identity.size())) {
-            dispatchError(conn.deviceId(), EIO, "plain identity write failed");
+            const int wrErr = socketSoError(fd);
+            dispatchConnectError(conn.peerHost(), conn.peerPort(), wrErr != 0 ? wrErr : EIO,
+                                 "send identity failed");
             closeConnection(fd, "plain identity write failed");
             return;
         }
 
         if (!conn.startTlsHandshake(config_.certPem, config_.keyPem)) {
-            dispatchError(conn.deviceId(), EIO, "tls init failed");
+            dispatchConnectError(conn.peerHost(), conn.peerPort(), EIO, "tls init failed");
             closeConnection(fd, "tls init failed");
             return;
         }
+        // 握手上限：对端不应答（黑洞/非 KDE Connect/半死）时必须有界失败
+        conn.setHandshakeDeadline(nowMs() + handshakeTimeoutMs());
         LOGI("TLS server handshake started on fd=%d", fd);
         conn.doTlsHandshake();
         return;

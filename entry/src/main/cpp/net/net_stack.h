@@ -73,7 +73,16 @@ public:
 private:
     void eventLoop();
     void dispatchEvent(const NetEvent &event);
-    void dispatchError(const std::string &deviceId, int code, const std::string &message);
+    void dispatchError(const std::string &deviceId, int code, const std::string &message,
+                       const std::string &host = std::string(), uint16_t port = 0);
+    // 出向连接握手阶段失败：带目标地址 + 真实 errno（App 据此提示「连接失败/对端无响应」）
+    void dispatchConnectError(const std::string &host, uint16_t port, int code, const char *stage);
+    // TLS 握手上限（NetConfig 可注入以便测试缩短；0 → CONNECT_HANDSHAKE_TIMEOUT_MS）
+    int handshakeTimeoutMs() const
+    {
+        return config_.connectHandshakeTimeoutMs > 0 ? config_.connectHandshakeTimeoutMs
+                                                    : CONNECT_HANDSHAKE_TIMEOUT_MS;
+    }
     // 唤醒事件循环线程（跨线程入队后调用；eventfd 线程安全）
     void wakeLoop();
 
