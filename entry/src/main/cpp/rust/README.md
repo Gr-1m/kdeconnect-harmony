@@ -66,6 +66,26 @@ Rust 不返回堆指针 ⇒ 无跨堆释放问题。多字段输出用 NUL 分�
   `CARGO_TARGET_<TRIPLE>_LINKER`（绝对路径）+ `AR_<triple>`（PATH 上的 `ohos-ar`），见 `wrappers/` 说明。
 - `panic = "abort"`（release）避免 OHOS sysroot 缺 libunwind 的依赖；wrapper 另补 `-L<llvm/lib/<arch>-linux-ohos>`。
 
+## 5b. 工具链 spike 实测（2026-09-13，独立 agent 复核）
+
+**链接验收**（每个 ABI：`cargo build --release --target <triple>` → 用 wrapper 作为 linker 把 `.a` 静态链进最小 C 程序）：
+
+| ABI | 结果 | ELF 检查 |
+|---|---|---|
+| aarch64-unknown-linux-ohos | ✅ link exit 0，`ok_aarch64` | ELF64/AArch64/DYN，`NEEDED=[libc.so]`，Rust 符号全部存在 ⇒ **无 unwinder 依赖**（`panic=abort` 生效） |
+| x86_64-unknown-linux-ohos | ✅ link exit 0，`ok_x86_64` | ELF64/X86-64/DYN，`NEEDED=[libc.so]`，4/4 符号存在 |
+| 附：全静态 | ✅ `-static` 亦可（sysroot 有 libc.a/libdl.a/libm.a） | Type EXEC，0 NEEDED |
+
+**rustup 安装（user-level，未动系统包）**：`rustup-init -y --profile minimal --no-modify-path --default-toolchain stable` → `rustup target add {aarch64,x86_64}-unknown-linux-ohos`；
+rustup 1.29.1 / stable = 1.98.1（与本机系统 rustc 同版，无版本回退）。
+
+**踩坑（实测，非推测）**：
+1. **cargo 不按文档字面解析相对 `linker` 路径**：config 里写 `../wrappers/xxx` 时，cargo 解析到的既不是 cwd 也不是 config 目录（实测落到 `/tmp/kdc-r1-spike/../wrappers/xxx`）；写裸名字也**不走** config 所在目录 ⇒ **裸名字 + PATH** 才是可搬迁的做法（wrapper 与 config 头注释均记录）。
+2. PATH 缺 wrapper 时的报错很迷惑（`linker 'aarch64-linux-ohos-clang' not found`）⇒ 头注释里都写了怎么设。
+3. `rust/wrappers/` 是 `rust/kdc_core/` 的**兄弟目录**，cargo 不会自动发现该 config ⇒ 要么把 wrappers 放进 PATH（本仓库做法），要么显式 `--config`。
+4. wrapper **不加** `-L<llvm/lib/<arch>>`：实测 clang driver 会自行 `-l:libunwind.a` 并从自带 runtime 目录解析；加了 `-L` 还会让 `-c` 编译报 `-Wunused-command-line-argument`（破坏 `-Werror` 构建）。
+5. **`.a` 的产出不经过 linker**：`crate-type=["staticlib"]` 只是把对象归档 ⇒ 真正影响 `.a` 的是 `AR_<triple>`（`ohos-ar`）；wrapper 的 linker 只在 rustc 需要**链接可执行/动态库**时才用得上 —— 本仓库的设备侧 `.so` 由 CMake 的 OHOS clang 链接，故 `-L` 取舍不影响 hvigor 产物（已实测双 ABI 均产出 `.a` 并链入 `.so`）。
+
 ## 6. 已知限制 / 后续
 
 1. **首次构建需要网络**（`cargo fetch` 拉 serde/serde_json/sha2/base64）；之后可离线。
