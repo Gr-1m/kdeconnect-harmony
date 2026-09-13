@@ -700,8 +700,10 @@ struct Index {
           const dev: DeviceItem = {
             id: cid,
             name: event.deviceName ?? cid,
-            host: '',
-            tcpPort: 0,
+            // native 现在会带 host（出向连接还带 tcpPort）—— 别再硬编码空串，
+            // 否则「已连接设备」永远不显示地址（入向连接的对端端口是临时端口，native 只给 host）。
+            host: event.host ?? '',
+            tcpPort: event.tcpPort ?? 0,
             deviceType: '',
             online: true
           };
@@ -878,17 +880,20 @@ struct Index {
       this.log(`session busy (connecting), ignore ${host}:${port}`);
       return;
     }
-    if (host === '' || port <= 0) {
+    // port === 0 = 端口未知（native 只被对端拨入过时拿不到 tcpPort：KDE 只在 UDP 广播里带它）。
+    // 交给 native 自己按 1716–1764 探测（connectToPeer(host, 0)），不要再判 no address。
+    if (host === '') {
       this.failConnect('no address', Index.ERR_ADDRESS);
       return;
     }
+    const portText: string = port > 0 ? `${port}` : '端口探测中';
     this.clearSessionTimer();
     this.sessionDeviceId = id;
-    this.sessionName = name.length > 0 ? name : `${host}:${port}`;
-    this.sessionTarget = `${host}:${port}`;
+    this.sessionName = name.length > 0 ? name : `${host}:${portText}`;
+    this.sessionTarget = port > 0 ? `${host}:${port}` : host;
     this.sessionState = 'connecting';
-    this.log(`connect ${this.sessionTarget}`);
-    this.showNotice('connecting', `${host}:${port}`, false, 0);
+    this.log(`connect ${this.sessionTarget}${port > 0 ? '' : ' (port unknown, native probe)'}`);
+    this.showNotice('connecting', this.sessionTarget, false, 0);
     try {
       native.connectToPeer(host, port);
     } catch (e) {
@@ -1083,6 +1088,17 @@ struct Index {
 
   private clearNotice(): void {
     this.noticeKey = '';
+  }
+
+  // 剪贴板安全控件回调：拿到临时读权限（PasteButton SUCCESS）后**立刻**读取并发送；
+  // 未授权时不得尝试读取（系统要求），只给提示。
+  private onClipboardPasteResult(granted: boolean): void {
+    if (!granted) {
+      this.log('paste button: temporary authorization failed');
+      this.toastText(this.resText($r('app.string.toast_clipboard_denied').id));
+      return;
+    }
+    this.onDeviceAction('clipboard');
   }
 
   // 设备详情页的大按钮动作（计划 B）：能落地的接真实插件，落地不了的给明确提示。
@@ -1839,6 +1855,9 @@ struct Index {
                 },
                 onOpenDevice: (d: DeviceItem): void => {
                   this.openDeviceDetail(d);
+                },
+                onClipboardPaste: (granted: boolean): void => {
+                  this.onClipboardPasteResult(granted);
                 },
                 onRefreshDiscovery: (): void => {
                   this.triggerDiscoveryBroadcast();
