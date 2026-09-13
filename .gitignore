@@ -49,11 +49,10 @@ devdocs/reference/
 
 # DevEco 验证产物与 IDE 重写前的备份（CodeArts MSG70 裁决，不入库）
 .deveco-verify/
-build-profile.json5.bak
 build-profile.json5.tmpbak
 .vtmp/
 
-# Rust cargo 构建产物（R1 分支）
+# Rust cargo 构建产物（R1：host 侧统一构建到 /tmp，这里兜底）
 entry/src/main/cpp/rust/kdc_core/target/
 
 # Syncthing 冲突副本（2026-09-13 事故：双机同写同名文件产生；机器本地，不入库）

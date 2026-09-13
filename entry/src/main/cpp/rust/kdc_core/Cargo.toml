@@ -1,0 +1,21 @@
+[package]
+name = "kdc_core"
+version = "0.1.0"
+edition = "2021"
+description = "R1：packet_io / cert_util 两个纯函数模块的 Rust 实现（供 C++ 经 C ABI 调用）"
+
+# 依赖约束（MSG93 §1 / PROCESS §8）：仅纯 Rust 实现，禁止 ring/aws-lc/TLS 类库。
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+base64 = "0.22"
+
+[lib]
+name = "kdc_core"
+# staticlib 供 C++（hvigor/CMake 与 host 测试）链接；rlib 供 cargo test。
+crate-type = ["staticlib", "rlib"]
+
+# 交叉到 OHOS（musl）时不引入 unwinder 依赖：panic=abort（spike 结论见 rust/wrappers/README）。
+[profile.release]
+panic = "abort"
