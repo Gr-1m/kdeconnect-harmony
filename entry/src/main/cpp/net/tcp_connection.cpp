@@ -41,7 +41,7 @@ void TcpConnection::setPeerInfo(const std::string &host, uint16_t port,
 // 明文 identity 帧读取：MSG_PEEK 先定位 '\n'，再精确消费该帧长度。
 // 不能像旧实现那样「一次 read 拿满缓冲」——那会把紧随其后的 TLS ClientHello
 // 一起吞进明文缓冲，破坏 TLS 握手（identity 与 TLS 在同一个 TCP 流里背靠背）。
-ssize_t TcpConnection::readPlainFrame(std::string &out, size_t maxSize)
+ssize_t TcpConnection::readPlainFrame(std::string &out, size_t maxSize, int *errOut)
 {
     out.clear();
 
@@ -49,10 +49,13 @@ ssize_t TcpConnection::readPlainFrame(std::string &out, size_t maxSize)
     ssize_t n = recv(fd_, peek.data(), peek.size(), MSG_PEEK);
     if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;  // 等待更多数据
-        LOGE("readPlainFrame fd=%d: %s", fd_, strerror(errno));
+        const int err = errno;
+        if (errOut != nullptr) *errOut = err;
+        LOGE("readPlainFrame fd=%d: %s", fd_, strerror(err));
         return -1;
     }
     if (n == 0) {
+        if (errOut != nullptr) *errOut = ECONNRESET;  // 对端关闭/被拒
         LOGE("readPlainFrame fd=%d: peer closed", fd_);
         return -1;
     }
@@ -60,6 +63,7 @@ ssize_t TcpConnection::readPlainFrame(std::string &out, size_t maxSize)
     const void *nl = std::memchr(peek.data(), '\n', static_cast<size_t>(n));
     if (nl == nullptr) {
         if (static_cast<size_t>(n) >= maxSize) {
+            if (errOut != nullptr) *errOut = EMSGSIZE;
             LOGE("readPlainFrame fd=%d: identity exceeds %zu bytes", fd_, maxSize);
             return -1;
         }
