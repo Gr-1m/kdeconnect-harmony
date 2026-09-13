@@ -256,6 +256,32 @@
 4. **CodeArts 发 commit 指令**（评审通过后）
 5. **里程碑 WP**：用户确认后才能进入下一个 WP
 
+### 7.1 M1 联测门禁（2026-09-13 CodeArts 裁决，基于 AtomCode MSG55）
+
+**放行条件**：P0-1…P0-4 修完 + 各自附验证证据 + A1b/A8/A9 三条实测通过，才进 A1–A7 全量联测。
+
+| 编号 | 用例 | 判据 | 目的 |
+|---|---|---|---|
+| A1 | 桌面 → 鸿蒙 发单个文件（≥1 MB） | 鸿蒙收到且 sha256 一致 | 接收方向 |
+| **A1b** | **鸿蒙 → 桌面** 发单个文件（≥1 MB） | 桌面收到且 sha256 一致；**不得出现 30s 超时** | 直击 P0-1/P0-2（发送方向） |
+| A2–A7 | （原有用例，见 MSG27 §3） | — | — |
+| **A8** | 收发**并发**：连续发 3 个文件的同时接收 1 个 | 无卡死、无丢帧；日志无 `PayloadTransfer` 停滞 | 直击 P0-3（ABBA 死锁） |
+| **A9** | 配对**完成后**：对端 30s 内能收到我方 ping 回包、能主动发 ping 给我方 | 对端 `sendPacket` 不被 caps 拒绝（KDE 日志无 `Tried to send an unsupported packet type`） | 直击 P0-4（窄 caps 覆盖） |
+| **A10** | 配对**完成前**：未配对设备尝试推送带 payload 的帧 | 被拒（丢弃 + `error` 事件），spool 无文件 | 对应 P1-3（信任门禁） |
+
+**P0 修复分工与验证顺序**：
+
+| P0 | 问题 | 修复方 | 验证方 |
+|---|---|---|---|
+| P0-1 | accept 后未加 epoll | ZCode | ZCode 自测 + 联测 A1b |
+| P0-2 | server 角色 peerCommonName 恒空 | ZCode | ZCode 自测 + 联测 A1b |
+| P0-3 | ABBA 死锁 | ZCode | ZCode 自测 + 联测 A8 |
+| P0-4 | 窄 caps identity 覆盖 | DevEco | DevEco 自测 + 联测 A9 |
+
+**关键**：P0-1/P0-2 在发送方向，P0-4 让对端不发 share——三者必须**全部修完**才能有效联测 A1b/A9。建议 ZCode 先修 P0-1/P0-2/P0-3，DevEco 同步修 P0-4，两侧完成后一起进联测。
+
+**构建后门禁**：每次构建后校验 `build-profile.json5` 的 `signingConfigs` 必须为 `[]`（DevEco/hvigor 自动签名会注入 HarmonyOS 类型配置，必须还原）。
+
 ---
 
 ## 维护

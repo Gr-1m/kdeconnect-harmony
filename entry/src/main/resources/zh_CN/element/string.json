@@ -243,6 +243,46 @@
     {
       "name": "files_action_cancel",
       "value": "取消"
+    },
+    {
+      "name": "files_send_title",
+      "value": "发送文件"
+    },
+    {
+      "name": "files_action_send",
+      "value": "选择文件并发送"
+    },
+    {
+      "name": "connect_connecting",
+      "value": "正在连接…"
+    },
+    {
+      "name": "connect_failed",
+      "value": "连接失败"
+    },
+    {
+      "name": "pair_failed",
+      "value": "配对失败"
+    },
+    {
+      "name": "pair_success",
+      "value": "配对成功"
+    },
+    {
+      "name": "pair_dialog_title_outgoing",
+      "value": "与该设备配对？"
+    },
+    {
+      "name": "pair_waiting",
+      "value": "等待对端设备确认…"
+    },
+    {
+      "name": "action_cancel",
+      "value": "取消"
+    },
+    {
+      "name": "action_close",
+      "value": "关闭"
     }
   ]
 }
