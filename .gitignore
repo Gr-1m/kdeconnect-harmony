@@ -58,3 +58,6 @@ entry/src/main/cpp/rust/kdc_core/target/
 
 # Syncthing 冲突副本（2026-09-13 事故：双机同写同名文件产生；机器本地，不入库）
 .sync-conflict-*
+
+# 构建产物一类（PROCESS §9.1：与 .stignore 对应；Rust cargo target/）
+target/
