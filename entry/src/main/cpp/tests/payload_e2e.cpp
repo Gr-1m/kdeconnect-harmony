@@ -31,6 +31,7 @@
 #include "../json/cJSON.h"
 #include "../net/cert_gen.h"
 #include "../net/cert_util.h"
+#include "../net/tcp_connection.h"
 #include "../payload/payload.h"
 
 using namespace kdeconnect;
@@ -221,6 +222,70 @@ private:
     std::string peerPem_;
     std::string peerId_;
 };
+
+// —————— 4. 控制连接的对端证书捕获（TLS server 角色）——————
+//
+// 回归点：本机主动发起的连接（手动连接主路径）是 TLS **server** 角色，server 侧必须请求对端证书，
+// 否则 peerCommonName()/peerLeafCertDer() 为空 → 配对弹窗无验证码、TrustStore 存不到证书（钉扎失效）、
+// payload 发送方向只能降级。修前 host 集成工具与真 KDE 配对时验证码为空串（实测）。
+// 本用例走真实产品路径 TcpConnection::startTlsHandshake（isIncoming=false → TlsRole::Server），
+// 因此回退该修复会红。
+void tlsServerCapturesPeerCert()
+{
+    int sv[2];
+    CHECK(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+
+    CertPair serverCert = CertGen::generateSelfSignedEc(kIdA, 10);   // CN = kIdA
+    CertPair clientCert = CertGen::generateSelfSignedEc(kIdB, 10);   // CN = kIdB
+
+    // server 侧：控制连接的出向连接（isIncoming=false）
+    TcpConnection server(sv[0], false);
+    CHECK(server.startTlsHandshake(serverCert.certPem, serverCert.keyPem));
+
+    // client 侧：裸 TlsEngine 扮演对端（KDE/Qt 客户端同样会出示证书）
+    TlsEngine client(sv[1], TlsRole::Client);
+    CHECK(client.init(clientCert.certPem, clientCert.keyPem, nullptr));
+
+    std::atomic<bool> serverDone{false};
+    std::atomic<bool> clientDone{false};
+    std::thread ts([&] {
+        for (int i = 0; i < 400 && !serverDone.load(); ++i) {
+            if (server.doTlsHandshake()) {
+                serverDone.store(true);
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        }
+    });
+    std::thread tc([&] {
+        for (int i = 0; i < 400 && !clientDone.load(); ++i) {
+            if (client.doHandshake()) {
+                clientDone.store(true);
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        }
+    });
+    ts.join();
+    tc.join();
+    ::close(sv[0]);
+    ::close(sv[1]);
+
+    CHECK_MSG(serverDone.load(), "server 侧握手未完成");
+    CHECK_MSG(clientDone.load(), "client 侧握手未完成");
+
+    TlsEngine *srvTls = server.tlsEngine();
+    CHECK(srvTls != nullptr);
+    if (srvTls != nullptr) {
+        // server 角色拿到对端（client）证书 CN 与叶证书 DER
+        CHECK_MSG(srvTls->peerCommonName() == kIdB, "server 未捕获对端 CN：'%s'（期望 %s）",
+                  srvTls->peerCommonName().c_str(), kIdB);
+        CHECK_MSG(!srvTls->peerLeafCertDer().empty(), "server 未捕获对端叶证书 DER");
+    }
+    // client 角色（对端发起连接时）同样要拿到 server 的 CN
+    CHECK_MSG(client.peerCommonName() == kIdA, "client 未捕获对端 CN：'%s'（期望 %s）",
+              client.peerCommonName().c_str(), kIdA);
+}
 
 void dumpEvents(const char *tag, FakeHost &h)
 {
@@ -477,6 +542,7 @@ int main()
     runCase("payloadE2eSendReceive", payloadE2eSendReceive);
     runCase("payloadPeerCertMismatch", payloadPeerCertMismatch);
     runCase("payloadLockOrder", payloadLockOrder);
+    runCase("tlsServerCapturesPeerCert", tlsServerCapturesPeerCert);
     std::printf("payload integration tests (host): %d cases, %d failed\n", g_cases, g_failed);
     return g_failed == 0 ? 0 : 1;
 }
