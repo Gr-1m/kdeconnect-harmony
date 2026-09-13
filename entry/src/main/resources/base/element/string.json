@@ -293,6 +293,14 @@
       "value": "Accept the request on the other device within 30 seconds"
     },
     {
+      "name": "connect_success",
+      "value": "Connected"
+    },
+    {
+      "name": "remembered_unpaired",
+      "value": "Not paired"
+    },
+    {
       "name": "discovery_refresh",
       "value": "Refresh"
     },

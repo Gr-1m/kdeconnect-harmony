@@ -2,7 +2,7 @@
 // 供 AP-7（bundleName 改名）等未来迁移使用。
 // 说明：证书指纹/钉扎的判定在 native（WP-2），此处只存对端证书 PEM 与展示信息。
 
-export const TRUST_SCHEMA_VERSION: number = 2;
+export const TRUST_SCHEMA_VERSION: number = 3;
 
 export interface TrustedDevice {
   id: string;
@@ -11,6 +11,8 @@ export interface TrustedDevice {
   certPem: string;
   // 配对成功时间（epoch ms）
   pairedAt: number;
+  // 是否仍处于配对态（v3 新增）：解除配对后**保留条目**（用户需求 3）但置 false
+  paired: boolean;
 }
 
 export interface TrustStoreData {

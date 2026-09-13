@@ -292,9 +292,10 @@ export struct DevicesTab {
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
-      Text($r('app.string.remembered_hint'))
+      // 需求 3（用户 miaoshu.txt）：条目永久保留；仅区分是否仍处于配对态
+      Text(r.paired ? $r('app.string.remembered_hint') : $r('app.string.remembered_unpaired'))
         .fontSize(10)
-        .fontColor($r('app.color.dot_remembered'))
+        .fontColor(r.paired ? $r('app.color.dot_remembered') : $r('app.color.text_muted'))
         .padding({ left: 8, right: 8, top: 2, bottom: 2 })
         .borderRadius(999)
         .backgroundColor($r('app.color.chip_bg'))
