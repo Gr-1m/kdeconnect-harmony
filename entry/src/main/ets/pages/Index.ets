@@ -10,6 +10,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { HdsTabs, HdsTabsController, hdsMaterial } from '@kit.UIDesignKit';
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import { PacketRouter, RouterCallbacks } from '../net/PacketRouter';
+import { PluginBase } from '../plugins/PluginBase';
 import { PluginRegistry } from '../plugins/PluginRegistry';
 import { PluginHost } from '../plugins/PluginHost';
 import { PingPlugin } from '../plugins/PingPlugin';
@@ -1084,6 +1085,62 @@ struct Index {
     this.noticeKey = '';
   }
 
+  // 设备详情页的大按钮动作（计划 B）：能落地的接真实插件，落地不了的给明确提示。
+  // 用户要求：点「发送文件」**跳到文件导航**（发送入口在文件页），不直接弹系统选择器。
+  private onDeviceAction(key: string): void {
+    if (key === 'send_file') {
+      this.switchTab(1);
+      return;
+    }
+    const id: string = this.selectedDeviceId;
+    const list: PluginBase[] = this.pluginHost === undefined ? [] : this.pluginHost.pluginsFor(id);
+    if (key === 'clipboard') {
+      for (const p of list) {
+        if (p instanceof ClipboardPlugin) {
+          const ok: boolean = p.sendClipboard();
+          this.toastText(this.resText(ok
+            ? $r('app.string.toast_clipboard_sent').id
+            : $r('app.string.toast_clipboard_failed').id));
+          return;
+        }
+      }
+      this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
+      return;
+    }
+    if (key === 'ring') {
+      for (const p of list) {
+        if (p instanceof PingPlugin) {
+          const ok: boolean = p.sendPing('KDE Connect HarmonyOS');
+          this.toastText(this.resText(ok
+            ? $r('app.string.toast_ping_sent').id
+            : $r('app.string.toast_ping_failed').id));
+          return;
+        }
+      }
+      this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
+      return;
+    }
+    if (key === 'battery') {
+      const b: BatteryItem | undefined = this.batteryItems.find((x: BatteryItem) => x.deviceId === id);
+      const value: string = b === undefined ? this.resText($r('app.string.toast_battery_none').id) : b.text;
+      this.toastText(`${this.resText($r('app.string.action_battery').id)}: ${value}`);
+      return;
+    }
+    // find_phone：协议方向是「桌面 → 手机」（本机没有可发的 request）；media：MPRIS 待字段表（计划 C）
+    this.toastPlaceholder(key);
+  }
+
+  // 切底栏页签（HdsTabs 控制器）；失败只记日志，不阻塞
+  private switchTab(index: number): void {
+    this.currentTab = index;
+    try {
+      this.tabsController.changeIndex(index);
+      this.log(`switch tab -> ${index}`);
+    } catch (e) {
+      this.log('changeIndex failed: ' + (e instanceof Error ? e.message : 'unknown'));
+    }
+  }
+
   // 设备详情页的大按钮目前只做占位（用户要求：功能暂不实现，先保留版式）
   private toastPlaceholder(key: string): void {
     const base: string = this.resText($r('app.string.toast_not_implemented').id);
@@ -1165,6 +1222,16 @@ struct Index {
     if (state !== 'progress') {
       this.log(`payload ${state} ${item.direction} #${tid} ${item.fileName}`);
     }
+    // 计划 A（用户/AtomCode 现象② 裁决）：接收完成**自动落盘 + 明确通知**，
+    // 不再要求用户到文件页手动点「保存」；授权被拒/失败时给可操作提示（文件页仍可手动保存）。
+    if (state === 'finished' && item.direction === 'receive' && !item.settled && item.filePath.length > 0) {
+      this.log(`auto-save received #${tid} ${item.fileName}`);
+      this.savePayload(item).then((): void => {
+        // 通知已在 savePayload 内部发出
+      }).catch((e: Error): void => {
+        this.log('auto-save failed: ' + e.message);
+      });
+    }
   }
 
   // 接收文件的落盘目录：应用沙箱 files/kdeconnect（M1 无需额外存储权限）
@@ -1223,6 +1290,7 @@ struct Index {
     const dir: string = this.ensureKdcDir();
     if (dir === '') {
       this.log('save failed: no host context');
+      this.toastText(this.resText($r('app.string.files_save_failed').id));
       return;
     }
     const name: string = this.sanitizeFileName(p.fileName, p.transferId);
@@ -1230,6 +1298,7 @@ struct Index {
     const granted: boolean = await this.ensureWritePermission(name);
     if (!granted) {
       this.log(`save aborted: write permission denied for ${name}`);
+      this.toastText(this.resText($r('app.string.files_need_permission').id));
       return;
     }
     try {
@@ -1237,9 +1306,13 @@ struct Index {
       this.log(ok ? `saved -> ${dest}` : 'keepPayload failed');
       if (ok) {
         this.markPayloadSettled(p.transferId);
+        this.toastText(`${this.resText($r('app.string.files_auto_saved').id)}: ${name}`);
+      } else {
+        this.toastText(this.resText($r('app.string.files_save_failed').id));
       }
     } catch (e) {
       this.log('keepPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.toastText(this.resText($r('app.string.files_save_failed').id));
     }
   }
 
@@ -1762,7 +1835,7 @@ struct Index {
                 },
                 selectedDeviceId: this.selectedDeviceId,
                 onPlaceholderAction: (key: string): void => {
-                  this.toastPlaceholder(key);
+                  this.onDeviceAction(key);
                 },
                 onOpenDevice: (d: DeviceItem): void => {
                   this.openDeviceDetail(d);
@@ -1775,7 +1848,7 @@ struct Index {
                 }
               })
             }
-            .padding({ bottom: 92 })
+            .padding({ top: 12, bottom: 92 })
           }
           .tabBar(this.tabBuilder(0))
 
@@ -1799,7 +1872,7 @@ struct Index {
                     }
                   })
             }
-            .padding({ bottom: 92 })
+            .padding({ top: 12, bottom: 92 })
           }
           .tabBar(this.tabBuilder(1))
 
@@ -1827,7 +1900,7 @@ struct Index {
                 }
               })
             }
-            .padding({ bottom: 92 })
+            .padding({ top: 12, bottom: 92 })
           }
           .tabBar(this.tabBuilder(2))
 
@@ -1838,7 +1911,7 @@ struct Index {
                 immersive: false
               })
             }
-            .padding({ bottom: 92 })
+            .padding({ top: 12, bottom: 92 })
           }
           .tabBar(this.tabBuilder(3))
         }
