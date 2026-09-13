@@ -1,4 +1,5 @@
 #include "cert_gen.h"
+#include "cert_util.h"
 #include "net_log.h"
 #include <bearssl.h>
 #include <bearssl_ec.h>
@@ -37,22 +38,16 @@ static const char PEM_CERT_FOOTER[] = "-----END CERTIFICATE-----";
 static const char PEM_KEY_HEADER[]  = "-----BEGIN EC PRIVATE KEY-----";
 static const char PEM_KEY_FOOTER[]  = "-----END EC PRIVATE KEY-----";
 
-static std::string base64Encode(const uint8_t *data, size_t len)
+// 区间内的闰日数（供有效期计算与单测；纯整数运算，无时区/闰年陷阱）
+int leapDaysBetween(int startYear, int years)
 {
-    static const char table[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    out.reserve(((len + 2) / 3) * 4);
-    for (size_t i = 0; i < len; i += 3) {
-        uint32_t v = data[i] << 16;
-        if (i + 1 < len) v |= data[i + 1] << 8;
-        if (i + 2 < len) v |= data[i + 2];
-        out += table[(v >> 18) & 0x3F];
-        out += table[(v >> 12) & 0x3F];
-        out += (i + 1 < len) ? table[(v >> 6) & 0x3F] : '=';
-        out += (i + 2 < len) ? table[v & 0x3F] : '=';
+    int leap = 0;
+    for (int y = startYear + 1; y <= startYear + years; ++y) {
+        if ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0) {
+            ++leap;
+        }
     }
-    return out;
+    return leap;
 }
 
 static std::string derToPemWrapped(const std::vector<uint8_t> &der,
@@ -239,10 +234,16 @@ std::vector<uint8_t> CertGen::buildSelfSignedCertDer(
 
     std::vector<uint8_t> validity;
     {
-        time_t now = time(nullptr);
-        time_t later = now + static_cast<time_t>(validYears) * 365 * 86400;
-        struct tm tmNow = *gmtime(&now);
-        struct tm tmLater = *gmtime(&later);
+        const time_t now = time(nullptr);
+        // C1：gmtime 返回静态缓冲，非线程安全 → gmtime_r
+        struct tm tmNow {};
+        gmtime_r(&now, &tmNow);
+        // C2：按日历年推进（365×N 会漏算区间闰日，10 年偏差 2~3 天，偏离 RFC 5280 语义）
+        const int years = validYears > 0 ? validYears : 1;
+        const time_t later = now + (static_cast<time_t>(years) * 365 +
+                                    leapDaysBetween(tmNow.tm_year + 1900, years)) * 86400;
+        struct tm tmLater {};
+        gmtime_r(&later, &tmLater);
         char bufNow[16], bufLater[16];
         strftime(bufNow, sizeof(bufNow), "%y%m%d%H%M%SZ", &tmNow);
         strftime(bufLater, sizeof(bufLater), "%y%m%d%H%M%SZ", &tmLater);
