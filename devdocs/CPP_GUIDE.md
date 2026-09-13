@@ -119,6 +119,39 @@ M2（iOS 功能集插件）主体在 ArkTS 侧（插件注册表/插件基类/�
 - 验证手法（host，可复现）：UDP 监听器绑 1716（`SO_REUSEADDR`，Linux 会把广播副本投递给所有同绑 socket）→
   能逐条看到「几个网卡定向 + 全局兜底」以及周期重播节奏（实测 5s 快速阶段 4 条/轮）。
 
+## 5c. 端口未知（0）的拨号：探测 + 缓存（2026-09-13，DevEco 第五次报的 P0）
+
+**症状**：发现列表里对端端口恒为 `0`（真机实测：桌面 `Gr%1m-cachyos` 0，我方测试工具 1745/1746 正常）
+⇒ 用户从发现页点连接/配对无从下手。
+
+**根因（KDE 源码为证）**：KDE **只在 UDP 广播**的 identity 里带 `tcpPort`
+（`kdeconnect-kde core/backends/lan/lanlinkprovider.cpp:254`，回退路径 `:348`），
+**拨入连接的 identity 不带**（走 `DeviceInfo::toIdentityPacket()`）。
+我方 `handlePlainIdentity` 只能拿到 0 —— 对端不配合，唯一可靠办法是按 KDE 端口区间探测。
+
+**契约（native 侧已实现）**：
+- `connectToPeer(host, port=0)` = 入队 + `wakeLoop()` 后**立即返回 true**；探测与拨号都在事件循环线程完成
+  （探测最长 `PORT_PROBE_TIMEOUT_MS`=500ms，**绝不能在 JS 线程做**）。结果照旧经 `connected`/`error` 事件回报。
+- 探测 = 并行非阻塞 connect + 单轮 poll，返回区间内**最小**可用端口（KDE 的「优先最小可用」语义），
+  `net/net_util.h:findListeningTcpPort`；测试可注入区间（`NetConfig.portProbeMin/Max`，本机 1716–1764 常被桌面 daemon 占用）。
+- `host → 端口` 缓存：只记**验证过**的端口（对端 UDP identity 声明 / 建链成功），且用前**单端口复验**，
+  过期即丢弃重探 —— 同一 host 可能先后出现不同设备/端口，缓存不复验会**永久**拨死端口。
+- 出向连接建链后，`connected` 事件带 `host` + `tcpPort`（入向连接的对端端口是临时端口，**不报**）。
+
+**ArkTS 侧配套（DevEco）**：`startSession` 不得因 `port <= 0` 直接报 no address（host 已知就把 0 传下来）；
+`connected` 分支用 `event.host`/`event.tcpPort` 填条目（现在是硬编码空串/0）。
+
+**两条实测坑（都踩到过，勿改回）**：
+1. `SO_ERROR` **读即清除**：第一轮 poll 后 `getsockopt` 读走 `ECONNREFUSED`，第二轮再读得 0 ⇒「已关闭端口」被误判为连上。
+   故每个 fd **只判定一次**（`verdict` 数组）。
+2. 自连接：探测 socket 的本地端口恰好等于目标端口时，内核把它接到自己身上并返回成功
+   ⇒ 已关闭的临时端口被判为「有监听者」（实测必然踩到，因为刚释放的端口最易被再次分配）。
+   用 `getsockname` 比对本地端口排除（对**真监听者**无影响：监听端口不可能同时被分配成本地临时端口）。
+
+验证：`tests/net_stack_tests.cpp` 的 `portProbeFindsListener`（原语）+ `dialUnknownPortProbesAndConnects`（端到端，
+用 127.0.0.2 规避同机 127.0.0.1 上的 KDE daemon/对端栈干扰）；真桌面端到端 `tests/run_desktop.sh probe`
+（端口传 0 → 探测 → TLS + identity 成功，实测 rc=0）。
+
 ## 6. 协议一致性常量（改一处必须核对三端 + meta）
 
 protocolVersion=8；UDP 1716；TCP 1716–1764 顺序探测；payload 端口 ≥1739；单包 32 MiB；identity 包 ≤8 KiB；配对 timestamp 容差 ±1800 秒；deviceId 正则 `^[a-zA-Z0-9_-]{32,38}$` 且 = 证书 CN 且必须持久化；证书有效期 −1y→+10y；验证码 = 双方公钥 DER 按字节序排序拼接 + SHA256 前 8 位 hex 大写（v8 追加配对 timestamp）。

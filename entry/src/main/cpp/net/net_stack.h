@@ -99,6 +99,20 @@ private:
     bool handlePlainIdentity(TcpConnection &conn, const std::string &frame);
     void sendIdentityOverTls(TcpConnection &conn);
 
+    // —— 端口未知（0）的拨号：探测 + host→端口 缓存 ——
+    // 触发场景：KDE 只在 UDP 广播的 identity 里带 tcpPort，拨入连接的 identity 不带
+    // （kdeconnect-kde core/backends/lan/lanlinkprovider.cpp:254 vs toIdentityPacket()），
+    // 所以「只被对端拨入过」的设备在发现列表里端口恒为 0，用户点连接时无从下手。
+    // 队列只承载「端口待探测」的请求：探测要 ≤PORT_PROBE_TIMEOUT_MS 阻塞，绝不能在 JS 线程做，
+    // 因此 connectToPeer(host, 0) 只入队 + 唤醒事件循环，探测与拨号都在循环线程完成。
+    struct PendingDial {
+        std::string host;
+    };
+    void processPendingDials();
+    void rememberPeerPort(const std::string &host, uint16_t port);
+    void forgetPeerPort(const std::string &host);
+    uint16_t cachedPortFor(const std::string &host);
+
     int epollFd_ = -1;
     std::atomic<bool> running_{false};
     std::thread loopThread_;
@@ -114,6 +128,12 @@ private:
 
     // UDP 发现跟踪（deviceId → 最近一次广播时间 ms），超时后派发 DeviceLost
     std::unordered_map<std::string, int64_t> lastSeenMs_;
+
+    // host → 对端 TCP 监听端口（从 UDP identity / 成功拨号学到）。JS 线程读（connectToPeer）、
+    // 事件循环线程写，故单独一把锁——不与 connMutex_ 嵌套，避免锁序问题。
+    std::mutex dialMutex_;
+    std::vector<PendingDial> pendingDials_;
+    std::unordered_map<std::string, uint16_t> portByHost_;
 
     // 周期重播节奏（仅事件循环线程访问）
     int64_t lastBroadcastMs_ = 0;
