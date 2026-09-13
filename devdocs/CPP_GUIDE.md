@@ -140,6 +140,15 @@ protocolVersion=8；UDP 1716；TCP 1716–1764 顺序探测；payload 端口 ≥
 - **x509 vtable 必须是静态初始化对象**：不得从 `br_x509_minimal_vtable` 抄字段值（会产生动态初始化，
   在跨 TU 初始化顺序下前几个槽为 0 → `x509-start-chain` 处 call null，已实测）；
   用直通转发函数（`capture_start_chain`/`capture_get_pkey`）在运行期查表。
+- **`kdeconnect.pair` 请求/接受的判别（v8，2026-09-13 定稿，跨端必须一致）**：
+  - **请求** = `{"pair":true,"timestamp":<秒>}`（KDE `PairingHandler::requestPairing`、Android `PairingHandler.requestPairing` 都带）；
+  - **接受** = `{"pair":true}` **不带 timestamp**（KDE `acceptPairing`、Android `acceptPairing` 都不带）；
+  - **拒绝/解除** = `{"pair":false}`（**不带** timestamp）。
+  - 因此：收到**带 timestamp** 的 `pair:true` 一律按「对端新请求」处理；**不带 timestamp** 的才是「对本侧请求的接受」。
+    双方同时发起时（本侧也有未决请求），必须**回一个不带 timestamp 的 `pair:true`** 作为接受，否则对端永远停在 `Requested`。
+    （KDE 源码注释 "could create an infinite loop if both devices are 'accepting' each other… TODO: No longer true in protocol version 8" 即指此判别；回发接受帧不带 timestamp ⇒ 天然无循环。）
+  - 时间戳越界（±1800s）时：请求方被拒 → KDE 打 `pairingFailed("Device clocks are out of sync")`（**不弹提示**），
+    Android 侧 `error_clocks_not_match` —— 排查「一边有弹窗一边没有」时先看时钟（见 MSG77_TO_CODEARTS 的用户实测案例）。
 - **控制连接必须捕获对端证书（CodeArts MSG70 评审确认，2026-09-13）**：
   **无论 TLS server 还是 client 角色**，控制连接都必须请求并捕获对端叶证书 DER 与 subject CN。
   - TLS **server** 角色（= 本机主动发起的连接，手动连接/首次连接的主路径）：`startTlsHandshake()` 传
