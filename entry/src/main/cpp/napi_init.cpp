@@ -33,10 +33,28 @@ static napi_value OnInit(napi_env env, napi_callback_info info)
     return nullptr;
 }
 
+// 事件桥与网络栈的**完整拆除**（d.ts: `shutdown(): void`，DevEco MSG100 §2.2 请求）。
+//
+// 为什么需要：`init(callback)` 严格拒绝二次初始化（"already initialized"），而 ArkTS 页面重建
+// （aboutToDisappear → 新页面 aboutToAppear）会再调一次 init ⇒ 抛异常、事件桥断裂（L5）。
+// 契约：shutdown 之后必须重新 `init()` + `start()` 才能再收事件/再联网 ——
+// 这里同时停掉网络栈，否则事件回调已被摘掉、栈却仍在跑（事件静默丢弃，且 start() 会重复建栈）。
+static napi_value OnShutdown(napi_env env, napi_callback_info info)
+{
+    (void) env;
+    (void) info;
+    kdeconnect::netStack().setEventCallback(nullptr);
+    kdeconnect::netStack().stop();
+    kdeconnect::napi_bridge::Shutdown();
+    OH_LOG_Print(LOG_APP, LOG_INFO, 0x0001, LOG_TAG, "event bridge + net stack shutdown");
+    return nullptr;
+}
+
 static napi_value RegisterModule(napi_env env, napi_value exports)
 {
     napi_property_descriptor desc[] = {
         {"init", nullptr, OnInit, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"shutdown", nullptr, OnShutdown, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"start", nullptr, JsStart, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"stop", nullptr, JsStop, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"connectToPeer", nullptr, JsConnectToPeer, nullptr, nullptr, nullptr, napi_default,
