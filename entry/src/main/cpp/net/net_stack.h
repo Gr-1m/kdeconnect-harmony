@@ -77,6 +77,8 @@ private:
                        const std::string &host = std::string(), uint16_t port = 0);
     // 出向连接握手阶段失败：带目标地址 + 真实 errno（App 据此提示「连接失败/对端无响应」）
     void dispatchConnectError(const std::string &host, uint16_t port, int code, const char *stage);
+    // 加密态排空读 + 派发帧（EPOLLET 正确性 + 握手完成当次排空，见实现注释）
+    void drainEncrypted(TcpConnection &conn);
     // TLS 握手上限（NetConfig 可注入以便测试缩短；0 → CONNECT_HANDSHAKE_TIMEOUT_MS）
     int handshakeTimeoutMs() const
     {

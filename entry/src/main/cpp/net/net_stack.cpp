@@ -400,6 +400,17 @@ void NetStack::eventLoop()
                     c.close();
                     it = connections_.erase(it);
                 } else {
+                    // 读取兜底：EPOLLET 下任何边沿丢失都会让已到达的帧滞留（对端 caps 协商失败），
+                    // 故每 tick 对 Encrypted 连接兜底排空一次（fillTlsRx 无数据时开销为一次 recv）。
+                    if (c.state() == ConnectionState::Encrypted) {
+                        drainEncrypted(c);
+                        if (c.isClosed()) {
+                            const int cfd2 = it->first;
+                            epoll_ctl(epollFd_, EPOLL_CTL_DEL, cfd2, nullptr);
+                            it = connections_.erase(it);
+                            continue;
+                        }
+                    }
                     // TX 续传：对端恢复读取且无新 EPOLLOUT 边沿时，靠 tick 兜底写出
                     if (c.state() == ConnectionState::Encrypted && c.txPending() && !c.flushTx()) {
                         const int fd = it->first;
@@ -762,7 +773,11 @@ void NetStack::dispatchFrames(TcpConnection &conn)
                          conn.fd(), conn.tlsRole() == TlsRole::Server ? "server" : "client");
                 }
             }
-            continue;
+            // 注意（P0，2026-09-13）：identity 帧**必须继续走下面的 PacketReceived 派发**，
+            // 不能 `continue` 跳过——ArkTS 的 PacketRouter.handleIdentity/onPeerCapabilities
+            // 依赖它做能力协商（caps），跳过会导致 PluginHost 永不装载插件，
+            // 现象是「配对成功、连上了，但对端发来的 packet 全部 unhandled」。
+            // 这与函数头注释「每个完整帧派发一次 packetReceived」一致。
         }
 
         uint64_t xferId = 0;
@@ -866,21 +881,33 @@ void NetStack::onConnectionReadable(int fd)
     }
 
     if (conn.state() == ConnectionState::Encrypted) {
-        if (conn.needsSendIdentity()) {
-            sendIdentityOverTls(conn);
-        }
-        // 排空读：EPOLLET 下必须读到 EAGAIN，否则数据滞留引擎里（REVIEW §4 P1-4）
-        ssize_t n = conn.fillTlsRx();
-        if (n < 0) {
-            dispatchError(conn.deviceId(), EIO, "tls read failed");
-            closeConnection(fd, "tls read failed");
-            return;
-        }
-        if (n == 0) {
-            return;
-        }
-        dispatchFrames(conn);
+        drainEncrypted(conn);
     }
+}
+
+// 加密态排空读 + 派发：EPOLLET 下必须读到 EAGAIN（REVIEW §4 P1-4）。
+// **握手完成的当次也必须调用**：对端常在握手后立刻把 identity 帧塞进同一 burst，
+// 若那时直接 return，后续没有新边沿 → 帧永久滞留 → 对端 caps 永远协商不了
+// （现象：配对/连接成功，但对端发来的 packet 全部 unhandled）。
+void NetStack::drainEncrypted(TcpConnection &conn)
+{
+    if (conn.state() != ConnectionState::Encrypted) {
+        return;
+    }
+    if (conn.needsSendIdentity()) {
+        sendIdentityOverTls(conn);
+    }
+    const ssize_t n = conn.fillTlsRx();
+    if (n < 0) {
+        const int fd = conn.fd();
+        dispatchError(conn.deviceId(), EIO, "tls read failed");
+        closeConnection(fd, "tls read failed");
+        return;
+    }
+    if (n == 0) {
+        return;
+    }
+    dispatchFrames(conn);
 }
 
 void NetStack::onConnectionWritable(int fd)
@@ -938,6 +965,7 @@ void NetStack::onConnectionWritable(int fd)
             if (conn.needsSendIdentity()) {
                 sendIdentityOverTls(conn);
             }
+            drainEncrypted(conn);   // 同一 burst 里可能已带着对端 identity（见 drainEncrypted 注释）
         } else if (conn.state() == ConnectionState::Closing) {
             dispatchError(conn.deviceId(), EIO, "tls handshake failed");
             closeConnection(fd, "tls handshake failed");
