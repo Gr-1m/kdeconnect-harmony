@@ -34,6 +34,7 @@ g++ -std=c++17 -Wall -Wextra -O1 \
     payload_e2e.cpp \
     ../payload/payload.cpp \
     ../net/tls_engine.cpp \
+    ../net/tcp_connection.cpp \
     ../net/cert_gen.cpp \
     ../net/cert_util.cpp \
     ../net/net_util.cpp \
