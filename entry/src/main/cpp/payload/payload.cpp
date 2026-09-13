@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "../json/cJSON.h"
+#include "../net/cert_util.h"
 #include "../net/net_log.h"
 
 namespace kdeconnect {
@@ -211,30 +212,59 @@ uint64_t PayloadManager::startSend(const std::string &deviceId, const std::strin
     cJSON_Delete(root);
     frame.push_back('\n');
 
-    std::lock_guard<std::mutex> lk(mu_);
-    PayloadJob job;
-    job.id = allocIdLocked();
-    job.deviceId = deviceId;
-    job.fileName = bodyFileName(bodyJson);
-    job.send = true;
-    job.fileFd = fileFd;
-    job.total = total;
-    job.listenFd = listenFd;
-    job.deadlineMs = host_->nowMs() + PAYLOAD_ACCEPT_TIMEOUT_MS;
-    job.started = true;
+    // P0-2：取对端证书 subject DN（TLS server 端 CertificateRequest 的可接受 CA 名）。
+    // 必须在 mu_ 之外调 host_：peerCertPem → NetStack::connMutex_/trustMutex_，
+    // 持 mu_ 调用会与网络线程的 connMutex_ → mu_ 构成 ABBA（P0-3）。
+    std::vector<uint8_t> peerCaDn;
+    {
+        const std::string peerPem = host_->peerCertPem(deviceId);
+        if (!peerPem.empty()) {
+            const std::string der = pemToDer(peerPem, "CERTIFICATE");
+            if (!der.empty()) {
+                const std::string dn = extractSubjectDnDer(
+                    reinterpret_cast<const uint8_t *>(der.data()), der.size());
+                peerCaDn.assign(dn.begin(), dn.end());
+            }
+        }
+        if (peerCaDn.empty()) {
+            LOGE("payload send: peer cert unknown for %s (degraded client-auth)",
+                 deviceId.c_str());
+        }
+    }
 
+    // 控制帧必须在 mu_ 之外发（同 P0-3：sendControlFrame → NetStack::connMutex_）。
+    // 对端只在本帧送达后才会连入，故先发帧、后注册 listen fd 不会丢连接
+    // （listen 已在监听，连接最多在 backlog 中短暂等待一次 epollAdd）。
     if (!host_->sendControlFrame(deviceId, frame)) {
-        closeSocketsLocked(job);
+        ::close(listenFd);
+        ::close(fileFd);
         return 0;
     }
+
+    std::lock_guard<std::mutex> lk(mu_);
+    auto job = std::make_unique<PayloadJob>();
+    job->id = allocIdLocked();
+    job->deviceId = deviceId;
+    job->fileName = bodyFileName(bodyJson);
+    job->send = true;
+    job->fileFd = fileFd;
+    job->total = total;
+    job->listenFd = listenFd;
+    job->peerCaDnDer = std::move(peerCaDn);
+    job->deadlineMs = host_->nowMs() + PAYLOAD_ACCEPT_TIMEOUT_MS;
+    job->started = true;
     if (listenFd >= 0) {
-        host_->epollAdd(listenFd, EPOLLIN);
-        fdIndex_[listenFd] = job.id;
+        // epollAdd 只碰 epoll fd，不取其他锁 → 允许在 mu_ 内调用（锁序契约见 payload.h）
+        if (!host_->epollAdd(listenFd, EPOLLIN)) {
+            closeSocketsLocked(*job);
+            return 0;
+        }
+        fdIndex_[listenFd] = job->id;
     }
-    auto *stored = new PayloadJob(std::move(job));
-    jobs_[stored->id].reset(stored);
-    emitLocked(*stored, "started", 0, nullptr);
-    return stored->id;
+    const uint64_t id = job->id;
+    jobs_[id] = std::move(job);
+    emitLocked(*jobs_[id], "started", 0, nullptr);
+    return id;
 }
 
 uint64_t PayloadManager::startReceive(const std::string &deviceId, const std::string &host,
@@ -284,7 +314,17 @@ void PayloadManager::startHandshakeLocked(PayloadJob &job)
 {
     job.tls = std::make_unique<TlsEngine>(job.sockFd,
                                           job.send ? TlsRole::Server : TlsRole::Client);
-    if (!job.tls->init(host_->certPem(), host_->keyPem())) {
+    // P0-2：send 方向（本机 = TLS server）启用客户端证书认证——对端必须出示证书，
+    // 其 subject CN 必须等于 deviceId（verifyPeerLocked）。对端证书未知时降级为
+    // 占位 CA 名 + 容忍缺失，由 CN 校验兜底（Qt/OpenSSL 客户端不按 CA 列表过滤）。
+    ServerClientAuth clientAuth;
+    const ServerClientAuth *authArg = nullptr;
+    if (job.send) {
+        clientAuth.caDnDer = job.peerCaDnDer;
+        clientAuth.tolerateNoCert = job.peerCaDnDer.empty();
+        authArg = &clientAuth;
+    }
+    if (!job.tls->init(host_->certPem(), host_->keyPem(), authArg)) {
         failJobLocked(job, EIO, "payload tls init failed");
         return;
     }
@@ -396,6 +436,12 @@ void PayloadManager::onReadable(int fd)
         job.listenFd = -1;
         job.sockFd = cfd;
         fdIndex_[cfd] = job.id;
+        // P0-1：新 fd 必须注册进 epoll，否则 TCP 已建但握手永不推进
+        // （EPOLLET + 未注册 → 只能等 onTick 30s 超时）。
+        if (!host_->epollAdd(cfd, EPOLLIN | EPOLLOUT)) {
+            failJobLocked(job, EIO, "payload accept: epoll add failed");
+            return;
+        }
         startHandshakeLocked(job);
         return;
     }

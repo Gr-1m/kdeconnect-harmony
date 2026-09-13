@@ -21,7 +21,9 @@ constexpr int MAX_UNPAIRED_CONNECTIONS = 42;
 constexpr int IDENTITY_TIMEOUT_MS = 1000;
 constexpr int DISCOVERY_DEBOUNCE_MS = 500;
 constexpr int CONN_RATE_LIMIT_MS = 1000;   // 同 IP/deviceId 连接限流（WP-2）
-// UDP 广播超时：超过该时长未见广播 → 派发 DeviceLost（定时器 tick 驱动）
+// UDP 广播超时：无活跃链路且超过该时长未见广播 → 派发 DeviceLost（定时器 tick 驱动）。
+// 注意（P1-2）：KDE/Android 不周期广播，故判定以「连接状态」为主——有活跃链路时
+// 只刷新时间戳不派发（见 NetStack::eventLoop）。
 constexpr int DISCOVERY_TIMEOUT_MS = 60000;
 // 等待 socket 可写的单次上限（非阻塞写不可用时的兜底等待）
 constexpr int TLS_WRITE_WAIT_MS = 2000;

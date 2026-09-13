@@ -76,11 +76,11 @@ std::string pemToDer(const std::string &pem, const std::string &label)
     }
     std::string der;
     der.reserve((e - b) / 4 * 3);
-    int acc = 0, bits = 0;
+    unsigned acc = 0, bits = 0;   // 无符号：左移累积不触发有符号溢出 UB
     for (size_t i = b; i < e; ++i) {
         char c = pem[i];
-        if (c == '\n' || c == '\r' || c == ' ' || c == '\t') {
-            continue;
+        if (c == '\n' || c == '\r' || c == ' ' || c == '\t' || c == '=') {
+            continue;  // '=' padding：长度可由位数推出，直接跳过
         }
         int v = b64Val(c);
         if (v < 0) {
@@ -131,7 +131,12 @@ bool readTLV(const uint8_t *&p, const uint8_t *end, uint8_t &tag,
 
 } // namespace
 
-std::string extractSpkiDer(const uint8_t *certDer, size_t len)
+namespace {
+
+// tbsCertificate 字段序固定：version([0],可选) serial sigAlg issuer validity subject spki。
+// 取 subject（第 5 个 = i==4）与 SPKI（第 6 个 = i==5）的完整元素 DER（含 tag+len）。
+bool walkTbsFields(const uint8_t *certDer, size_t len, std::string *subjectOut,
+                   std::string *spkiOut)
 {
     const uint8_t *p = certDer;
     const uint8_t *end = certDer + len;
@@ -143,35 +148,61 @@ std::string extractSpkiDer(const uint8_t *certDer, size_t len)
 
     // Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm, signatureValue }
     if (!readTLV(p, end, tag, content, contentLen, elemStart, elemLen) || tag != 0x30) {
-        return std::string();
+        return false;
     }
     // tbsCertificate ::= SEQUENCE { ... }
     const uint8_t *tbs = content;
     const uint8_t *tbsEnd = content + contentLen;
     if (!readTLV(tbs, tbsEnd, tag, content, contentLen, elemStart, elemLen) || tag != 0x30) {
-        return std::string();
+        return false;
     }
     const uint8_t *q = content;
     const uint8_t *qEnd = content + contentLen;
     // 可选 [0] version
     if (q < qEnd && *q == 0xA0) {
         if (!readTLV(q, qEnd, tag, content, contentLen, elemStart, elemLen)) {
-            return std::string();
+            return false;
         }
     }
     // serial(0x02) → sigAlg(0x30) → issuer(0x30) → validity(0x30) → subject(0x30) → spki(0x30)
     for (int i = 0; i < 6; ++i) {
         if (!readTLV(q, qEnd, tag, content, contentLen, elemStart, elemLen)) {
-            return std::string();
+            return false;
         }
-        if (i == 5) {
+        if (i >= 4) {
             if (tag != 0x30) {
-                return std::string();
+                return false;
             }
-            return std::string(reinterpret_cast<const char *>(elemStart), elemLen);
+            std::string &out = (i == 4) ? *subjectOut : *spkiOut;
+            out.assign(reinterpret_cast<const char *>(elemStart), elemLen);
+            if (i == 5) {
+                return true;
+            }
         }
     }
-    return std::string();
+    return false;
+}
+
+} // namespace
+
+std::string extractSpkiDer(const uint8_t *certDer, size_t len)
+{
+    std::string subject;
+    std::string spki;
+    if (!walkTbsFields(certDer, len, &subject, &spki)) {
+        return std::string();
+    }
+    return spki;
+}
+
+std::string extractSubjectDnDer(const uint8_t *certDer, size_t len)
+{
+    std::string subject;
+    std::string spki;
+    if (!walkTbsFields(certDer, len, &subject, &spki)) {
+        return std::string();
+    }
+    return subject;
 }
 
 std::string computeVerificationCode(const std::string &ownSpkiDer,

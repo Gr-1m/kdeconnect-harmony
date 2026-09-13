@@ -65,6 +65,7 @@ public:
     bool sendControlFrame(const std::string &deviceId, const std::string &frame) override;
     void postPayloadEvent(NetEvent ev) override { dispatchEvent(ev); }
     int64_t nowMs() override;
+    std::string peerCertPem(const std::string &deviceId) override;
 
 private:
     void eventLoop();

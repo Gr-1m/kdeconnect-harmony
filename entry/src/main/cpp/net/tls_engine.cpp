@@ -14,6 +14,17 @@ namespace kdeconnect {
 // （DER 编码 06 03 55 04 03；br_name_element.oid 要求「长度 + 值」，不含 tag 06）
 static const unsigned char kOidCommonName[] = { 0x03, 0x55, 0x04, 0x03 };
 
+// 对端证书 subject DN 未知时使用的占位 CA 名（DER，CN=kdeconnect）。
+// 目的只是让 num_tas>0 触发 CertificateRequest（bearssl_ssl.h 语义）。
+static const unsigned char kPlaceholderCaDn[] = {
+    0x30, 0x15,                                            // SEQUENCE (RDNSequence)
+    0x31, 0x13,                                            // SET
+    0x30, 0x11,                                            // SEQUENCE (AttributeTypeAndValue)
+    0x06, 0x03, 0x55, 0x04, 0x03,                          // OID 2.5.4.3 (CN)
+    0x0C, 0x0A, 'k',  'd',  'e',  'c',  'o',  'n',  'n',
+    'e',  'c',  't'                                        // UTF8String "kdeconnect"
+};
+
 // TOFU x509 验证器：复制 br_x509_minimal_vtable 的所有方法，但 end_chain
 // 忽略 NOT_TRUSTED 错误（KDE Connect 首次连接不验证自签证书链）。
 static unsigned tofu_end_chain(const br_x509_class **ctx)
@@ -69,16 +80,31 @@ static void capture_end_cert(const br_x509_class **ctx)
     br_x509_minimal_vtable.end_cert(ctx);
 }
 
-// 捕获 + TOFU（忽略 NOT_TRUSTED）：end_chain 复用 tofu 语义，
+// 直通转发：必须写成函数而不是「抄 br_x509_minimal_vtable 的字段值」。
+// 抄字段会让本 vtable 变成**动态初始化**对象（字段值来自另一个 TU 的运行期数据），
+// 任何在动态初始化之前使用 TlsEngine 的路径（如 host 测试的静态初始化期）都会拿到
+// 前两个槽为 0 的 vtable → x509-start-chain 处 call null（已实测复现）。
+// 运行期查表转发则让本 vtable 完全静态初始化（.rodata 常量）。
+static void capture_start_chain(const br_x509_class **ctx, const char *server_name)
+{
+    br_x509_minimal_vtable.start_chain(ctx, server_name);
+}
+
+static const br_x509_pkey *capture_get_pkey(const br_x509_class *const *ctx, unsigned *usages)
+{
+    return br_x509_minimal_vtable.get_pkey(ctx, usages);
+}
+
+// 捕获 + TOFU（忽略 NOT_TRUSTED）：除 start_chain/get_pkey 直通外，
 // 其余钩子在转发给 minimal 实现的同时把 EE 证书原文留在 X509Ctx。
 static const br_x509_class capture_x509_vtable = {
-    br_x509_minimal_vtable.context_size,
-    br_x509_minimal_vtable.start_chain,
+    sizeof(br_x509_minimal_context),   // 编译期常量（br_x509_class.context_size）
+    capture_start_chain,
     capture_start_cert,
     capture_append,
     capture_end_cert,
     tofu_end_chain,
-    br_x509_minimal_vtable.get_pkey,
+    capture_get_pkey,
 };
 
 TlsEngine::TlsEngine(int fd, TlsRole role)
@@ -175,7 +201,8 @@ bool TlsEngine::loadCertAndKey(const std::string &certPem, const std::string &ke
     return true;
 }
 
-bool TlsEngine::init(const std::string &certPem, const std::string &keyPem)
+bool TlsEngine::init(const std::string &certPem, const std::string &keyPem,
+                     const ServerClientAuth *clientAuth)
 {
     if (!loadCertAndKey(certPem, keyPem)) {
         return false;
@@ -189,6 +216,48 @@ bool TlsEngine::init(const std::string &certPem, const std::string &keyPem)
 
     if (role_ == TlsRole::Server) {
         br_ssl_server_init_full_ec(&serverCtx_, &certChain_, 1, BR_KEYTYPE_EC, &ecKey_);
+
+        if (clientAuth != nullptr) {
+            // P0-2：server 端启用客户端证书认证（对等 KDE CompositeUploadJob::configureSslSocket
+            // 的 VerifyPeer + Android SslHelper 的 needClientAuth=true）。
+            //
+            // ① 引擎必须先装 *验证* 实现：CertificateRequest 的算法列表由
+            //    supports-rsa-sign?(ENG->irsavrfy) / supports-ecdsa?(ENG->iecdsa) 决定
+            //    （ssl_hs_server.t0 write-list-signhash）。纯 EC 的 full_ec 初始化只把签名
+            //    实现放进 *policy*（ssl_scert_single_ec.c:140），eng->iecdsa 仍为 NULL →
+            //    证书请求里不含 ECDSA → Qt/OpenSSL 客户端回空 Certificate →
+            //    server 端 ERR_NO_CLIENT_AUTH(29)。host 实验已实证（MSG59）。
+            //    这两个 impl 仅用于校验（本机证书签名走 policy 上下文），不冲突。
+            br_ssl_engine_set_default_rsavrfy(&serverCtx_.eng);
+            br_ssl_engine_set_default_ecdsa(&serverCtx_.eng);
+
+            // ② x509 验证器：自签对端证书无锚 → 沿用 client 侧同款 TOFU vtable
+            //    （end_chain 忽略 NOT_TRUSTED），同时捕获 EE 证书原文与 subject CN。
+            br_x509_minimal_init_full(&x509Ctx_.x509, nullptr, 0);
+            x509Ctx_.x509.vtable = &capture_x509_vtable;
+            peerCnName_.oid = kOidCommonName;
+            peerCnName_.buf = peerCnBuf_;
+            peerCnName_.len = sizeof(peerCnBuf_);
+            peerCnName_.status = 0;
+            br_x509_minimal_set_name_elements(&x509Ctx_.x509, &peerCnName_, 1);
+            br_ssl_engine_set_x509(&serverCtx_.eng, &x509Ctx_.x509.vtable);
+
+            // ③ 触发 CertificateRequest：num_tas>0 才发（bearssl_ssl.h 文档）。
+            //    CA 名用对端证书 subject DN（KDE/Android 同款语义）；未知时用占位名——
+            //    Qt/OpenSSL 客户端不按 CA 列表过滤（host 实测 ca=bogus 仍出示证书），
+            //    但 Java(SunJSSE) 会过滤，故未知场景仅作降级。
+            clientCaDn_ = clientAuth->caDnDer.empty() ? std::vector<uint8_t>(kPlaceholderCaDn,
+                                                                            kPlaceholderCaDn + sizeof(kPlaceholderCaDn))
+                                                      : clientAuth->caDnDer;
+            clientCaName_.data = clientCaDn_.data();
+            clientCaName_.len = clientCaDn_.size();
+            br_ssl_server_set_trust_anchor_names(&serverCtx_, &clientCaName_, 1);
+            if (clientAuth->tolerateNoCert) {
+                br_ssl_engine_add_flags(&serverCtx_.eng, BR_OPT_TOLERATE_NO_CLIENT_AUTH);
+            }
+            LOGI("tls server client-auth: caDn=%zu bytes, tolerate=%d",
+                 clientCaDn_.size(), clientAuth->tolerateNoCert ? 1 : 0);
+        }
         engine_ = &serverCtx_.eng;
     } else {
         // 客户端：装信任锚（此处为空，TOFU 由 capture_x509_vtable 的 end_chain 兜底）
