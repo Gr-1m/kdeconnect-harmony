@@ -280,7 +280,10 @@
 
 **关键**：P0-1/P0-2 在发送方向，P0-4 让对端不发 share——三者必须**全部修完**才能有效联测 A1b/A9。建议 ZCode 先修 P0-1/P0-2/P0-3，DevEco 同步修 P0-4，两侧完成后一起进联测。
 
-**构建后门禁**：每次构建后校验 `build-profile.json5` 的 `signingConfigs` 必须为 `[]`（DevEco/hvigor 自动签名会注入 HarmonyOS 类型配置，必须还原）。
+**signingConfigs 门禁**（2026-09-13 增补，基于 MSG64 实测问题）：
+- **构建前**：Linux 侧构建前先校验 `build-profile.json5` 的 `signingConfigs` 必须为 `[]`（Syncthing 同步窗口期可能带入 DevEco 注入的 Windows 签名配置，直接卡死 SignHap）
+- **构建后**：DevEco Code 每次构建后还原 `signingConfigs` 为 `[]`（DevEco/hvigor 自动签名会注入 HarmonyOS 类型配置）
+- 校验命令：`grep -q '"signingConfigs": \[\]' build-profile.json5 || echo "WARN: signingConfigs not empty"`
 
 ---
 
