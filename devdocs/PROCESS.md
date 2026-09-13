@@ -298,6 +298,31 @@
 
 ---
 
+## 9. Syncthing 双机协作规则（2026-09-13 增补，基于同步事故教训）
+
+> 2026-09-13 Syncthing 冲突事故：编号撞号 + 双机同写同名文件 + R1 `target/` 67.9MB 构建产物跨机同步导致消息延迟和 10 个冲突文件。以下规则防止复发。
+
+### 9.1 共享目录不得同步构建产物
+
+- **所有构建产物必须在 `.stignore` 中排除**：`build/`、`.cxx/`、`target/`（Rust cargo）、`.hvigor/`、`.preview/` 等
+- **构建产物不入 git**：对应条目同时在 `.gitignore` 中排除
+- **分支隔离期间的工作目录残留**：切分支后 untracked 的构建产物（如 `rust/kdc_core/target/`）必须清理或 ignore，不得跨机同步
+
+### 9.2 消息文件命名规则
+
+- 格式：`MSG<n>_<发件人>_TO_<收件人>.md`（发件人标识保证文件名唯一，避免撞号冲突）
+- 编号继续共享池分配，不按收件人独立计数
+- `HOUSEKEEPING.md` 由 CodeArts 单机维护，其他 agent 只发消息不改该文件
+
+### 9.3 .stignore 与 .gitignore 同步
+
+- 两个文件的内容应保持一致（排除条目对应），差异仅在于：
+  - `.stignore` 独有：`.git`（git 自身管理）、`build-profile.json5`（tracked 但不同步）、`.stignore` 本身
+  - `.gitignore` 独有：`AgentsConversion/`（不入 git 但需跨机同步）、`docs/`（同上）、`devdocs/reference/`（同上）
+- 新增排除条目时必须同时检查两个文件
+
+---
+
 ## 维护
 
 本文由 CodeArts 维护。工作流规则变化时同改动更新本文并通知各 agent。
