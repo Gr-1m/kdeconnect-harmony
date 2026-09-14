@@ -57,6 +57,9 @@
         "startWindowIcon": "$media:start_icon",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
+        // 平板横屏适配：跟随系统自动旋转（横/竖两套布局都已支持）
+        "orientation": "auto_rotation",
+
         "skills": [
           {
             "entities": [

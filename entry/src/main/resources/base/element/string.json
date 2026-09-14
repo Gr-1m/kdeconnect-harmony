@@ -39,6 +39,11 @@
     {
       "name": "address_pending",
       "value": "waiting for address…"
+    }
+,
+    {
+      "name": "select_device_hint",
+      "value": "Select a device to open its actions"
     },
     {
       "name": "log_title",
@@ -377,6 +382,10 @@
       "value": "Control peer media playback"
     },
     {
+      "name": "device_detail_title",
+      "value": "Device details"
+    },
+    {
       "name": "device_detail_section",
       "value": "Device"
     },
@@ -435,7 +444,8 @@
     {
       "name": "toast_clipboard_denied",
       "value": "Clipboard access not granted"
-    },    {
+    },
+    {
       "name": "toast_battery_none",
       "value": "No battery data"
     },
