@@ -2,16 +2,28 @@ import uiMaterial from '@ohos.arkui.uiMaterial';
 import { DeviceItem, RememberedDevice, BatteryItem } from '../model/DeviceModels';
 import { GlassCard } from './GlassCard';
 
+// 设备详情页大按钮卡片的**统一高度**（vp）：6 张卡等高才对齐；
+// 剪贴板卡内含安全控件，故控件贴底 + 副标题限 1 行来适配这个高度。
+const ACTION_CARD_HEIGHT: number = 132;
+
+// 平板侧栏宽度（横屏占 30%，夹在 180–340vp 之间；竖屏固定 104vp 紧凑）
+const WIDE_RAIL_LIMIT: ConstraintSizeOptions = { minWidth: 180, maxWidth: 340 };
+
 // 设备 Tab：
-// - 手机（窄屏）：三条横线（汉堡）拉出抽屉式侧栏，占屏大部分 + 背景变暗，选中后收起回主区；
-// - 平板（>=600vp）：侧栏常驻，展开时直接切换，收起只留三条横线。
+// - 竖屏（手机 / 平板竖屏）：标题旁汉堡 → 抽屉式侧栏（Index.drawerOverlay），主区单列；
+// - 横屏（平板，宽 > 高）：左侧栏**常驻**占 30%（已连接 / 发现 都是可点设备列表），
+//   右侧主区显示选中设备的功能页（设备信息 + 大按钮）或所选分区内容。
 @Component
 export struct DevicesTab {
-  @Link connectedDevices: DeviceItem[];
-  @Link discoveredDevices: DeviceItem[];
-  @Link rememberedDevices: RememberedDevice[];
+  // 三态互斥列表由页面层派生后单向下发（已连接 / 发现 / 记住=离线已知），本组件只读
+  @Prop connectedDevices: DeviceItem[] = [];
+  @Prop discoveredDevices: DeviceItem[] = [];
+  @Prop rememberedDevices: RememberedDevice[] = [];
+  // 配对态要用**全量**已知设备表（含在线的），不能用上面那份离线子集
+  @Prop rememberedAll: RememberedDevice[] = [];
   @Prop immersive: boolean = false;
-  @Prop isWide: boolean = false;
+  // 并排侧栏模式（仅横屏平板）：侧栏常驻 30%
+  @Prop sideBySide: boolean = false;
   // AP-1：本侧已发起、等待对端确认的设备 id
   @Prop requestedPairIds: string[] = [];
   // 插件推来的展示项（电量）
@@ -42,30 +54,37 @@ export struct DevicesTab {
   // 侧栏选中项：0 已连接 / 1 发现 / 2 记住的 / 3 手动连接
   // @Link：连接/配对成功后由 Index 切回「已连接设备」分区
   @Link deviceSection: number;
-  @State railExpanded: boolean = true;
   // 手动连接默认值：host 留空（10.0.2.2 只是 QEMU 模拟器的 NAT 网关，真机无意义），port 用默认端口
   @State manualHost: string = '';
   @State manualPort: string = '1716';
   // 发现列表下拉刷新态（触发广播后自动收起）
   @State discoveryRefreshing: boolean = false;
-
-  // 侧栏开合：宽屏（平板）由本组件常驻侧栏自行伸缩；窄屏（手机）由页面标题旁的汉堡开抽屉
-  private openSide(): void {
-    if (this.isWide) {
-      animateTo({ duration: 220, curve: Curve.EaseInOut }, () => {
-        this.railExpanded = !this.railExpanded;
-      });
-    }
-  }
+  // 主区实测宽度（vp）：决定大按钮列数（窄→2 列 / 宽→3 列）
+  @State paneWidthVp: number = 0;
 
   private pickSection(index: number): void {
     this.deviceSection = index;
   }
 
+  // 大按钮列数：以**主区实测宽度**为准（横屏侧栏占 30% 后主区变宽 → 3 列）
+  private cardColumns(): number {
+    if (this.paneWidthVp > 0) {
+      return this.paneWidthVp >= 460 ? 3 : 2;
+    }
+    return this.sideBySide ? 3 : 2;
+  }
+
+  private onPaneArea(a: Area): void {
+    const w: number = Number(a.width);
+    if (Number.isFinite(w) && w > 0 && Math.abs(w - this.paneWidthVp) > 1) {
+      this.paneWidthVp = w;
+    }
+  }
+
   // 是否处于配对态：**必须看 paired 标记**（需求 3 后条目会永久保留，
   // 只判断"存在条目"会把已解除配对的设备误判为已配对——用户实测反馈的 bug）
   private isPaired(deviceId: string): boolean {
-    return this.rememberedDevices.some((r: RememberedDevice) => r.id === deviceId && r.paired);
+    return this.rememberedAll.some((r: RememberedDevice) => r.id === deviceId && r.paired);
   }
 
   private batteryOf(deviceId: string): string {
@@ -73,7 +92,21 @@ export struct DevicesTab {
     return item === undefined ? '' : item.text;
   }
 
+  // 地址显示（MSG106_OMP_TO_DEVECO §1 / MSG108_CODEARTS_TO_DEVECO §3 收尾）：
+  // host 未知 → 「地址待定」；**端口未知（0）时只显示 host**（KDE 只在 UDP 广播里带 tcpPort，
+  // 拨入 identity 不带 ⇒ 之前会渲染成 `<host>:0`）。
+  private addressText(d: DeviceItem): ResourceStr {
+    if (d.host === '') {
+      return $r('app.string.address_pending');
+    }
+    return d.tcpPort > 0 ? `${d.host}:${d.tcpPort}` : d.host;
+  }
+
   private sectionTitleOf(index: number): ResourceStr {
+    // 横屏：右侧是「详情」面板（列表都在左侧栏），故 0/1 分区标题统一为「设备详情」
+    if (this.sideBySide && (index === 0 || index === 1)) {
+      return $r('app.string.device_detail_title');
+    }
     if (index === 0) {
       return $r('app.string.connected_devices');
     }
@@ -86,46 +119,21 @@ export struct DevicesTab {
     return $r('app.string.manual_connect_optional');
   }
 
-  // 三条横线（汉堡）：不依赖 sys.symbol 资源，直接绘制
-  @Builder
-  hamburger() {
-    Column({ space: 4 }) {
-      Row()
-        .width(18)
-        .height(2)
-        .borderRadius(1)
-        .backgroundColor($r('app.color.text_primary'))
-      Row()
-        .width(18)
-        .height(2)
-        .borderRadius(1)
-        .backgroundColor($r('app.color.text_primary'))
-      Row()
-        .width(18)
-        .height(2)
-        .borderRadius(1)
-        .backgroundColor($r('app.color.text_primary'))
-    }
-    .padding({ left: 8, right: 8, top: 10, bottom: 10 })
-    .borderRadius(10)
-    .backgroundColor($r('app.color.chip_bg'))
-    .onClick(() => {
-      this.openSide();
-    })
-  }
+  // ---- 横屏常驻侧栏（占 30%）：已连接 / 发现 都是可点设备列表，点设备 → 右侧功能页 ----
 
   @Builder
-  railItem(index: number, label: ResourceStr, shortLabel: ResourceStr, count: number, expanded: boolean) {
-    Column({ space: 2 }) {
-      Text(expanded ? label : shortLabel)
-        .fontSize(12)
-        .fontColor(this.deviceSection === index ? $r('app.color.accent_text') : $r('app.color.text_secondary'))
-        .fontWeight(this.deviceSection === index ? FontWeight.Medium : FontWeight.Normal)
-        .maxLines(2)
-        .textAlign(TextAlign.Center)
+  sideGroupLabel(title: ResourceStr, count: number) {
+    Row({ space: 6 }) {
+      Text(title)
+        .fontSize(13)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_secondary'))
+        .layoutWeight(1)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
       if (count > 0) {
         Text(`${count}`)
-          .fontSize(10)
+          .fontSize(11)
           .fontColor($r('app.color.accent_text'))
           .padding({ left: 6, right: 6, top: 1, bottom: 1 })
           .borderRadius(999)
@@ -133,7 +141,92 @@ export struct DevicesTab {
       }
     }
     .width('100%')
-    .padding({ top: 10, bottom: 10 })
+    .padding({ left: 12, right: 12, top: 10, bottom: 2 })
+  }
+
+  @Builder
+  sideDeviceRow(d: DeviceItem, connected: boolean) {
+    Row({ space: 8 }) {
+      Circle({ width: 8, height: 8 })
+        .fill(connected ? $r('app.color.dot_connected') : $r('app.color.dot_discovered'))
+      Column({ space: 2 }) {
+        Text(d.name)
+          .fontSize(13)
+          .fontColor($r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(d.id)
+          .fontSize(9)
+          .fontColor($r('app.color.text_muted'))
+          .fontFamily('monospace')
+          .maxLines(1)
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
+      if (connected) {
+        Text($r('app.string.remembered_hint'))
+          .fontSize(9)
+          .fontColor($r('app.color.dot_remembered'))
+          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+          .borderRadius(999)
+          .backgroundColor($r('app.color.chip_bg'))
+      } else if (this.requestedPairIds.includes(d.id)) {
+        Text($r('app.string.pair_pending'))
+          .fontSize(9)
+          .fontColor($r('app.color.accent_text'))
+          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+          .borderRadius(999)
+          .backgroundColor($r('app.color.accent_soft'))
+      } else {
+        // 未配对：配对入口就在发现列表（用户 2026-09-14 裁决）
+        Button($r('app.string.pair_action'))
+          .fontSize(11)
+          .height(28)
+          .backgroundColor($r('app.color.accent'))
+          .borderRadius(8)
+          .onClick(() => {
+            this.onPairDevice(d);
+          })
+      }
+    }
+    .width('100%')
+    .padding({ left: 12, right: 10, top: 8, bottom: 8 })
+    .borderRadius(12)
+    .backgroundColor(this.selectedDeviceId === d.id ? $r('app.color.accent_soft') : Color.Transparent)
+    .onClick(() => {
+      // 已连接 → 打开功能页；未配对 → 走配对（与行内「配对」按钮一致）
+      if (connected) {
+        this.onOpenDevice(d);
+      } else {
+        this.onPairDevice(d);
+      }
+    })
+  }
+
+  // 分区入口（记住的设备 / 手动连接）：点 → 右侧主区切到该分区
+  @Builder
+  sideEntryRow(index: number, label: ResourceStr, count: number) {
+    Row({ space: 8 }) {
+      Text(label)
+        .fontSize(14)
+        .fontColor(this.deviceSection === index ? $r('app.color.accent_text') : $r('app.color.text_secondary'))
+        .fontWeight(this.deviceSection === index ? FontWeight.Medium : FontWeight.Normal)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+      if (count > 0) {
+        Text(`${count}`)
+          .fontSize(11)
+          .fontColor($r('app.color.accent_text'))
+          .padding({ left: 6, right: 6, top: 1, bottom: 1 })
+          .borderRadius(999)
+          .backgroundColor($r('app.color.accent_soft'))
+      }
+    }
+    .width('100%')
+    .height(44)
+    .padding({ left: 12, right: 12 })
     .borderRadius(14)
     .backgroundColor(this.deviceSection === index ? $r('app.color.accent_soft') : Color.Transparent)
     .onClick(() => {
@@ -142,17 +235,58 @@ export struct DevicesTab {
   }
 
   @Builder
-  railList(expanded: boolean) {
-    Column({ space: 6 }) {
-      this.railItem(0, $r('app.string.connected_devices'), $r('app.string.rail_connected_short'),
-        this.connectedDevices.length, expanded)
-      this.railItem(1, $r('app.string.discovered_devices'), $r('app.string.rail_discovered_short'),
-        this.discoveredDevices.length, expanded)
-      this.railItem(2, $r('app.string.remembered_devices'), $r('app.string.rail_remembered_short'),
-        this.rememberedDevices.length, expanded)
-      this.railItem(3, $r('app.string.manual_connect'), $r('app.string.rail_manual_short'), 0, expanded)
+  sidePanel() {
+    // 侧栏整体支持下拉刷新 → 触发一次 identity 广播（发现列表移入侧栏后，刷新手势也随之搬家）
+    Refresh({ refreshing: $$this.discoveryRefreshing }) {
+      Scroll() {
+        Column({ space: 2 }) {
+          this.sideGroupLabel($r('app.string.connected_devices'), this.connectedDevices.length)
+          if (this.connectedDevices.length === 0) {
+            Text($r('app.string.group_empty'))
+              .fontSize(11)
+              .fontColor($r('app.color.text_muted'))
+              .width('100%')
+              .padding({ left: 12, right: 12, top: 2, bottom: 6 })
+          }
+          ForEach(this.connectedDevices, (d: DeviceItem) => {
+            this.sideDeviceRow(d, true)
+          }, (d: DeviceItem) => `conn-${d.id}`)
+
+          this.sideGroupLabel($r('app.string.discovered_devices'), this.discoveredDevices.length)
+          if (this.discoveredDevices.length === 0) {
+            Text($r('app.string.discovered_hint'))
+              .fontSize(11)
+              .fontColor($r('app.color.text_muted'))
+              .width('100%')
+              .padding({ left: 12, right: 12, top: 2, bottom: 6 })
+          }
+          ForEach(this.discoveredDevices, (d: DeviceItem) => {
+            this.sideDeviceRow(d, false)
+          }, (d: DeviceItem) => `disc-${d.id}`)
+
+          Divider()
+            .color($r('app.color.card_border'))
+            .margin({ top: 8, bottom: 4 })
+
+          this.sideEntryRow(2, $r('app.string.remembered_devices'), this.rememberedDevices.length)
+          this.sideEntryRow(3, $r('app.string.manual_connect'), 0)
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
+      }
+      .width('100%')
+      .height('100%')
+      .align(Alignment.TopStart)
+      .scrollBar(BarState.Off)
     }
     .width('100%')
+    .layoutWeight(1)
+    .onRefreshing(() => {
+      this.onRefreshDiscovery();
+      setTimeout((): void => {
+        this.discoveryRefreshing = false;
+      }, 1500);
+    })
   }
 
   @Builder
@@ -249,7 +383,7 @@ export struct DevicesTab {
           .fontColor($r('app.color.text_muted'))
           .fontFamily('monospace')
           .maxLines(1)
-        Text(d.host !== '' ? `${d.host}:${d.tcpPort}` : $r('app.string.address_pending'))
+        Text(this.addressText(d))
           .fontSize(10)
           .fontColor($r('app.color.text_muted'))
           .fontFamily('monospace')
@@ -305,8 +439,9 @@ export struct DevicesTab {
   @Builder
   rememberedRow(r: RememberedDevice) {
     Row({ space: 10 }) {
+      // 记住的设备 = 曾经连接过、当前离线 → 状态灯用离线灰（用户 2026-09-14 规则）
       Circle({ width: 8, height: 8 })
-        .fill($r('app.color.dot_remembered'))
+        .fill($r('app.color.text_muted'))
       Column({ space: 2 }) {
         Text(r.name)
           .fontSize(13)
@@ -321,6 +456,12 @@ export struct DevicesTab {
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
+      Text($r('app.string.device_offline'))
+        .fontSize(9)
+        .fontColor($r('app.color.text_muted'))
+        .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+        .borderRadius(999)
+        .backgroundColor($r('app.color.chip_bg'))
       // 需求 3（用户 miaoshu.txt）：条目永久保留；仅区分是否仍处于配对态
       Text(r.paired ? $r('app.string.remembered_hint') : $r('app.string.remembered_unpaired'))
         .fontSize(10)
@@ -360,6 +501,7 @@ export struct DevicesTab {
         .maxLines(2)
     }
     .layoutWeight(1)
+    .height(ACTION_CARD_HEIGHT)
     .alignItems(HorizontalAlign.Start)
     .padding({ left: 14, right: 14, top: 14, bottom: 14 })
     .borderRadius(16)
@@ -375,31 +517,39 @@ export struct DevicesTab {
   // 剪贴板卡：读本机剪贴板需 `ohos.permission.READ_PASTEBOARD`，而它在 SDK 权限定义里是
   // `availableLevel: system_basic`（三方应用申请会导致安装失败）→ 必须改用官方**安全控件**
   // `PasteButton`：用户点击即获**临时读权限**（SUCCESS）。故这张卡内嵌一个小号粘贴控件作为动作入口。
+  // 版式：与其它大按钮**等高**（ACTION_CARD_HEIGHT），副标题限 1 行、控件贴底（SpaceBetween），
+  // 否则会把这卡撑高 → 与左列「发送文件」不对齐（用户实测反馈）。
   @Builder
   clipboardCard(icon: Resource, title: ResourceStr, desc: ResourceStr) {
-    Column({ space: 6 }) {
-      SymbolGlyph(icon)
-        .fontSize(24)
-        .fontColor([$r('app.color.accent_text')])
-      Text(title)
-        .fontSize(14)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .maxLines(1)
-      Text(desc)
-        .fontSize(11)
-        .fontColor($r('app.color.text_muted'))
-        .maxLines(2)
+    Column() {
+      Column({ space: 6 }) {
+        SymbolGlyph(icon)
+          .fontSize(24)
+          .fontColor([$r('app.color.accent_text')])
+        Text(title)
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .maxLines(1)
+        Text(desc)
+          .fontSize(11)
+          .fontColor($r('app.color.text_muted'))
+          .maxLines(1)
+      }
+      .alignItems(HorizontalAlign.Start)
+
       // 安全控件：不可被遮挡、不设透明度；点击回调带授权结果
       PasteButton({ icon: PasteIconStyle.LINES, text: PasteDescription.PASTE })
         .fontSize(12)
-        .height(30)
+        .height(26)
         .onClick((event: ClickEvent, result: PasteButtonOnClickResult) => {
           this.onClipboardPaste(result === PasteButtonOnClickResult.SUCCESS);
         })
     }
     .layoutWeight(1)
+    .height(ACTION_CARD_HEIGHT)
     .alignItems(HorizontalAlign.Start)
+    .justifyContent(FlexAlign.SpaceBetween)
     .padding({ left: 14, right: 14, top: 14, bottom: 14 })
     .borderRadius(16)
     .backgroundColor($r('app.color.card_bg'))
@@ -450,6 +600,18 @@ export struct DevicesTab {
                 .borderRadius(999)
                 .backgroundColor($r('app.color.chip_bg'))
             }
+            // 解除配对入口：横屏右侧只显示详情（列表里的行内按钮不可见），故详情页也保留一个
+            if (this.isPaired(d.id)) {
+              Button($r('app.string.unpair_action'))
+                .fontSize(11)
+                .height(28)
+                .backgroundColor($r('app.color.chip_bg'))
+                .fontColor($r('app.color.text_secondary'))
+                .borderRadius(8)
+                .onClick(() => {
+                  this.onUnpairDevice(d);
+                })
+            }
           }
         }
         .alignItems(HorizontalAlign.Start)
@@ -458,32 +620,57 @@ export struct DevicesTab {
       .width('100%')
 
       // 大按钮：暂为占位（功能未实现）
-      Row({ space: 10 }) {
-        this.actionCard('send_file', $r('sys.symbol.paperplane'),
-          $r('app.string.action_send_file'), $r('app.string.action_send_file_desc'))
-        this.clipboardCard($r('sys.symbol.text_clipboard'),
-          $r('app.string.action_clipboard'), $r('app.string.action_clipboard_desc'))
-      }
-      .width('100%')
-      .alignItems(VerticalAlign.Top)
+      // 自适应列数：按主区实测宽度 2 列 / 3 列；所有卡片统一 ACTION_CARD_HEIGHT 保证对齐
+      if (this.cardColumns() >= 3) {
+        Row({ space: 10 }) {
+          this.actionCard('send_file', $r('sys.symbol.paperplane'),
+            $r('app.string.action_send_file'), $r('app.string.action_send_file_desc'))
+          this.clipboardCard($r('sys.symbol.text_clipboard'),
+            $r('app.string.action_clipboard'), $r('app.string.action_clipboard_desc'))
+          this.actionCard('find_phone', $r('sys.symbol.location_up'),
+            $r('app.string.action_find_phone'), $r('app.string.action_find_phone_desc'))
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Top)
 
-      Row({ space: 10 }) {
-        this.actionCard('find_phone', $r('sys.symbol.location_up'),
-          $r('app.string.action_find_phone'), $r('app.string.action_find_phone_desc'))
-        this.actionCard('ring', $r('sys.symbol.bell'),
-          $r('app.string.action_ring'), $r('app.string.action_ring_desc'))
-      }
-      .width('100%')
-      .alignItems(VerticalAlign.Top)
+        Row({ space: 10 }) {
+          this.actionCard('ring', $r('sys.symbol.bell'),
+            $r('app.string.action_ring'), $r('app.string.action_ring_desc'))
+          this.actionCard('battery', $r('sys.symbol.battery'),
+            $r('app.string.action_battery'), $r('app.string.action_battery_desc'))
+          this.actionCard('media', $r('sys.symbol.screen_share'),
+            $r('app.string.action_media'), $r('app.string.action_media_desc'))
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Top)
+      } else {
+        Row({ space: 10 }) {
+          this.actionCard('send_file', $r('sys.symbol.paperplane'),
+            $r('app.string.action_send_file'), $r('app.string.action_send_file_desc'))
+          this.clipboardCard($r('sys.symbol.text_clipboard'),
+            $r('app.string.action_clipboard'), $r('app.string.action_clipboard_desc'))
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Top)
 
-      Row({ space: 10 }) {
-        this.actionCard('battery', $r('sys.symbol.battery'),
-          $r('app.string.action_battery'), $r('app.string.action_battery_desc'))
-        this.actionCard('media', $r('sys.symbol.screen_share'),
-          $r('app.string.action_media'), $r('app.string.action_media_desc'))
+        Row({ space: 10 }) {
+          this.actionCard('find_phone', $r('sys.symbol.location_up'),
+            $r('app.string.action_find_phone'), $r('app.string.action_find_phone_desc'))
+          this.actionCard('ring', $r('sys.symbol.bell'),
+            $r('app.string.action_ring'), $r('app.string.action_ring_desc'))
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Top)
+
+        Row({ space: 10 }) {
+          this.actionCard('battery', $r('sys.symbol.battery'),
+            $r('app.string.action_battery'), $r('app.string.action_battery_desc'))
+          this.actionCard('media', $r('sys.symbol.screen_share'),
+            $r('app.string.action_media'), $r('app.string.action_media_desc'))
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Top)
       }
-      .width('100%')
-      .alignItems(VerticalAlign.Top)
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
@@ -548,8 +735,18 @@ export struct DevicesTab {
       }
       .width('100%')
       if (this.deviceSection === 0) {
-        // 抽屉里选中了设备 → 详情（信息 + 大按钮）；否则维持原来的已连接列表
-        if (this.selectedDeviceVisible()) {
+        // 横屏（并排侧栏）：右侧**只显示设备详情**，未选中时给提示（列表在左侧栏）
+        if (this.sideBySide) {
+          if (this.selectedDeviceVisible()) {
+            ForEach(this.connectedDevices.filter((d: DeviceItem) => d.id === this.selectedDeviceId),
+              (d: DeviceItem) => {
+                this.deviceDetail(d)
+              }, (d: DeviceItem) => d.id)
+          } else {
+            this.emptyHint($r('app.string.select_device_hint'))
+          }
+        } else if (this.selectedDeviceVisible()) {
+          // 竖屏（抽屉）：选中了设备 → 详情（信息 + 大按钮）；否则维持已连接列表
           ForEach(this.connectedDevices.filter((d: DeviceItem) => d.id === this.selectedDeviceId),
             (d: DeviceItem) => {
               this.deviceDetail(d)
@@ -563,6 +760,10 @@ export struct DevicesTab {
           }, (d: DeviceItem) => d.id)
         }
       } else if (this.deviceSection === 1) {
+        // 横屏：发现列表在左侧栏（带下拉刷新与配对按钮），右侧不再重复
+        if (this.sideBySide) {
+          this.emptyHint($r('app.string.select_device_hint'))
+        } else {
         // 下拉刷新：手动触发一次 identity 广播（对端后启动/丢包时用）。
         // 用官方组合 Refresh + List：List 是可滚动子组件（下拉手势生效），且内容**从顶部排列**
         // （此前 Refresh + Scroll + height('100%') 高度解析失败 → 内容被垂直居中，用户反馈"从中间开始"）。
@@ -597,6 +798,7 @@ export struct DevicesTab {
             this.discoveryRefreshing = false;
           }, 1500);
         })
+        }
       } else if (this.deviceSection === 2) {
         if (this.rememberedDevices.length === 0) {
           this.emptyHint($r('app.string.remembered_hint_empty'))
@@ -614,47 +816,45 @@ export struct DevicesTab {
 
   @Builder
   mainArea() {
-    GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
+    // fill：并排侧栏模式下卡片填满主区高度（与侧栏等高，避免底部空出一块）
+    GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial, fill: this.sideBySide }) {
       this.sectionContent()
     }
   }
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
-      if (this.isWide) {
-        // 平板/宽屏：侧栏常驻（可收起为仅三条横线），右侧主区
+      if (this.sideBySide) {
+        // 横屏平板：侧栏常驻占 30%（已连接 / 发现 均为可点设备列表），右侧主区
         Row({ space: 12 }) {
-          Column({ space: 6 }) {
-            Row() {
-              this.hamburger()
-            }
-            .width('100%')
-            .justifyContent(FlexAlign.Center)
-            if (this.railExpanded) {
-              this.railList(true)
-            } else {
-              this.railList(false)
-            }
+          Column({ space: 2 }) {
+            this.sidePanel()
           }
-          .width(this.railExpanded ? 104 : 52)
+          .width('30%')
+          .constraintSize(WIDE_RAIL_LIMIT)
           .height('100%')
           .padding(6)
           .borderRadius(18)
           .backgroundBlurStyle(BlurStyle.BACKGROUND_THIN)
           .backgroundColor($r('app.color.card_bg'))
           .border({ width: 1, color: $r('app.color.card_border') })
+          .alignItems(HorizontalAlign.Start)
 
           Column() {
             this.mainArea()
           }
           .layoutWeight(1)
+          .height('100%')
           .alignItems(HorizontalAlign.Start)
+          .onAreaChange((_old: Area, area: Area) => {
+            this.onPaneArea(area);
+          })
         }
         .width('100%')
         .layoutWeight(1)
         .alignItems(VerticalAlign.Top)
       } else {
-        // 手机：标题旁汉堡已在页面层（Index）；此处只剩主区
+        // 竖屏（手机与平板竖屏同款）：标题旁汉堡拉抽屉（Index），此处只剩主区单列
         Column({ space: 10 }) {
           Column() {
             this.mainArea()
@@ -662,6 +862,9 @@ export struct DevicesTab {
           .width('100%')
           .layoutWeight(1)
           .alignItems(HorizontalAlign.Start)
+          .onAreaChange((_old: Area, area: Area) => {
+            this.onPaneArea(area);
+          })
         }
         .width('100%')
         .layoutWeight(1)
@@ -669,6 +872,6 @@ export struct DevicesTab {
 
     }
     .width('100%')
-    .layoutWeight(1)
+    .height('100%')
   }
 }

@@ -27,6 +27,11 @@
     {
       "name": "address_pending",
       "value": "等待地址…"
+    }
+,
+    {
+      "name": "select_device_hint",
+      "value": "请选择设备查看功能"
     },
     {
       "name": "log_title",
@@ -365,6 +370,10 @@
       "value": "控制对端播放"
     },
     {
+      "name": "device_detail_title",
+      "value": "设备详情"
+    },
+    {
       "name": "device_detail_section",
       "value": "设备"
     },
@@ -423,7 +432,8 @@
     {
       "name": "toast_clipboard_denied",
       "value": "未获得剪贴板读取授权"
-    },    {
+    },
+    {
       "name": "toast_battery_none",
       "value": "无电量数据"
     },

@@ -67,6 +67,8 @@ const PAIR_TIMEOUT_MS: number = 45000;
 const NOTICE_MS: number = 2500;
 // 抽屉收起态最多显示的已连接设备数（超出才出现「展开 ⌄」）
 const DRAWER_DEVICE_CAP: number = 2;
+// 抽屉面板宽度上限（vp）：大屏上 78% 会撑成一条巨板，故夹住
+const DRAWER_WIDTH_LIMIT: ConstraintSizeOptions = { maxWidth: 360 };
 
 @Entry
 @Component
@@ -81,6 +83,10 @@ struct Index {
   @State language: string = LANG_SYSTEM;
   // 宽屏（平板/折叠展开）判定：>=600vp 走常驻侧栏，否则走抽屉式侧栏
   @State isWide: boolean = false;
+  // 横屏判定（宽 > 高）
+  @State isLandscape: boolean = false;
+  // 并排侧栏模式：**仅横屏宽屏**（左侧栏常驻 30%）；竖屏（含平板竖屏）一律走汉堡 + 抽屉
+  @State sideBySide: boolean = false;
   @State connectedDevices: DeviceItem[] = [];
   @State discoveredDevices: DeviceItem[] = [];
   @State rememberedDevices: RememberedDevice[] = [];
@@ -293,9 +299,35 @@ struct Index {
     try {
       const d: display.Display = display.getDefaultDisplaySync();
       const vpWidth: number = this.getUIContext().px2vp(d.width);
+      const vpHeight: number = this.getUIContext().px2vp(d.height);
       this.isWide = vpWidth >= 600;
+      this.isLandscape = vpWidth > vpHeight;
+      this.sideBySide = this.isWide && this.isLandscape;
     } catch (e) {
       this.isWide = false;
+      this.isLandscape = false;
+      this.sideBySide = false;
+    }
+  }
+
+  // 根容器尺寸变化（含旋屏）→ 重算宽屏/横屏判定，布局随之切换
+  private onRootArea(area: Area): void {
+    const w: number = Number(area.width);
+    const h: number = Number(area.height);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
+      return;
+    }
+    const wide: boolean = w >= 600;
+    const land: boolean = w > h;
+    const side: boolean = wide && land;
+    if (wide !== this.isWide) {
+      this.isWide = wide;
+    }
+    if (land !== this.isLandscape) {
+      this.isLandscape = land;
+    }
+    if (side !== this.sideBySide) {
+      this.sideBySide = side;
     }
   }
 
@@ -711,6 +743,8 @@ struct Index {
           //    需求 2：**保留发现列表里的条目**（两列表并存）。
           this.connectedDevices = this.connectedDevices.filter((d: DeviceItem) => d.id !== cid);
           this.connectedDevices = this.connectedDevices.concat([dev]);
+          // ②-b 曾经连接过 ⇒ 写入已知设备表（未配对也记住）：断链后进「记住的设备」（离线灰）
+          this.rememberKnown(cid, event.deviceName ?? cid);
           // ③ 插件装载兜底（MSG81）：native 不派发 identity 帧时 caps 不可知 → 按「全支持」装载
           if (this.pluginHost !== undefined && this.pluginHost.pluginsFor(cid).length === 0) {
             this.loadPlugins(cid, [], []);
@@ -1563,12 +1597,110 @@ struct Index {
     return this.rememberedDevices.some((r: RememberedDevice) => r.id === deviceId && r.paired);
   }
 
+  // ---- 三态互斥列表（用户 2026-09-14 规则，对齐蓝牙/星闪的已知设备模型）----
+  // 已连接 = 已配对且在线；发现 = 未配对且在线（实时连接 ∪ 广播发现）；记住的设备 = 已知
+  // （配对过或曾经连接过）但当前离线。**同一设备只会出现在其中一个列表**；三个列表前的
+  // 状态灯颜色也不同（已连接=绿 / 发现=蓝 / 记住=离线灰）。
+  private liveIds(): string[] {
+    const out: string[] = [];
+    for (const d of this.connectedDevices) {
+      if (d.online) {
+        out.push(d.id);
+      }
+    }
+    return out;
+  }
+
+  private connectedShown(): DeviceItem[] {
+    const out: DeviceItem[] = [];
+    for (const d of this.connectedDevices) {
+      if (d.online && this.isPairedId(d.id)) {
+        out.push(d);
+      }
+    }
+    return out;
+  }
+
+  private discoveredShown(): DeviceItem[] {
+    const out: DeviceItem[] = [];
+    for (const d of this.connectedDevices) {
+      // 已连接但未配对：仍算「发现」（配对入口在发现列表），配对成功后自然转入已连接
+      if (d.online && !this.isPairedId(d.id) && !out.some((x: DeviceItem) => x.id === d.id)) {
+        out.push(d);
+      }
+    }
+    for (const d of this.discoveredDevices) {
+      if (d.online && !this.isPairedId(d.id) && !out.some((x: DeviceItem) => x.id === d.id)) {
+        out.push(d);
+      }
+    }
+    return out;
+  }
+
+  private offlineKnownShown(): RememberedDevice[] {
+    const live: string[] = this.liveIds();
+    const out: RememberedDevice[] = [];
+    for (const r of this.rememberedDevices) {
+      if (!live.includes(r.id)) {
+        out.push(r);
+      }
+    }
+    return out;
+  }
+
+  // 「曾经连接过」的设备写入已知设备表（paired 标记保持原值；未配对设备也记住 ⇒
+  // 断链后进「记住的设备」列表，与蓝牙/星闪一致：连过的设备不会凭空消失）
+  private rememberKnown(id: string, name: string): void {
+    if (id === '') {
+      return;
+    }
+    const existing: TrustedDevice | undefined = this.trustedDevices.find((t: TrustedDevice) => t.id === id);
+    if (existing !== undefined) {
+      if (name.length > 0 && existing.name !== name) {
+        this.trustedDevices = this.trustedDevices.map((t: TrustedDevice) => {
+          if (t.id !== id) {
+            return t;
+          }
+          const next: TrustedDevice = {
+            id: t.id,
+            name: name,
+            certPem: t.certPem,
+            pairedAt: t.pairedAt,
+            paired: t.paired
+          };
+          return next;
+        });
+        this.rememberedDevices = this.trustedDevices.map((t: TrustedDevice) => {
+          const r: RememberedDevice = { id: t.id, name: t.name, paired: t.paired };
+          return r;
+        });
+        this.persistTrust();
+      }
+      return;
+    }
+    const entry: TrustedDevice = {
+      id: id,
+      name: name.length > 0 ? name : id,
+      certPem: '',
+      pairedAt: 0,
+      paired: false
+    };
+    this.trustedDevices = this.trustedDevices.concat([entry]);
+    this.rememberedDevices = this.trustedDevices.map((t: TrustedDevice) => {
+      const r: RememberedDevice = { id: t.id, name: t.name, paired: t.paired };
+      return r;
+    });
+    this.persistTrust();
+    this.log(`remember known device ${id} (connected once)`);
+  }
+
   // 抽屉里实际渲染的已连接设备：收起态只取前 drawerDeviceCap 台，展开态全部
   private visibleDrawerDevices(): DeviceItem[] {
-    if (this.drawerExpanded || this.connectedDevices.length <= DRAWER_DEVICE_CAP) {
-      return this.connectedDevices;
+    const list: DeviceItem[] = this.connectedShown();
+    if (this.drawerExpanded || list.length <= DRAWER_DEVICE_CAP) {
+      return list;
     }
-    return this.connectedDevices.slice(0, DRAWER_DEVICE_CAP);
+    return list.slice(0, DRAWER_DEVICE_CAP);
   }
 
   // 抽屉里的设备行（对齐参考稿「我的产品」列表：方图 + 名称 + 副标题 + 状态标签，
@@ -1619,6 +1751,66 @@ struct Index {
       // 必须走 openDeviceDetail：它同时负责「选中设备 + 切到已连接设备分区（功能页）」。
       // 原来只置 selectedDeviceId，若当前停在发现/记忆/手动分区，点完页面不变 → 用户反馈"点了没反应"
       this.openDeviceDetail(d);
+      this.closeDrawer();
+    })
+  }
+
+  // 抽屉里的「发现设备」行：点击/配对按钮 = 发起配对（配对成功才转入「已连接」）
+  @Builder
+  drawerPairRow(d: DeviceItem) {
+    Row({ space: 12 }) {
+      Column() {
+        SymbolGlyph($r('sys.symbol.computer'))
+          .fontSize(22)
+          .fontColor([$r('app.color.text_secondary')])
+      }
+      .width(44)
+      .height(44)
+      .borderRadius(12)
+      .backgroundColor($r('app.color.chip_bg'))
+      .justifyContent(FlexAlign.Center)
+
+      Column({ space: 2 }) {
+        Text(d.name)
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(d.id)
+          .fontSize(10)
+          .fontColor($r('app.color.text_muted'))
+          .fontFamily('monospace')
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
+      if (this.requestedPairIds.includes(d.id)) {
+        Text($r('app.string.pair_pending'))
+          .fontSize(10)
+          .fontColor($r('app.color.accent_text'))
+          .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+          .borderRadius(999)
+          .backgroundColor($r('app.color.accent_soft'))
+      } else {
+        Button($r('app.string.pair_action'))
+          .fontSize(12)
+          .height(32)
+          .backgroundColor($r('app.color.accent'))
+          .borderRadius(8)
+          .onClick(() => {
+            this.requestPairWith(d);
+            this.closeDrawer();
+          })
+      }
+    }
+    .width('100%')
+    .padding({ left: 10, right: 10, top: 8, bottom: 8 })
+    .borderRadius(14)
+    .onClick(() => {
+      this.requestPairWith(d);
       this.closeDrawer();
     })
   }
@@ -1690,7 +1882,7 @@ struct Index {
               .fontColor($r('app.color.text_secondary'))
               .width('100%')
               .padding({ top: 4, bottom: 4 })
-            if (this.connectedDevices.length === 0) {
+            if (this.connectedShown().length === 0) {
               Text($r('app.string.drawer_pick_device_hint'))
                 .fontSize(12)
                 .fontColor($r('app.color.text_muted'))
@@ -1699,11 +1891,11 @@ struct Index {
             }
             ForEach(this.visibleDrawerDevices(), (d: DeviceItem) => {
               this.drawerDeviceRow(d)
-            }, (d: DeviceItem) => d.id)
+            }, (d: DeviceItem) => `conn-${d.id}`)
 
             // 「展开 ⌄」只作用于**已连接设备列表**（设备多时先收起、点开看全部）；
             // 下面三个分区入口（发现/记住/手动）常驻可见可点，不参与收起
-            if (this.connectedDevices.length > DRAWER_DEVICE_CAP) {
+            if (this.connectedShown().length > DRAWER_DEVICE_CAP) {
               Row({ space: 6 }) {
                 Text(this.drawerExpanded ? $r('app.string.drawer_collapse') : $r('app.string.drawer_expand'))
                   .fontSize(13)
@@ -1722,8 +1914,26 @@ struct Index {
               })
             }
 
-            this.drawerSectionRow(1, $r('app.string.discovered_devices'), this.discoveredDevices.length)
-            this.drawerSectionRow(2, $r('app.string.remembered_devices'), this.rememberedDevices.length)
+            // 发现设备：未配对的在线设备（含已连上但未配对的）—— 配对入口在发现列表里
+            // （用户 2026-09-14 裁决：只有配对成功才进「已连接」，故配对按钮留在发现列表）
+            Text($r('app.string.discovered_devices'))
+              .fontSize(14)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+              .padding({ top: 10, bottom: 4 })
+            if (this.discoveredShown().length === 0) {
+              Text($r('app.string.discovered_hint'))
+                .fontSize(12)
+                .fontColor($r('app.color.text_muted'))
+                .width('100%')
+                .padding({ top: 4, bottom: 4 })
+            }
+            ForEach(this.discoveredShown(), (d: DeviceItem) => {
+              this.drawerPairRow(d)
+            }, (d: DeviceItem) => `disc-${d.id}`)
+
+            this.drawerSectionRow(2, $r('app.string.remembered_devices'), this.offlineKnownShown().length)
             this.drawerSectionRow(3, $r('app.string.manual_connect'), 0)
           }
           .width('100%')
@@ -1735,6 +1945,7 @@ struct Index {
         .scrollBar(BarState.Off)
       }
       .width('78%')
+      .constraintSize(DRAWER_WIDTH_LIMIT)
       .height('100%')
       .padding({
         left: 16,
@@ -1788,7 +1999,10 @@ struct Index {
       Column() {
         // 标题区（对齐参考稿：汉堡按钮紧挨标题左侧）
         Row({ space: 10 }) {
-          this.menuButton()
+          // 横屏平板用常驻侧栏，不再需要抽屉汉堡；竖屏一律汉堡拉抽屉
+          if (!this.sideBySide) {
+            this.menuButton()
+          }
           Text('KDE Connect')
             .fontSize(26)
             .fontWeight(FontWeight.Bold)
@@ -1835,11 +2049,13 @@ struct Index {
           TabContent() {
             Column() {
               DevicesTab({
-                connectedDevices: this.connectedDevices,
-                discoveredDevices: this.discoveredDevices,
-                rememberedDevices: this.rememberedDevices,
+                // 三态互斥派生列表（见 connectedShown/discoveredShown/offlineKnownShown）
+                connectedDevices: this.connectedShown(),
+                discoveredDevices: this.discoveredShown(),
+                rememberedDevices: this.offlineKnownShown(),
+                rememberedAll: this.rememberedDevices,
                 immersive: false,
-                isWide: this.isWide,
+                sideBySide: this.sideBySide,
                 requestedPairIds: this.requestedPairIds,
                 batteryItems: this.batteryItems,
                 deviceSection: this.deviceSection,
@@ -1867,6 +2083,8 @@ struct Index {
                 }
               })
             }
+            .width('100%')
+            .height('100%')
             .padding({ top: 12, bottom: 92 })
           }
           .tabBar(this.tabBuilder(0))
@@ -1960,6 +2178,9 @@ struct Index {
       .width('100%')
       .height('100%')
       .padding({ left: 16, right: 16 })
+      .onAreaChange((_old: Area, area: Area) => {
+        this.onRootArea(area);
+      })
 
       // 手机侧栏抽屉（全屏覆盖）：必须在根 Stack 渲染，否则被内容区 padding(16) 内缩
       if (this.drawerOpen) {

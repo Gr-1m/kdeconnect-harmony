@@ -181,6 +181,15 @@ protocolVersion=8；UDP 1716；TCP 1716–1764；payload 端口 ≥1739；单包
 
 ## 7. 构建与验证（Win10 侧）
 
+- **R1（Rust）接线后 Win10 必须自备 Rust 工具链**（2026-09-14 实测打通，与 Linux 侧同版本）：
+  - 装法（**不需要管理员**）：`rustup-init.exe`（`--default-host x86_64-pc-windows-gnu`，GNU 宿主自带链接器，规避无 MSVC 的问题）→ `rustup target add aarch64-unknown-linux-ohos x86_64-unknown-linux-ohos`。
+  - **网络**：`static.rust-lang.org` 直连不通，用镜像 `RUSTUP_DIST_SERVER=https://mirrors.tuna.tsinghua.edu.cn/rustup` + `RUSTUP_UPDATE_ROOT=<...>/rustup`；镜像路径是 `.../rustup/rustup/dist/...`（少一层 404）。
+  - **cargo 必须在构建进程的 PATH 上**：hvigor 的 CMake 命令用 `${RUST_WRAPPER_DIR}:$ENV{PATH}` 拼 PATH（POSIX 冒号，Windows 下首段会失效但后续 `;` 段仍生效），把 `cargo.exe/rustc.exe`（rustup shim）复制到 `C:\Users\<user>\.cache\deveco\bin`（已在构建 PATH 中）即可。
+  - `crate-type = ["staticlib"]` **不需要外部链接器/归档器**，故 Linux 用的 `rust/wrappers/*`（shell 脚本）在 Windows 上不会被调用，无需移植。
+  - 每个 ABI 首次 cargo 编译约 2 分钟；之后增量（ninja 缓存 `entry/.cxx/**/rust-target`）。
+- **平板（MatePad Mini / MLR-AL10 / API 26）签名**：`hdc install` 报 `9568423 device is unauthorized` 说明 UDID 不在签名 profile 里 → 用 `devecocli signature generate --product default --force`（**带 `--force`**，会带上当前连接的设备）重新生成即可；不带 `--force` 会复用旧 profile。
+- **换机型后**：`hdc list targets` 确认 serial（手机 `63Q0226131002161` / 平板 `5KPBB25901205531`），所有 `devecocli ui *` 都要显式 `--device <serial>`。
+
 - 构建：DevEco Code `build_project`（= `hvigorw assembleHap` 薄封装）或 DevEco Studio GUI；**构建前不动 `local.properties` 的 Linux 侧对应物**（`.stignore` 已排除互不覆盖）。
 - 快速静态检查：`arkts_check`（编辑 ets 后先跑，再全量构建）；**编译期检查以 `assembleHap` 为准**。
 - lint 面板：Linux 侧 codelinter 被商用 CLT 类型门禁卡死（假象），**lint 结论以 Win10 DevEco 实测为准**（首验③，进行中）。
