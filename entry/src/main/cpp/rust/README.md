@@ -84,7 +84,34 @@ rustup 1.29.1 / stable = 1.98.1（与本机系统 rustc 同版，无版本回退
 2. PATH 缺 wrapper 时的报错很迷惑（`linker 'aarch64-linux-ohos-clang' not found`）⇒ 头注释里都写了怎么设。
 3. `rust/wrappers/` 是 `rust/kdc_core/` 的**兄弟目录**，cargo 不会自动发现该 config ⇒ 要么把 wrappers 放进 PATH（本仓库做法），要么显式 `--config`。
 4. wrapper **不加** `-L<llvm/lib/<arch>>`：实测 clang driver 会自行 `-l:libunwind.a` 并从自带 runtime 目录解析；加了 `-L` 还会让 `-c` 编译报 `-Wunused-command-line-argument`（破坏 `-Werror` 构建）。
-5. **`.a` 的产出不经过 linker**：`crate-type=["staticlib"]` 只是把对象归档 ⇒ 真正影响 `.a` 的是 `AR_<triple>`（`ohos-ar`）；wrapper 的 linker 只在 rustc 需要**链接可执行/动态库**时才用得上 —— 本仓库的设备侧 `.so` 由 CMake 的 OHOS clang 链接，故 `-L` 取舍不影响 hvigor 产物（已实测双 ABI 均产出 `.a` 并链入 `.so`）。
+5. **`.a` 的产出既不经过 linker、也不需要外部归档器**：`crate-type=["staticlib"]` 由 rustc **进程内归档** —— rustc 1.98.1 实测：不给任何 `AR_*` 也产出 `.a`，且与 `AR=<工具链 llvm-ar>` 时**字节数完全相同**（见 §5c）；linker 只在 rustc 需要**链接可执行/动态库**时才用得上，而设备侧 `.so` 由 CMake 的 OHOS clang 链接 ⇒ 故 `-L` 取舍与 wrapper 都不影响 hvigor 产物（双 ABI 均产出 `.a` 并链入 `.so`，已实测）。
+
+## 5c. hvigor 集成的跨平台化（2026-09-14，为「合回主线不打断 Win10 DevEco 构建」）
+
+原先 CMake 的 Rust 步骤是 **POSIX-only**：`COMMAND cmake -E env "PATH=<rust/wrappers>:$ENV{PATH}" AR_<triple>=ohos-ar CARGO_TARGET_<TRIPLE>_LINKER=<wrapper> cargo build …`
+—— 三处假设在 Windows 上都不成立：PATH 分隔符应为 `;`、wrapper 是 `#!/bin/sh` 脚本、`ohos-ar` 同样是脚本。
+合回主线后 DevEco/hvigor 走到 cargo 必失败（表现为 CMake 配置阶段找不到命令/链接器）。
+
+现改为**只调 cargo**（不改 PATH、不依赖 sh、不设 AR/linker）：
+
+```cmake
+find_program(RUST_CARGO_EXECUTABLE cargo)      # 缺失 ⇒ FATAL_ERROR + rustup 安装指引
+add_custom_command(OUTPUT ${RUST_LIB}
+    COMMAND ${RUST_CARGO_EXECUTABLE} build --release --target ${RUST_TARGET}
+            --target-dir ${RUST_TARGET_DIR} --manifest-path ${RUST_CRATE_DIR}/Cargo.toml …)
+```
+
+**为什么这样就够（均为实测，非推断）**：
+- **linker 用不上**：`crate-type=["staticlib"]` 不链接；设备侧 `.so` 由 CMake 的 OHOS clang 链接（§5b 第 5 条）。
+- **AR 用不上**：rustc 1.98.1 对 staticlib **进程内归档** —— 不给任何 `AR_*` 也产出 `.a`，且与
+  `AR=<工具链 llvm-ar>` 时**字节数完全相同**（aarch64 23999596 / x86_64 23252468，两 ABI 各验）。
+- **净室验证（2026-09-14）**：全新 worktree 里 `hvigorw --no-daemon assembleHap` ⇒ BUILD SUCCESSFUL；
+  双 ABI `.a` 由本集成产出、大小与验收证据一致；未 strip 的 `.so` 里可见 `kdc_*`（C ABI）与 Rust v0
+  mangled 符号 `_RNCNvNtCsb9jk9Vb6IGI_8kdc_core3ffi18kdc_build_identity0B5_` ⇒ 确实链进了 Rust（非残留）。
+
+⇒ 合回后 Win10/DevEco 侧唯一前提是 **PATH 上有 cargo**（`rustup-init -y` + `rustup target add aarch64-unknown-linux-ohos x86_64-unknown-linux-ohos`）；
+缺失时构建直接给出上面那句安装指引，而不是晦涩报错。`rust/wrappers/` 与其 `.cargo/config.toml` 仅保留给
+「手动交叉链接冒烟」（需要 rustc 真正链接可执行/动态库时）。
 
 ## 6. 已知限制 / 后续
 
