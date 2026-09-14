@@ -14,13 +14,13 @@
 #   cargo build --release --target aarch64-unknown-linux-ohos \
 #               --config ../wrappers/.cargo/config.toml
 #
-# CMake equivalent (env vars beat this file, so it works without --config):
-#   set(ENV{PATH} "${RUST_WRAPPER_DIR}:$ENV{PATH}")
-#   add_custom_command(... COMMAND ${CARGO} build --release --target ${triple}
-#                        WORKING_DIRECTORY ${RUST_CRATE_DIR})
-# or per-target env overrides (no --config needed at all):
-#   CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER=<abs>/aarch64-linux-ohos-clang
-#   CARGO_TARGET_X86_64_UNKNOWN_LINUX_OHOS_LINKER=<abs>/x86_64-linux-ohos-clang
+# CMake equivalent — NOTE (2026-09-14): CMake no longer uses this file nor the
+# wrappers. Its Rust step is now just `cargo build --release --target <triple>`,
+# which works on Windows too because a `staticlib` build neither links nor
+# spawns an external archiver (rustc 1.98.1 archives in-process; measured: the
+# .a is byte-identical with and without AR_*). The wrappers below remain for
+# manual cross-link smoke tests (rustc needs a linker only when producing a
+# binary/dylib — see ../README.md §5b/§5c).
 #
 # WHY BARE NAMES (measured, not assumed): cargo does NOT resolve a relative
 # `linker` value against this file's directory. Bare names are looked up in
