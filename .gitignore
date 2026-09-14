@@ -60,3 +60,5 @@ entry/src/main/cpp/rust/kdc_core/target/
 
 # 构建产物一类（PROCESS §9.1：与 .stignore 对应；Rust cargo target/）
 target/
+# 代码索引缓存（PROCESS §9.1，机器本地）
+.codegraph/
