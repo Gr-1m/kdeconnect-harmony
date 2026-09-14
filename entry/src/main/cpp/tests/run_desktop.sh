@@ -6,6 +6,11 @@ cd "$(dirname "$0")"
 
 OUT=/tmp/kdc_native_tests
 mkdir -p "$OUT"
+
+# R1：packet_io / cert_util 的实现已迁到 Rust（rust/kdc_core），C++ 侧是薄 shim
+# ⇒ 先构建 host 静态库，再把 .a 链进来（与 tests/run.sh 同一做法；脚本把路径打到 stdout）。
+RUST_LIB="$(../rust/build_host.sh)"
+
 make -s -C ../bearssl -j"$(nproc)" BUILD="$OUT/bearssl" lib
 
 gcc -O1 -I../bearssl/inc -I../bearssl/src -I../json -c ../json/cJSON.c -o "$OUT/cJSON.o"
@@ -23,7 +28,7 @@ g++ -std=c++17 -Wall -Wextra -O1 -pipe \
     ../net/net_util.cpp \
     ../net/packet_io.cpp \
     ../payload/payload.cpp \
-    "$OUT/cJSON.o" "$OUT/bearssl/libbearssl.a" \
+    "$OUT/cJSON.o" "$OUT/bearssl/libbearssl.a" "$RUST_LIB" \
     -lpthread \
     -o "$OUT/kdc_desktop"
 

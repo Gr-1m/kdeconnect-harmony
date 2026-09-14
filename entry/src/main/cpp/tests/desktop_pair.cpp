@@ -42,6 +42,12 @@ bool g_connected = false;
 bool g_pairAccepted = false;       // 收到对端 {pair:true}
 bool g_pairRejected = false;       // 收到对端 {pair:false}
 std::string g_verificationCode;    // 本机算出的验证码（与对端通知里的 Key 比对）
+// 接受配对时对端的 deviceId/timestamp：**必须**留到主线程再算验证码 ——
+// 事件回调运行在网络栈的事件循环线程上，在回调里调 netStack() 的任何方法都会与
+// dispatchEvent 持有的锁自锁（实测：收到接受后进程永久卡住，reject 路径不调所以正常）。
+std::string g_pairPeerId;
+int64_t g_pairTimestamp = -1;
+int64_t g_sentPairTs = -1;   // 我方发出的请求时间戳（v8 验证码用它；接受包不带 ts）
 uint64_t g_xferId = 0;
 std::string g_xferState;
 
@@ -138,9 +144,9 @@ void onEvent(const NetEvent &e)
                 std::lock_guard<std::mutex> lk(g_mu);
                 if (pair) {
                     g_pairAccepted = true;
-                    g_verificationCode = netStack().getPairVerificationCode(e.deviceId, ts);
-                    note("[pair] 对端接受配对（timestamp=%lld），本机验证码='%s'",
-                         static_cast<long long>(ts), g_verificationCode.c_str());
+                    g_pairPeerId = e.deviceId;
+                    g_pairTimestamp = ts;
+                    note("[pair] 对端接受配对（timestamp=%lld）", static_cast<long long>(ts));
                 } else {
                     g_pairRejected = true;
                     note("[pair] 对端拒绝/解除配对（pair:false）");
@@ -335,6 +341,7 @@ int main(int argc, char **argv)
     int rc = 0;
     if (mode == "pair") {
         const int64_t ts = static_cast<int64_t>(::time(nullptr));
+        g_sentPairTs = ts;
         char frame[256];
         std::snprintf(frame, sizeof frame,
                       "{\"id\":%lld,\"type\":\"kdeconnect.pair\","
@@ -349,6 +356,13 @@ int main(int argc, char **argv)
         }
         if (waitFor([] { return g_pairAccepted || g_pairRejected; }, 45000, "对端配对应答")) {
             rc = g_pairAccepted ? 0 : 1;
+            if (g_pairAccepted) {
+                // 回到主线程再算（回调线程里算会自锁，见 g_pairPeerId 处注释）
+                // 对端接受包不带 timestamp（v8 语义）⇒ 用我方请求的 ts 算验证码
+                const int64_t codeTs = g_pairTimestamp >= 0 ? g_pairTimestamp : g_sentPairTs;
+                g_verificationCode = ns.getPairVerificationCode(g_pairPeerId, codeTs);
+                note("[*] 本机验证码='%s'（应与桌面端弹窗里的 Key 一致）", g_verificationCode.c_str());
+            }
         } else {
             rc = 1;
         }
