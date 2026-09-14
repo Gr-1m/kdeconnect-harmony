@@ -99,6 +99,11 @@ M2（iOS 功能集插件）主体在 ArkTS 侧（插件注册表/插件基类/�
 4. **契约流程**：DevEco Code 提案接口变更 → 同一改动内更新 `Index.d.ts`（方法名/事件名/字段名/返回语义逐字定稿）→ zcode 按 d.ts 实现 C++ → CodeArts 评审。native 不单方面改 d.ts；d.ts 与实现不一致视为 native bug。
 5. 事件回调必须走 tsfn；构造事件对象用 `napi_create_object` 逐字段组装（与 d.ts 字段一一对应），字符串走 UTF8；回调体内必须建 `napi_handle_scope`。
 6. 事件 `type` 命名与 d.ts 字面量联合类型严格一致；新增事件先改 d.ts 再实现。
+7. **事件回调里不得回调网络栈**：`setEventCallback` 的回调运行在网络栈的**事件循环线程**上，而 `dispatchEvent`
+   的部分路径持有 `connMutex_`/`mu_` ⇒ 回调里调 `netStack()` 的任何方法（`getPairVerificationCode`、`sendPacket`…）
+   都会**自锁**。实测症状：host 工具收到配对「接受」后进程永久卡住（reject 路径不调内部 API，所以正常退出）。
+   NAPI 侧天然安全（threadsafe function 把事件投到 JS 线程，JS 线程回调 native 只是普通加锁等待）；
+   直接注册回调的 host 代码必须把参数存下来、回主线程再算（见 `tests/desktop_pair.cpp` 的 `g_pairPeerId` 用法）。
 
 ## 5b. UDP 发现（2026-09-13，CodeArts MSG73_TO_OMP + 本轮实测）
 
