@@ -29,6 +29,9 @@ export struct DevicesTab {
   // 点设备行（发现页/已连接列表）→ 回到该设备的「功能页」（设备信息 + 大按钮）
   onOpenDevice: (d: DeviceItem) => void = () => {
   };
+  // 剪贴板安全控件授权结果（true=已获临时读权限，可立刻读取并发送）
+  onClipboardPaste: (granted: boolean) => void = () => {
+  };
   onManualConnect: (host: string, port: number) => void = () => {
   };
   onPairDevice: (d: DeviceItem) => void = () => {
@@ -369,6 +372,41 @@ export struct DevicesTab {
   }
 
   // 设备详情（对齐参考稿主页面）：上方设备信息 + 下方大按钮
+  // 剪贴板卡：读本机剪贴板需 `ohos.permission.READ_PASTEBOARD`，而它在 SDK 权限定义里是
+  // `availableLevel: system_basic`（三方应用申请会导致安装失败）→ 必须改用官方**安全控件**
+  // `PasteButton`：用户点击即获**临时读权限**（SUCCESS）。故这张卡内嵌一个小号粘贴控件作为动作入口。
+  @Builder
+  clipboardCard(icon: Resource, title: ResourceStr, desc: ResourceStr) {
+    Column({ space: 6 }) {
+      SymbolGlyph(icon)
+        .fontSize(24)
+        .fontColor([$r('app.color.accent_text')])
+      Text(title)
+        .fontSize(14)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .maxLines(1)
+      Text(desc)
+        .fontSize(11)
+        .fontColor($r('app.color.text_muted'))
+        .maxLines(2)
+      // 安全控件：不可被遮挡、不设透明度；点击回调带授权结果
+      PasteButton({ icon: PasteIconStyle.LINES, text: PasteDescription.PASTE })
+        .fontSize(12)
+        .height(30)
+        .onClick((event: ClickEvent, result: PasteButtonOnClickResult) => {
+          this.onClipboardPaste(result === PasteButtonOnClickResult.SUCCESS);
+        })
+    }
+    .layoutWeight(1)
+    .alignItems(HorizontalAlign.Start)
+    .padding({ left: 14, right: 14, top: 14, bottom: 14 })
+    .borderRadius(16)
+    .backgroundColor($r('app.color.card_bg'))
+    .backgroundBlurStyle(BlurStyle.BACKGROUND_THIN)
+    .border({ width: 1, color: $r('app.color.card_border') })
+  }
+
   @Builder
   deviceDetail(d: DeviceItem) {
     Column({ space: 14 }) {
@@ -423,7 +461,7 @@ export struct DevicesTab {
       Row({ space: 10 }) {
         this.actionCard('send_file', $r('sys.symbol.paperplane'),
           $r('app.string.action_send_file'), $r('app.string.action_send_file_desc'))
-        this.actionCard('clipboard', $r('sys.symbol.text_clipboard'),
+        this.clipboardCard($r('sys.symbol.text_clipboard'),
           $r('app.string.action_clipboard'), $r('app.string.action_clipboard_desc'))
       }
       .width('100%')

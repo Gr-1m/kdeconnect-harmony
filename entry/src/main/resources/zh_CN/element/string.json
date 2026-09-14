@@ -421,6 +421,9 @@
       "value": "插件未装载（对端不支持或未连接）"
     },
     {
+      "name": "toast_clipboard_denied",
+      "value": "未获得剪贴板读取授权"
+    },    {
       "name": "toast_battery_none",
       "value": "无电量数据"
     },

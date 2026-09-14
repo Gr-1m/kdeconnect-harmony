@@ -433,6 +433,9 @@
       "value": "Plugin unavailable (peer unsupported or not connected)"
     },
     {
+      "name": "toast_clipboard_denied",
+      "value": "Clipboard access not granted"
+    },    {
       "name": "toast_battery_none",
       "value": "No battery data"
     },
