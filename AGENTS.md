@@ -12,7 +12,7 @@
 
 > 项目位置：`<workspace>`（本机 CachyOS 工作区，**2026-09-12 起为项目正本**）。此前曾短暂放在 libvirt 共享目录 `/var/lib/libvirt/shares/harmonyDevShare/KDE_connect_hap`（Win10 VM 经 virtiofs 可见，内含 DevEco 专用副本 `kdeconnect-harmony-PreDevEco/`）——**该位置已不再是项目位置，副本已于 2026-09-12 按用户决定整体删除**（DevEco 专用配置存档：`~/WorkSpace2/tools/PreDevEco-deveco-configs-20260912.tar.gz`）。QEMU 模拟器镜像/日志一直在宿主 `~/WorkSpace2/`。
 
-主开发对象 `kdeconnect-harmony-PreDev/`（OpenHarmony API 26 / Stage 模型 / ArkTS，bundleName `org.kde.kdeconnect.harmony`），其余子项目是协议规范与参考实现。本根目录**不是** git 仓库；`kdeconnect-meta` / `kdeconnect-android` / `kdeconnect-kde` 是独立 git 仓库（上游参考代码，通常只读）；**`kdeconnect-harmony-PreDev` 已是 git 仓库**（2026-09-12 初始化，分支 `master`），**中心仓库为 gitcode <https://gitcode.com/Gr1m/kdeconnect-harmony>**（远端尚未同步，见「双机协作」）。**本文件与仓库内 `kdeconnect-harmony-PreDev/AGENTS.md` 是同一份**（仓库版供 Win10 侧 agent 加载），改任一份必须同步另一份（提交需用户授权）。
+主开发对象 `kdeconnect-harmony-PreDev/`（OpenHarmony API 26 / Stage 模型 / ArkTS，bundleName `org.kde.kdeconnect.harmony`），其余子项目是协议规范与参考实现。本根目录**不是** git 仓库；`kdeconnect-meta` / `kdeconnect-android` / `kdeconnect-kde` 是独立 git 仓库（上游参考代码，通常只读）；**`kdeconnect-harmony-PreDev` 已是 git 仓库**（2026-09-12 初始化，分支 `master`），**中心仓库为 gitcode <https://gitcode.com/Gr1m/kdeconnect-harmony>**（**已同步：`dev/zcodeinit` 与 `main` 均已 push，2026-09-15 起**，见「双机协作」）。**本文件与仓库内 `kdeconnect-harmony-PreDev/AGENTS.md` 是同一份**（仓库版供 Win10 侧 agent 加载），改任一份必须同步另一份（提交需用户授权）。
 
 ## 子项目与命令
 
@@ -51,7 +51,7 @@ packet 以换行分隔的 JSON 字符串发送：`{"id", "type", "body", "versio
 
 ## 双机协作（gitcode 中心仓库 + 本机开发 / Win10 DevEco 验证，2026-09-12 起）
 
-- **中心仓库**：<https://gitcode.com/Gr1m/kdeconnect-harmony>（GPL-3.0）。远端 `main` 目前是空壳（仅 `LICENSE` + Qt 风格 `.gitignore`）；本机工程 7 个提交与其历史无共同祖先，**用户已决定暂不同步远端**（不 `remote add`、不 push；**未经用户明确要求勿 commit/push**）。仓库范围**只有 `kdeconnect-harmony-PreDev/` 工程**（meta/android/kde 参考仓库与根 `docs/` 不入仓库）。
+- **中心仓库**：<https://gitcode.com/Gr1m/kdeconnect-harmony>（GPL-3.0）。**已同步（2026-09-15）**：`main` 与本机工程**同根**（初始提交 `8d6c639`），本机开发分支 `dev/zcodeinit` 已 push（首个 push 2026-09-15，`71c7b46..3c34001`），`main` 已推进到与 `dev/zcodeinit` 一致。开发仍在 `dev/zcodeinit`，**每次 push 需用户/CodeArts 明确授权**（CodeArts 掌握时机）。仓库范围**只有 `kdeconnect-harmony-PreDev/` 工程**（meta/android/kde 参考仓库与根 `docs/` 不入仓库）。
 - **本机 CachyOS** 为开发正本（工作区 `<workspace>`）；**Win10**（LTSC 21H1，DevEco Studio 26.0.0.821）用 DevEco 构建、跑模拟器做验证。**Win10 取码方式待其首验后由用户决定**（virtiofs 共享副本路线已废弃：`PreDevEco` 已删，配置存 `~/WorkSpace2/tools/PreDevEco-deveco-configs-20260912.tar.gz`）。**同一文件不要两台机器同时改**。
 - 同步约定：改前先 pull、提交后 push；换行符：Win10 设 `core.autocrlf true`、本机设 `core.autocrlf input`，避免 CRLF diff 噪音。
 - **共享目录的版本标记（2026-09-14 起）**：`.git` **不同步**——Syncthing 搬不动活着的 git 仓库（`index`/`refs` 靠原子重命名与锁，冲突副本无法像普通文件那样手工合并，且会让两台机器都「看起来拥有历史」而破坏单写者不变式）。Win10 侧改用 `AgentsConversion/GIT_REVISION.md` 判断「同步过来的文件对应哪个提交」：由 `tools/sync-revision.sh` 在本机每次提交/合并/切分支后自动刷新（git hook）。新机器/新克隆需执行一次 `tools/sync-revision.sh --install`（hook 只写在本机 `.git/hooks`，不随同步）。该标记文件不是仓库内容，勿手改。
