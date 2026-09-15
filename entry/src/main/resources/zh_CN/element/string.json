@@ -484,6 +484,50 @@
     {
       "name": "toast_run_cmd_failed",
       "value": "命令执行失败"
+    },
+    {
+      "name": "media_dialog_title",
+      "value": "媒体控制"
+    },
+    {
+      "name": "media_empty",
+      "value": "对端没有正在播放的媒体"
+    },
+    {
+      "name": "media_empty_hint",
+      "value": "请先在电脑上打开播放器，然后点「刷新」"
+    },
+    {
+      "name": "media_unknown_track",
+      "value": "未知曲目"
+    },
+    {
+      "name": "media_unknown_artist",
+      "value": "未知艺术家"
+    },
+    {
+      "name": "media_refresh",
+      "value": "刷新"
+    },
+    {
+      "name": "media_loop_none",
+      "value": "关"
+    },
+    {
+      "name": "media_loop_track",
+      "value": "单曲"
+    },
+    {
+      "name": "media_loop_playlist",
+      "value": "列表"
+    },
+    {
+      "name": "media_shuffle",
+      "value": "随机"
+    },
+    {
+      "name": "toast_media_action_failed",
+      "value": "媒体控制命令发送失败"
     }
   ]
 }
