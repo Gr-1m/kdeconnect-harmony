@@ -43,8 +43,12 @@
       {
         // 网络状态监听（NetConnection.register/on('netAvailable')）需要；缺它 register 返回 201，
         // 表现为「切网后不重新广播」。normal 级、系统授予，无运行时弹窗。
-        // P1 起 ConnectivityReportPlugin 读移动网络信号（radio.getSignalInformationSync）也用此权限。
+        // P1 起 ConnectivityReportPlugin 读网络承载（connection.getNetCapabilitiesSync）也用此权限。
         "name": "ohos.permission.GET_NETWORK_INFO"
+      },
+      {
+        // ConnectivityReportPlugin 上报 WiFi 类型/信号（wifiManager.getLinkedInfoSync）需要；normal 级。
+        "name": "ohos.permission.GET_WIFI_INFO"
       }
     ],
     "pages": "$profile:main_pages",
