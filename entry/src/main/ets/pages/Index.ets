@@ -775,6 +775,18 @@ struct Index {
     this.stopMprisTicker();
   }
 
+  // P2（MSG132 §2）：设备断链/离线 → 丢掉该设备的面板镜像 + 关面板停 ticker。
+  // 过期快照若留着，重连前打开面板会显示旧曲目，并继续用本地插值往前跑（假进度）。
+  private forgetMpris(deviceId: string): void {
+    if (deviceId.length === 0) {
+      return;
+    }
+    this.mprisItems = this.mprisItems.filter((m: MprisItem) => m.deviceId !== deviceId);
+    if (this.mprisDeviceId === deviceId) {
+      this.closeMprisDialog();
+    }
+  }
+
   // 控制类动作：插件没装载（对端不支持）或发送失败都给明确提示
   private mediaAction(action: string): void {
     const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
@@ -1085,10 +1097,9 @@ struct Index {
         this.requestedPairIds = this.requestedPairIds.filter((x: string) => x !== did);
         // AP-4：断链卸载该设备插件（onDestroy 必达）
         this.pluginHost?.unloadForDevice(did);
-        // 媒体面板开着这台设备 → 关掉（插件实例已销毁，再点控制键必然失败）
-        if (did !== '' && this.mprisDeviceId === did && this.mprisDialogOpen) {
-          this.closeMprisDialog();
-        }
+        // 媒体面板清账（P2，MSG132 §2）：丢该设备的面板镜像并关面板
+        // （插件实例已销毁，再点控制键必然失败；留着快照还会显示过期曲目）
+        this.forgetMpris(did);
         // 会话中的设备断链 → 连接/配对失败
         if (did !== '' && this.sessionDeviceId === did) {
           if (this.sessionState === 'connecting') {
@@ -1111,6 +1122,8 @@ struct Index {
         }
         this.discoveredDevices = this.discoveredDevices.map(
           (d: DeviceItem) => d.id === lid ? { id: d.id, name: d.name, host: d.host, tcpPort: d.tcpPort, deviceType: d.deviceType, online: false } : d);
+        // 离线同样清账（P2，MSG132 §2）：面板镜像与弹层都不留过期数据
+        this.forgetMpris(lid);
         this.log(`lost ${event.deviceId} (kept in list as offline)`);
         break;
       }
