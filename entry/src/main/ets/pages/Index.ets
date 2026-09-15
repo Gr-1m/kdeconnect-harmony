@@ -18,6 +18,11 @@ import { SharePlugin } from '../plugins/SharePlugin';
 import { BatteryPlugin } from '../plugins/BatteryPlugin';
 import { ClipboardPlugin } from '../plugins/ClipboardPlugin';
 import { FindMyPhonePlugin } from '../plugins/FindMyPhonePlugin';
+import { RunCommandPlugin, RunCommandEntry } from '../plugins/RunCommandPlugin';
+import { ConnectivityReportPlugin } from '../plugins/ConnectivityReportPlugin';
+import { MprisPlugin } from '../plugins/MprisPlugin';
+import { RemoteInputPlugin } from '../plugins/RemoteInputPlugin';
+import { NotificationPlugin } from '../plugins/NotificationPlugin';
 import { DeviceItem, RememberedDevice, BatteryItem } from '../model/DeviceModels';
 import { PayloadTransfer, PayloadDirection, PayloadState } from '../model/PayloadModels';
 import { TrustedDevice } from '../model/TrustModels';
@@ -127,6 +132,11 @@ struct Index {
   @State payloads: PayloadTransfer[] = [];
   // 插件推来的展示项（目前：电量）
   @State batteryItems: BatteryItem[] = [];
+  // 对端（kdeconnect.runcommand）下发的预设命令列表：只保存当前设备的，供「远程命令」弹窗展示
+  @State runCommands: RunCommandEntry[] = [];
+  @State runCommandDeviceId: string = '';
+  // 远程命令弹窗显隐
+  @State runCommandDialogOpen: boolean = false;
   // 状态栏 / 导航栏安全区高度（EntryAbility 写入，单位 px）
   @StorageProp('statusBarHeightPx') statusBarHeightPx: number = 0;
   @StorageProp('navBarHeightPx') navBarHeightPx: number = 0;
@@ -143,6 +153,9 @@ struct Index {
   private pluginHost: PluginHost | undefined = undefined;
   // AP-3：信任设备（Preferences 持久化，UI 用 rememberedDevices 展示）
   private trustedDevices: TrustedDevice[] = [];
+  // 信任表是否已从 Preferences 加载完成；加载前连上的设备先排队，加载后再补记
+  private trustLoaded: boolean = false;
+  private pendingKnown: TrustedDevice[] = [];
   private pageShown: boolean = false;
   private settingsLoaded: boolean = false;
   private settingsApplied: boolean = false;
@@ -198,6 +211,13 @@ struct Index {
           }
         }
       }
+      // 加载完成后才允许写回：否则「启动即连接」时 rememberKnown 会拿着空表 persist，
+      // 把已存的已知设备截断（实测丢过条目）。先把这期间连上的设备排队，加载完再补记。
+      this.trustLoaded = true;
+      for (const p of this.pendingKnown) {
+        this.rememberKnown(p.id, p.name);
+      }
+      this.pendingKnown = [];
     } catch (e) {
       // Preferences load failed, will generate new below
     }
@@ -242,6 +262,12 @@ struct Index {
     this.pluginRegistry.register('battery', (): BatteryPlugin => new BatteryPlugin());
     this.pluginRegistry.register('clipboard', (): ClipboardPlugin => new ClipboardPlugin());
     this.pluginRegistry.register('findmyphone', (): FindMyPhonePlugin => new FindMyPhonePlugin());
+    // P1（MSG112）：远程命令 + 网络状态上报已实现；MPRIS/远程输入/通知仅声明能力（UI 属 P2）
+    this.pluginRegistry.register('runcommand', (): RunCommandPlugin => new RunCommandPlugin());
+    this.pluginRegistry.register('connectivityreport', (): ConnectivityReportPlugin => new ConnectivityReportPlugin());
+    this.pluginRegistry.register('mpris', (): MprisPlugin => new MprisPlugin());
+    this.pluginRegistry.register('remoteinput', (): RemoteInputPlugin => new RemoteInputPlugin());
+    this.pluginRegistry.register('notification', (): NotificationPlugin => new NotificationPlugin());
     this.pluginHost = new PluginHost(this.pluginRegistry, (m: string): void => {
       this.log(m);
     });
@@ -513,8 +539,31 @@ struct Index {
       });
   }
 
-  // 插件 → UI 事件（电量等）
+  // 插件 → UI 事件（电量 / 远程命令 / 剪贴板索取等）
   private onPluginEvent(deviceId: string, kind: string, data: string): void {
+    if (kind === 'runcommand.list') {
+      this.runCommandDeviceId = deviceId;
+      this.runCommands = this.commandsOf(deviceId);
+      this.log(`run command list <- ${deviceId} (${data})`);
+      return;
+    }
+    if (kind === 'runcommand.output') {
+      const parts: string[] = data.split('|');
+      const ok: boolean = parts.length > 0 && parts[0] === '1';
+      const code: string = parts.length > 1 ? parts[1] : '?';
+      const text: string = parts.length > 2 ? parts[2] : '';
+      const head: string = this.resText(ok
+        ? $r('app.string.toast_run_cmd_ok').id : $r('app.string.toast_run_cmd_failed').id);
+      this.toastText(text.length > 0 ? `${head} (exit=${code}): ${text}` : `${head} (exit=${code})`);
+      this.log(`run command output <- ${deviceId}: success=${ok} exit=${code}`);
+      return;
+    }
+    if (kind === 'clipboard.request') {
+      // 对端索取本机剪贴板：三方应用无权读剪贴板，只能提示用户点「粘贴」按钮授权发送
+      this.toastText(this.resText($r('app.string.toast_clipboard_requested').id));
+      this.log(`clipboard requested by ${deviceId}`);
+      return;
+    }
     if (kind !== 'battery') {
       this.log(`plugin event ${kind} from ${deviceId}`);
       return;
@@ -531,6 +580,17 @@ struct Index {
       this.batteryItems = this.batteryItems.concat([item]);
     }
     this.log(`battery ${text} <- ${deviceId}`);
+  }
+
+  // 取某设备已收到的预设命令列表（命令由 RunCommandPlugin 实例持有）
+  private commandsOf(deviceId: string): RunCommandEntry[] {
+    const list: PluginBase[] = this.pluginHost === undefined ? [] : this.pluginHost.pluginsFor(deviceId);
+    for (const p of list) {
+      if (p instanceof RunCommandPlugin) {
+        return p.commandList();
+      }
+    }
+    return [];
   }
 
   // AP-4：非核心 packet 分发到插件（返回 true 表示已处理）
@@ -639,6 +699,7 @@ struct Index {
       return r;
     });
     this.persistTrust();
+    this.syncSelectedDevice();
     // WP-2 钉扎：登记对端证书，后续连接强校验（证书不符 → error EACCES + 断链）
     if (peerCert.length > 0) {
       try {
@@ -761,6 +822,7 @@ struct Index {
             this.log(`connected ${cid} -> notice 连接成功`);
           }
         }
+        this.syncSelectedDevice();
         this.log(`connected ${event.deviceId} role=${event.role}`);
         break;
       }
@@ -780,6 +842,7 @@ struct Index {
             this.failPairing('disconnected', Index.ERR_DISCONNECTED);
           }
         }
+        this.syncSelectedDevice();
         this.log(`disconnected ${event.deviceId}`);
         break;
       }
@@ -1157,27 +1220,61 @@ struct Index {
       this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
       return;
     }
-    if (key === 'ring') {
+    if (key === 'clipboard_request') {
+      // 卡片整体点击：索取对端剪贴板（对端回复 kdeconnect.clipboard → 插件写入本机剪贴板）
       for (const p of list) {
-        if (p instanceof PingPlugin) {
-          const ok: boolean = p.sendPing('KDE Connect HarmonyOS');
+        if (p instanceof ClipboardPlugin) {
+          const ok: boolean = p.requestPeerClipboard();
           this.toastText(this.resText(ok
-            ? $r('app.string.toast_ping_sent').id
-            : $r('app.string.toast_ping_failed').id));
+            ? $r('app.string.toast_clipboard_request_sent').id
+            : $r('app.string.toast_clipboard_failed').id));
           return;
         }
       }
       this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
       return;
     }
-    if (key === 'battery') {
-      const b: BatteryItem | undefined = this.batteryItems.find((x: BatteryItem) => x.deviceId === id);
-      const value: string = b === undefined ? this.resText($r('app.string.toast_battery_none').id) : b.text;
-      this.toastText(`${this.resText($r('app.string.action_battery').id)}: ${value}`);
+    if (key === 'find_device') {
+      // 查找设备：发 `kdeconnect.ping`（对端 KDE 会弹通知/响铃 —— 原「响铃」按钮的行为，用户 2026-09-15 裁决）。
+      // 注：`kdeconnect.findmyphone.request` 在 KDE 桌面端不弹通知（用户实测），故不再由按钮发送。
+      for (const p of list) {
+        if (p instanceof PingPlugin) {
+          const ok: boolean = p.sendPing(this.deviceName);
+          this.toastText(this.resText(ok
+            ? $r('app.string.toast_find_device_sent').id
+            : $r('app.string.toast_find_device_failed').id));
+          return;
+        }
+      }
+      this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
       return;
     }
-    // find_phone：协议方向是「桌面 → 手机」（本机没有可发的 request）；media：MPRIS 待字段表（计划 C）
+    if (key === 'run_command') {
+      // 远程命令：弹对端预设命令列表（未收到 commandList 时给提示）
+      this.runCommandDeviceId = id;
+      this.runCommands = this.commandsOf(id);
+      this.runCommandDialogOpen = true;
+      this.log(`run command dialog: ${this.runCommands.length} entries for ${id}`);
+      return;
+    }
+    // remote_input / media：P1 只声明能力，UI 属 P2（MSG112 §4）→ 占位提示
     this.toastPlaceholder(key);
+  }
+
+  // 远程命令弹窗里点某条命令 → 请求对端执行
+  private runCommand(key: string): void {
+    const list: PluginBase[] = this.pluginHost === undefined ? [] : this.pluginHost.pluginsFor(this.runCommandDeviceId);
+    this.runCommandDialogOpen = false;
+    for (const p of list) {
+      if (p instanceof RunCommandPlugin) {
+        const ok: boolean = p.run(key);
+        this.toastText(this.resText(ok
+          ? $r('app.string.toast_run_cmd_sent').id
+          : $r('app.string.toast_run_cmd_send_failed').id));
+        return;
+      }
+    }
+    this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
   }
 
   // 切底栏页签（HdsTabs 控制器）；失败只记日志，不阻塞
@@ -1597,6 +1694,21 @@ struct Index {
     return this.rememberedDevices.some((r: RememberedDevice) => r.id === deviceId && r.paired);
   }
 
+  // 「已连接设备」分区只展示选中设备的详情/功能页：默认自动选中第一台已连接设备；
+  // 连接断开或选中设备不在列表里时重新收口（没有已连接设备则清空选中 → 页面给选设备提示）
+  private syncSelectedDevice(): void {
+    const live: DeviceItem[] = this.connectedShown();
+    if (live.length === 0) {
+      this.selectedDeviceId = '';
+      return;
+    }
+    const stillThere: boolean = live.some((d: DeviceItem) => d.id === this.selectedDeviceId);
+    if (!stillThere) {
+      this.selectedDeviceId = live[0].id;
+      this.deviceSection = 0;
+    }
+  }
+
   // ---- 三态互斥列表（用户 2026-09-14 规则，对齐蓝牙/星闪的已知设备模型）----
   // 已连接 = 已配对且在线；发现 = 未配对且在线（实时连接 ∪ 广播发现）；记住的设备 = 已知
   // （配对过或曾经连接过）但当前离线。**同一设备只会出现在其中一个列表**；三个列表前的
@@ -1652,6 +1764,12 @@ struct Index {
   // 断链后进「记住的设备」列表，与蓝牙/星闪一致：连过的设备不会凭空消失）
   private rememberKnown(id: string, name: string): void {
     if (id === '') {
+      return;
+    }
+    // 信任表尚未加载完成 → 先排队（防止用空表覆写持久化数据）
+    if (!this.trustLoaded) {
+      const pending: TrustedDevice = { id: id, name: name, certPem: '', pairedAt: 0, paired: false };
+      this.pendingKnown = this.pendingKnown.concat([pending]);
       return;
     }
     const existing: TrustedDevice | undefined = this.trustedDevices.find((t: TrustedDevice) => t.id === id);
@@ -1755,6 +1873,14 @@ struct Index {
     })
   }
 
+  // 发现列表展示用：IP:端口（端口未知时只给 IP；地址未知给占位文案）
+  private addressOf(d: DeviceItem): ResourceStr {
+    if (d.host === '') {
+      return $r('app.string.address_pending');
+    }
+    return d.tcpPort > 0 ? `${d.host}:${d.tcpPort}` : d.host;
+  }
+
   // 抽屉里的「发现设备」行：点击/配对按钮 = 发起配对（配对成功才转入「已连接」）
   @Builder
   drawerPairRow(d: DeviceItem) {
@@ -1777,7 +1903,8 @@ struct Index {
           .fontColor($r('app.color.text_primary'))
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(d.id)
+        // 发现行只显示 IP:端口（设备 ID 在配对弹窗里核对）
+        Text(this.addressOf(d))
           .fontSize(10)
           .fontColor($r('app.color.text_muted'))
           .fontFamily('monospace')
@@ -2075,6 +2202,9 @@ struct Index {
                 onClipboardPaste: (granted: boolean): void => {
                   this.onClipboardPasteResult(granted);
                 },
+                onClipboardRequest: (): void => {
+                  this.onDeviceAction('clipboard_request');
+                },
                 onRefreshDiscovery: (): void => {
                   this.triggerDiscoveryBroadcast();
                 },
@@ -2204,6 +2334,15 @@ struct Index {
               .fontColor($r('app.color.text_secondary'))
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
+            // 设备 ID 在弹窗里核对（列表里只显示 IP:端口，用户 2026-09-14）
+            if (this.sessionDeviceId.length > 0) {
+              Text(`${this.resText($r('app.string.settings_device_id').id)}: ${this.sessionDeviceId}`)
+                .fontSize(11)
+                .fontColor($r('app.color.text_muted'))
+                .fontFamily('monospace')
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+            }
             Column({ space: 4 }) {
               Text($r('app.string.pair_dialog_code_label'))
                 .fontSize(12)
@@ -2272,6 +2411,94 @@ struct Index {
         .alignItems(HorizontalAlign.Center)
         .backgroundColor('#99000000')
         .transition(TransitionEffect.OPACITY)
+      }
+
+      // 远程命令弹窗（P1，MSG112 §1）：展示对端下发的预设命令列表，点一条即请求执行
+      if (this.runCommandDialogOpen) {
+        Column() {
+          Column({ space: 12 }) {
+            Text($r('app.string.run_command_dialog_title'))
+              .fontSize(16)
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.text_primary'))
+            Text(this.displayNameOf(this.runCommandDeviceId))
+              .fontSize(12)
+              .fontColor($r('app.color.text_muted'))
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+            if (this.runCommands.length === 0) {
+              Text($r('app.string.run_command_empty'))
+                .fontSize(13)
+                .fontColor($r('app.color.text_secondary'))
+              Text($r('app.string.run_command_empty_hint'))
+                .fontSize(11)
+                .fontColor($r('app.color.text_muted'))
+            } else {
+              Scroll() {
+                Column({ space: 8 }) {
+                  ForEach(this.runCommands, (c: RunCommandEntry) => {
+                    Column({ space: 2 }) {
+                      Text(c.name)
+                        .fontSize(14)
+                        .fontColor($r('app.color.text_primary'))
+                        .maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        .width('100%')
+                      if (c.command.length > 0) {
+                        Text(c.command)
+                          .fontSize(10)
+                          .fontColor($r('app.color.text_muted'))
+                          .fontFamily('monospace')
+                          .maxLines(1)
+                          .textOverflow({ overflow: TextOverflow.Ellipsis })
+                          .width('100%')
+                      }
+                    }
+                    .width('100%')
+                    .alignItems(HorizontalAlign.Start)
+                    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+                    .borderRadius(12)
+                    .backgroundColor($r('app.color.chip_bg'))
+                    .onClick(() => {
+                      this.runCommand(c.key);
+                    })
+                  }, (c: RunCommandEntry) => c.key)
+                }
+                .width('100%')
+              }
+              .width('100%')
+              .constraintSize({ maxHeight: 320 })
+              .align(Alignment.TopStart)
+              .scrollBar(BarState.Off)
+            }
+            Button($r('app.string.action_cancel'))
+              .width('100%')
+              .height(42)
+              .fontSize(14)
+              .backgroundColor($r('app.color.chip_bg'))
+              .fontColor($r('app.color.text_secondary'))
+              .borderRadius(12)
+              .onClick(() => {
+                this.runCommandDialogOpen = false;
+              })
+          }
+          .width('86%')
+          .padding(20)
+          .borderRadius(20)
+          .backgroundColor($r('app.color.card_bg'))
+          .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
+          .border({ width: 1, color: $r('app.color.card_border') })
+          .alignItems(HorizontalAlign.Center)
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .backgroundColor('#99000000')
+        .transition(TransitionEffect.OPACITY)
+        .onClick(() => {
+          this.runCommandDialogOpen = false;
+        })
       }
 
     }

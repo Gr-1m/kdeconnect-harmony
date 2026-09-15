@@ -338,28 +338,28 @@
       "value": "与对端共享剪贴板"
     },
     {
-      "name": "action_find_phone",
-      "value": "查找手机"
+      "name": "action_find_device",
+      "value": "查找设备"
     },
     {
-      "name": "action_find_phone_desc",
+      "name": "action_find_device_desc",
       "value": "响铃并弹出提示"
     },
     {
-      "name": "action_ring",
-      "value": "响铃"
+      "name": "action_remote_input",
+      "value": "远程输入"
     },
     {
-      "name": "action_ring_desc",
-      "value": "让对端设备发声"
+      "name": "action_remote_input_desc",
+      "value": "作为对端触控板与键盘"
     },
     {
-      "name": "action_battery",
-      "value": "电量"
+      "name": "action_run_command",
+      "value": "远程命令"
     },
     {
-      "name": "action_battery_desc",
-      "value": "查看对端电量状态"
+      "name": "action_run_command_desc",
+      "value": "执行对端预设命令"
     },
     {
       "name": "action_media",
@@ -368,6 +368,18 @@
     {
       "name": "action_media_desc",
       "value": "控制对端播放"
+    },
+    {
+      "name": "run_command_dialog_title",
+      "value": "远程命令"
+    },
+    {
+      "name": "run_command_empty",
+      "value": "尚未收到对端的命令列表"
+    },
+    {
+      "name": "run_command_empty_hint",
+      "value": "对端连接后会下发预设命令列表"
     },
     {
       "name": "device_detail_title",
@@ -440,6 +452,38 @@
     {
       "name": "toast_not_implemented",
       "value": "功能开发中"
+    },
+    {
+      "name": "toast_clipboard_request_sent",
+      "value": "已向对端索取剪贴板"
+    },
+    {
+      "name": "toast_clipboard_requested",
+      "value": "对端索取剪贴板：点「粘贴」发送本机剪贴板"
+    },
+    {
+      "name": "toast_find_device_sent",
+      "value": "已请求对端响铃"
+    },
+    {
+      "name": "toast_find_device_failed",
+      "value": "查找请求发送失败"
+    },
+    {
+      "name": "toast_run_cmd_sent",
+      "value": "已发送执行请求"
+    },
+    {
+      "name": "toast_run_cmd_send_failed",
+      "value": "执行请求发送失败"
+    },
+    {
+      "name": "toast_run_cmd_ok",
+      "value": "命令执行完成"
+    },
+    {
+      "name": "toast_run_cmd_failed",
+      "value": "命令执行失败"
     }
   ]
 }

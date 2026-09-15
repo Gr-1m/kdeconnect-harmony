@@ -44,6 +44,9 @@ export struct DevicesTab {
   // 剪贴板安全控件授权结果（true=已获临时读权限，可立刻读取并发送）
   onClipboardPaste: (granted: boolean) => void = () => {
   };
+  // 剪贴板卡片整体点击 → 索取对端剪贴板（kdeconnect.clipboard.connect，MSG112 §1 双向）
+  onClipboardRequest: () => void = () => {
+  };
   onManualConnect: (host: string, port: number) => void = () => {
   };
   onPairDevice: (d: DeviceItem) => void = () => {
@@ -155,7 +158,8 @@ export struct DevicesTab {
           .fontColor($r('app.color.text_primary'))
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(d.id)
+        // 已连接行显示 deviceId（身份稳定）；发现行显示 IP:端口（ID 移到配对弹窗核对）
+        Text(connected ? d.id : this.addressText(d))
           .fontSize(9)
           .fontColor($r('app.color.text_muted'))
           .fontFamily('monospace')
@@ -378,19 +382,17 @@ export struct DevicesTab {
               .backgroundColor($r('app.color.chip_bg'))
           }
         }
-        Text(d.id)
-          .fontSize(10)
-          .fontColor($r('app.color.text_muted'))
-          .fontFamily('monospace')
-          .maxLines(1)
+        // 列表只展示 IP:端口（设备 ID 挪到配对弹窗里核对，用户 2026-09-14）
         Text(this.addressText(d))
           .fontSize(10)
           .fontColor($r('app.color.text_muted'))
           .fontFamily('monospace')
           .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
+
       // 用户 2026-09-13 裁决：配对统一在「发现设备」页（KDE 发现后会自动连接 ⇒ 不再提供「连接」按钮）。
       // 行内信息：设备名称 + uuid + ip:port；按钮：配对 / 已配对（解除配对）/ 等待确认。
       if (this.isPaired(d.id)) {
@@ -522,6 +524,7 @@ export struct DevicesTab {
   @Builder
   clipboardCard(icon: Resource, title: ResourceStr, desc: ResourceStr) {
     Column() {
+      // 说明见下方注释：整卡点击 = 索取对端剪贴板；控件点击 = 授权后发送本机剪贴板
       Column({ space: 6 }) {
         SymbolGlyph(icon)
           .fontSize(24)
@@ -555,6 +558,9 @@ export struct DevicesTab {
     .backgroundColor($r('app.color.card_bg'))
     .backgroundBlurStyle(BlurStyle.BACKGROUND_THIN)
     .border({ width: 1, color: $r('app.color.card_border') })
+    .onClick(() => {
+      this.onClipboardRequest();
+    })
   }
 
   @Builder
@@ -621,23 +627,24 @@ export struct DevicesTab {
 
       // 大按钮：暂为占位（功能未实现）
       // 自适应列数：按主区实测宽度 2 列 / 3 列；所有卡片统一 ACTION_CARD_HEIGHT 保证对齐
+      // 6 个按钮按 MSG112 §1 定版：发送文件 / 剪贴板（双向）/ 查找设备 / 远程输入 / 远程命令 / 媒体控制
       if (this.cardColumns() >= 3) {
         Row({ space: 10 }) {
           this.actionCard('send_file', $r('sys.symbol.paperplane'),
             $r('app.string.action_send_file'), $r('app.string.action_send_file_desc'))
           this.clipboardCard($r('sys.symbol.text_clipboard'),
             $r('app.string.action_clipboard'), $r('app.string.action_clipboard_desc'))
-          this.actionCard('find_phone', $r('sys.symbol.location_up'),
-            $r('app.string.action_find_phone'), $r('app.string.action_find_phone_desc'))
+          this.actionCard('find_device', $r('sys.symbol.location_up'),
+            $r('app.string.action_find_device'), $r('app.string.action_find_device_desc'))
         }
         .width('100%')
         .alignItems(VerticalAlign.Top)
 
         Row({ space: 10 }) {
-          this.actionCard('ring', $r('sys.symbol.bell'),
-            $r('app.string.action_ring'), $r('app.string.action_ring_desc'))
-          this.actionCard('battery', $r('sys.symbol.battery'),
-            $r('app.string.action_battery'), $r('app.string.action_battery_desc'))
+          this.actionCard('remote_input', $r('sys.symbol.touchpad'),
+            $r('app.string.action_remote_input'), $r('app.string.action_remote_input_desc'))
+          this.actionCard('run_command', $r('sys.symbol.play_circle'),
+            $r('app.string.action_run_command'), $r('app.string.action_run_command_desc'))
           this.actionCard('media', $r('sys.symbol.screen_share'),
             $r('app.string.action_media'), $r('app.string.action_media_desc'))
         }
@@ -654,17 +661,17 @@ export struct DevicesTab {
         .alignItems(VerticalAlign.Top)
 
         Row({ space: 10 }) {
-          this.actionCard('find_phone', $r('sys.symbol.location_up'),
-            $r('app.string.action_find_phone'), $r('app.string.action_find_phone_desc'))
-          this.actionCard('ring', $r('sys.symbol.bell'),
-            $r('app.string.action_ring'), $r('app.string.action_ring_desc'))
+          this.actionCard('find_device', $r('sys.symbol.location_up'),
+            $r('app.string.action_find_device'), $r('app.string.action_find_device_desc'))
+          this.actionCard('remote_input', $r('sys.symbol.touchpad'),
+            $r('app.string.action_remote_input'), $r('app.string.action_remote_input_desc'))
         }
         .width('100%')
         .alignItems(VerticalAlign.Top)
 
         Row({ space: 10 }) {
-          this.actionCard('battery', $r('sys.symbol.battery'),
-            $r('app.string.action_battery'), $r('app.string.action_battery_desc'))
+          this.actionCard('run_command', $r('sys.symbol.play_circle'),
+            $r('app.string.action_run_command'), $r('app.string.action_run_command_desc'))
           this.actionCard('media', $r('sys.symbol.screen_share'),
             $r('app.string.action_media'), $r('app.string.action_media_desc'))
         }
@@ -726,38 +733,27 @@ export struct DevicesTab {
   @Builder
   sectionContent() {
     Column({ space: 8 }) {
-      Row({ space: 8 }) {
-        Text(this.sectionTitleOf(this.deviceSection))
-          .fontSize(13)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .layoutWeight(1)
+      // 「已连接设备」分区：只有选中设备（默认自动选中已连接的第一台）时才显示标题 + 详情页；
+      // 没有可选设备时不再渲染一个空壳页，直接给「请选择设备查看功能」提示
+      if (!(this.deviceSection === 0 && !this.selectedDeviceVisible())) {
+        Row({ space: 8 }) {
+          Text(this.sectionTitleOf(this.deviceSection))
+            .fontSize(13)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .layoutWeight(1)
+        }
+        .width('100%')
       }
-      .width('100%')
       if (this.deviceSection === 0) {
-        // 横屏（并排侧栏）：右侧**只显示设备详情**，未选中时给提示（列表在左侧栏）
-        if (this.sideBySide) {
-          if (this.selectedDeviceVisible()) {
-            ForEach(this.connectedDevices.filter((d: DeviceItem) => d.id === this.selectedDeviceId),
-              (d: DeviceItem) => {
-                this.deviceDetail(d)
-              }, (d: DeviceItem) => d.id)
-          } else {
-            this.emptyHint($r('app.string.select_device_hint'))
-          }
-        } else if (this.selectedDeviceVisible()) {
-          // 竖屏（抽屉）：选中了设备 → 详情（信息 + 大按钮）；否则维持已连接列表
+        // 已连接设备只保留「详情/功能页」，默认直接用（自动选中第一台已连接设备）
+        if (this.selectedDeviceVisible()) {
           ForEach(this.connectedDevices.filter((d: DeviceItem) => d.id === this.selectedDeviceId),
             (d: DeviceItem) => {
               this.deviceDetail(d)
             }, (d: DeviceItem) => d.id)
         } else {
-          if (this.connectedDevices.length === 0) {
-            this.emptyHint($r('app.string.group_empty'))
-          }
-          ForEach(this.connectedDevices, (d: DeviceItem) => {
-            this.connectedRow(d)
-          }, (d: DeviceItem) => d.id)
+          this.emptyHint($r('app.string.select_device_hint'))
         }
       } else if (this.deviceSection === 1) {
         // 横屏：发现列表在左侧栏（带下拉刷新与配对按钮），右侧不再重复
