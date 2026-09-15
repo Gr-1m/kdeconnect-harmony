@@ -496,6 +496,50 @@
     {
       "name": "toast_run_cmd_failed",
       "value": "Command failed"
+    },
+    {
+      "name": "media_dialog_title",
+      "value": "Media control"
+    },
+    {
+      "name": "media_empty",
+      "value": "No media on the peer"
+    },
+    {
+      "name": "media_empty_hint",
+      "value": "Start a media player on the peer, then tap Refresh"
+    },
+    {
+      "name": "media_unknown_track",
+      "value": "Unknown track"
+    },
+    {
+      "name": "media_unknown_artist",
+      "value": "Unknown artist"
+    },
+    {
+      "name": "media_refresh",
+      "value": "Refresh"
+    },
+    {
+      "name": "media_loop_none",
+      "value": "Off"
+    },
+    {
+      "name": "media_loop_track",
+      "value": "Single"
+    },
+    {
+      "name": "media_loop_playlist",
+      "value": "List"
+    },
+    {
+      "name": "media_shuffle",
+      "value": "Shuffle"
+    },
+    {
+      "name": "toast_media_action_failed",
+      "value": "Media command failed"
     }
   ]
 }

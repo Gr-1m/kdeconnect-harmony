@@ -25,6 +25,7 @@ import { MprisPlugin } from '../plugins/MprisPlugin';
 import { RemoteInputPlugin } from '../plugins/RemoteInputPlugin';
 import { NotificationPlugin } from '../plugins/NotificationPlugin';
 import { DeviceItem, RememberedDevice, BatteryItem } from '../model/DeviceModels';
+import { MprisItem, MprisSnapshot, emptyMprisItem, mprisDisplayPos, mprisTimeText, mprisPlayerText } from '../model/MprisModels';
 import { PayloadTransfer, PayloadDirection, PayloadState } from '../model/PayloadModels';
 import { TrustedDevice } from '../model/TrustModels';
 import { TrustStore } from '../common/TrustStore';
@@ -126,6 +127,14 @@ struct Index {
   @State selectedDeviceId: string = '';
   private sessionTimerId: number = -1;
   private noticeTimerId: number = -1;
+  // 媒体面板的 1s 插值时钟（仅面板打开时运行，关闭/退出必清）
+  private mprisTickerId: number = -1;
+  // 进度/音量 Slider 的「用户是否真在拖」标志。
+  // 实测坑：Slider 的 onChange 在**程序性**改 value/max 时也会回调（面板刚打开时 length 从 -1
+  // 变成真实值 ⇒ 回调被当成 Click/End）→ 误发 SetPosition(1)，把对端播放位置拽回开头。
+  // 因此只有先收到 Begin（真拖动才会发）的这一次才算用户操作。
+  private mprisSeekDragging: boolean = false;
+  private mprisVolDragging: boolean = false;
   // 局域网发现（MSG73/MSG74）：网络变化时触发 native 重新广播 identity
   private netConnection: connection.NetConnection | undefined = undefined;
   private netConnRegistered: boolean = false;
@@ -138,6 +147,13 @@ struct Index {
   @State runCommandDeviceId: string = '';
   // 远程命令弹窗显隐
   @State runCommandDialogOpen: boolean = false;
+  // 媒体控制面板（方向 1：手机控电脑端播放器）：按设备镜像对端播放器状态
+  @State mprisItems: MprisItem[] = [];
+  @State mprisDeviceId: string = '';
+  @State mprisDialogOpen: boolean = false;
+  // 本地时钟（1s ticker 驱动）：进度条位置由 mprisDisplayPos() 用「收包时刻 + 经过时间」插值，
+  // 否则对端只在变化时推 pos，播放中进度条会一动不动。
+  @State mprisNowMs: number = 0;
   // 状态栏 / 导航栏安全区高度（EntryAbility 写入，单位 px）
   @StorageProp('statusBarHeightPx') statusBarHeightPx: number = 0;
   @StorageProp('navBarHeightPx') navBarHeightPx: number = 0;
@@ -314,6 +330,8 @@ struct Index {
 
   aboutToDisappear(): void {
     this.unregisterNetworkListener();
+    // 媒体面板的插值时钟必须清掉（否则页面销毁后仍在跑）
+    this.stopMprisTicker();
     try {
       native.stop();
     } catch (e) {
@@ -580,6 +598,25 @@ struct Index {
       this.log(`clipboard requested by ${deviceId}`);
       return;
     }
+    // 媒体控制（方向 1）：对端播放器列表 / 当前播放器状态（插件已做可见字段去重，这里不重复打日志）
+    if (kind === 'mpris.playerList') {
+      try {
+        const list: string[] = JSON.parse(data) as string[];
+        this.setMprisList(deviceId, list);
+      } catch (e) {
+        this.log(`mpris player list parse failed <- ${deviceId}`);
+      }
+      return;
+    }
+    if (kind === 'mpris.playerUpdate') {
+      try {
+        const snap: MprisSnapshot = JSON.parse(data) as MprisSnapshot;
+        this.setMprisSnapshot(deviceId, snap);
+      } catch (e) {
+        this.log(`mpris player update parse failed <- ${deviceId}`);
+      }
+      return;
+    }
     if (kind !== 'battery') {
       this.log(`plugin event ${kind} from ${deviceId}`);
       return;
@@ -607,6 +644,204 @@ struct Index {
       }
     }
     return [];
+  }
+
+  // ========== 媒体控制（方向 1：手机控电脑端播放器，FEATURE_PLAN_MPRIS §3）==========
+  // 按设备镜像对端播放器状态：@State mprisItems（对齐 batteryItems 的写法）
+  private mprisItemOf(deviceId: string): MprisItem {
+    for (const m of this.mprisItems) {
+      if (m.deviceId === deviceId) {
+        return m;
+      }
+    }
+    return emptyMprisItem(deviceId);
+  }
+
+  private putMpris(next: MprisItem): void {
+    const exists: boolean = this.mprisItems.some((m: MprisItem) => m.deviceId === next.deviceId);
+    if (exists) {
+      this.mprisItems = this.mprisItems.map((m: MprisItem) => m.deviceId === next.deviceId ? next : m);
+    } else {
+      this.mprisItems = this.mprisItems.concat([next]);
+    }
+  }
+
+  private setMprisList(deviceId: string, list: string[]): void {
+    const cur: MprisItem = this.mprisItemOf(deviceId);
+    const next: MprisItem = {
+      deviceId: cur.deviceId,
+      playerList: list,
+      currentPlayer: cur.currentPlayer,
+      gotAny: true,
+      snapshot: cur.snapshot
+    };
+    this.putMpris(next);
+  }
+
+  private setMprisSnapshot(deviceId: string, snap: MprisSnapshot): void {
+    const cur: MprisItem = this.mprisItemOf(deviceId);
+    const next: MprisItem = {
+      deviceId: cur.deviceId,
+      playerList: cur.playerList,
+      currentPlayer: snap.player.length > 0 ? snap.player : cur.currentPlayer,
+      gotAny: true,
+      snapshot: snap
+    };
+    this.putMpris(next);
+  }
+
+  private mprisPluginOf(deviceId: string): MprisPlugin | undefined {
+    const list: PluginBase[] = this.pluginHost === undefined ? [] : this.pluginHost.pluginsFor(deviceId);
+    for (const p of list) {
+      if (p instanceof MprisPlugin) {
+        return p;
+      }
+    }
+    return undefined;
+  }
+
+  // 面板读数（build() 里直接调，靠 @State 触发刷新；**不要**用 @Builder 传值，值参数不变会跳过重建）
+  private mprisSnap(): MprisSnapshot {
+    return this.mprisItemOf(this.mprisDeviceId).snapshot;
+  }
+
+  private mprisList(): string[] {
+    return this.mprisItemOf(this.mprisDeviceId).playerList;
+  }
+
+  // 对端没响应 / 对端没有播放器 → 都走空态
+  private mprisEmpty(): boolean {
+    const it: MprisItem = this.mprisItemOf(this.mprisDeviceId);
+    return !it.gotAny || it.playerList.length === 0;
+  }
+
+  // 进度条位置：由「收包时的 pos + 本地经过时间」插值（1s ticker 驱动刷新）
+  private mprisPos(): number {
+    return mprisDisplayPos(this.mprisSnap(), this.mprisNowMs);
+  }
+
+  private mprisMaxPos(): number {
+    const len: number = this.mprisSnap().length;
+    return len > 0 ? len : 1;
+  }
+
+  private mprisVol(): number {
+    const v: number = this.mprisSnap().volume;
+    return v > 0 ? v : 0;
+  }
+
+  private mprisArtistLine(): ResourceStr {
+    const s: MprisSnapshot = this.mprisSnap();
+    if (s.artist.length > 0 && s.album.length > 0) {
+      return `${s.artist} · ${s.album}`;
+    }
+    if (s.artist.length > 0) {
+      return s.artist;
+    }
+    if (s.album.length > 0) {
+      return s.album;
+    }
+    return $r('app.string.media_unknown_artist');
+  }
+
+  private mprisLoopText(): ResourceStr {
+    const cur: string = this.mprisSnap().loopStatus;
+    if (cur === 'Track') {
+      return $r('app.string.media_loop_track');
+    }
+    if (cur === 'Playlist') {
+      return $r('app.string.media_loop_playlist');
+    }
+    return $r('app.string.media_loop_none');
+  }
+
+  private startMprisTicker(): void {
+    this.stopMprisTicker();
+    this.mprisNowMs = Date.now();
+    this.mprisTickerId = setInterval((): void => {
+      this.mprisNowMs = Date.now();
+    }, 1000);
+  }
+
+  private stopMprisTicker(): void {
+    if (this.mprisTickerId >= 0) {
+      clearInterval(this.mprisTickerId);
+      this.mprisTickerId = -1;
+    }
+  }
+
+  private closeMprisDialog(): void {
+    this.mprisDialogOpen = false;
+    this.stopMprisTicker();
+  }
+
+  // 控制类动作：插件没装载（对端不支持）或发送失败都给明确提示
+  private mediaAction(action: string): void {
+    const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
+    if (p === undefined) {
+      this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
+      return;
+    }
+    let ok: boolean = false;
+    if (action === 'toggle') {
+      ok = p.togglePlay();
+    } else if (action === 'next') {
+      ok = p.next();
+    } else if (action === 'previous') {
+      ok = p.previous();
+    }
+    if (!ok) {
+      this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+    }
+  }
+
+  private mediaSetVolume(v: number): void {
+    const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
+    if (p === undefined || !p.setVolume(v)) {
+      this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+    }
+  }
+
+  private mediaSetPosition(ms: number): void {
+    const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
+    if (p === undefined || !p.setPosition(ms)) {
+      this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+    }
+  }
+
+  private mediaToggleLoop(): void {
+    const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
+    if (p === undefined || !p.cycleLoopStatus()) {
+      this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+    }
+  }
+
+  private mediaToggleShuffle(): void {
+    const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
+    if (p === undefined || !p.toggleShuffle()) {
+      this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+    }
+  }
+
+  private mediaSelectPlayer(name: string): void {
+    const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
+    if (p === undefined) {
+      this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
+      return;
+    }
+    p.selectPlayer(name);
+    p.requestStatus(name);
+  }
+
+  private mediaRefresh(): void {
+    const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
+    if (p === undefined) {
+      this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
+      return;
+    }
+    p.requestPlayerList();
+    p.requestStatus();
+    this.log(`media refresh requested for ${this.mprisDeviceId}`);
   }
 
   // AP-4：非核心 packet 分发到插件（返回 true 表示已处理）
@@ -850,6 +1085,10 @@ struct Index {
         this.requestedPairIds = this.requestedPairIds.filter((x: string) => x !== did);
         // AP-4：断链卸载该设备插件（onDestroy 必达）
         this.pluginHost?.unloadForDevice(did);
+        // 媒体面板开着这台设备 → 关掉（插件实例已销毁，再点控制键必然失败）
+        if (did !== '' && this.mprisDeviceId === did && this.mprisDialogOpen) {
+          this.closeMprisDialog();
+        }
         // 会话中的设备断链 → 连接/配对失败
         if (did !== '' && this.sessionDeviceId === did) {
           if (this.sessionState === 'connecting') {
@@ -1273,7 +1512,26 @@ struct Index {
       this.log(`run command dialog: ${this.runCommands.length} entries for ${id}`);
       return;
     }
-    // remote_input / media：P1 只声明能力，UI 属 P2（MSG112 §4）→ 占位提示
+    if (key === 'media') {
+      // 媒体控制（方向 1，P2）：打开面板并主动拉一次「播放器列表 + 当前播放器状态」。
+      // 对端只在状态变化时推包，不主动拉可能长时间停在旧态。
+      const mp: MprisPlugin | undefined = this.mprisPluginOf(id);
+      if (mp === undefined) {
+        this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
+        this.log(`media panel unavailable for ${id} (MprisPlugin not loaded)`);
+        return;
+      }
+      this.mprisDeviceId = id;
+      this.putMpris(mp.item());
+      this.mprisNowMs = Date.now();
+      this.mprisDialogOpen = true;
+      this.startMprisTicker();
+      mp.requestPlayerList();
+      mp.requestStatus();
+      this.log(`media panel opened for ${id} (players=${this.mprisList().length})`);
+      return;
+    }
+    // remote_input：P1 只声明能力，UI 属 P2（MSG112 §4）→ 占位提示
     this.toastPlaceholder(key);
   }
 
@@ -2231,7 +2489,7 @@ struct Index {
             }
             .width('100%')
             .height('100%')
-            .padding({ top: 12, bottom: 92 })
+            .padding({ top: 12, bottom: 108 })
           }
           .tabBar(this.tabBuilder(0))
 
@@ -2255,7 +2513,7 @@ struct Index {
                     }
                   })
             }
-            .padding({ top: 12, bottom: 92 })
+            .padding({ top: 12, bottom: 108 })
           }
           .tabBar(this.tabBuilder(1))
 
@@ -2283,7 +2541,7 @@ struct Index {
                 }
               })
             }
-            .padding({ top: 12, bottom: 92 })
+            .padding({ top: 12, bottom: 108 })
           }
           .tabBar(this.tabBuilder(2))
 
@@ -2294,7 +2552,7 @@ struct Index {
                 immersive: false
               })
             }
-            .padding({ top: 12, bottom: 92 })
+            .padding({ top: 12, bottom: 108 })
           }
           .tabBar(this.tabBuilder(3))
         }
@@ -2307,7 +2565,10 @@ struct Index {
         .barBackgroundColor(Color.Transparent)
         .barFloatingStyle({
           barWidth: { smallWidth: 300, mediumWidth: 420, largeWidth: 520 },
-          barBottomMargin: this.getUIContext().px2vp(this.navBarHeightPx) + 12,
+          // 悬浮胶囊离底边的距离：设备导航条高度 + 24vp（对齐「我的华为」的底栏留白）。
+          // 注意：平板实测 navBarHeightPx 常为 0（系统未上报底部避让区），所以不能只靠它，
+          // 必须再叠一个固定留白，否则胶囊会贴着底边（用户 2026-09-15 反馈）。
+          barBottomMargin: this.getUIContext().px2vp(this.navBarHeightPx) + 24,
           // 显式给全透明遮罩：覆盖 HdsTabs 默认的底部渐隐（暗色下会呈一条渐黑带）
           gradientMask: { maskColor: '#00000000', maskHeight: 96 },
           systemMaterialEffect: {
@@ -2427,6 +2688,276 @@ struct Index {
         .alignItems(HorizontalAlign.Center)
         .backgroundColor('#99000000')
         .transition(TransitionEffect.OPACITY)
+      }
+
+      // 媒体控制面板（P2 方向 1，FEATURE_PLAN_MPRIS §3.3）：控电脑端播放器。
+      // 读数一律走 this.mprisXxx() 方法直读 @State（**不用 @Builder 传值**：值参数不变会跳过重建，
+      // 会出现「点了图标不变/置灰不刷新」；这是本项目已踩过的坑）。
+      if (this.mprisDialogOpen) {
+        Column() {
+          Column({ space: 12 }) {
+            Text($r('app.string.media_dialog_title'))
+              .fontSize(16)
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.text_primary'))
+            Text(this.displayNameOf(this.mprisDeviceId))
+              .fontSize(12)
+              .fontColor($r('app.color.text_muted'))
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+            if (this.mprisEmpty()) {
+              Text($r('app.string.media_empty'))
+                .fontSize(13)
+                .fontColor($r('app.color.text_secondary'))
+              Text($r('app.string.media_empty_hint'))
+                .fontSize(11)
+                .fontColor($r('app.color.text_muted'))
+                .textAlign(TextAlign.Center)
+            } else {
+              // 多播放器：横向 chips 切换（单个时隐藏）
+              if (this.mprisList().length > 1) {
+                Scroll() {
+                  Row({ space: 8 }) {
+                    ForEach(this.mprisList(), (pl: string) => {
+                      Text(mprisPlayerText(pl))
+                        .fontSize(11)
+                        .fontColor(pl === this.mprisSnap().player
+                          ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
+                        .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+                        .borderRadius(999)
+                        .backgroundColor(pl === this.mprisSnap().player
+                          ? $r('app.color.accent_text') : $r('app.color.chip_bg'))
+                        .onClick(() => {
+                          this.mediaSelectPlayer(pl);
+                        })
+                    }, (pl: string) => pl)
+                  }
+                }
+                .scrollable(ScrollDirection.Horizontal)
+                .scrollBar(BarState.Off)
+                .align(Alignment.Start)
+                .width('100%')
+              }
+
+              // 曲目信息（封面本期不做：对端封面要走 payload 传输，属规划 Phase 2）
+              Row({ space: 12 }) {
+                Column() {
+                  SymbolGlyph($r('sys.symbol.music_fill'))
+                    .fontSize(24)
+                    .fontColor([$r('app.color.accent_text')])
+                }
+                .width(56)
+                .height(56)
+                .borderRadius(14)
+                .backgroundColor($r('app.color.chip_bg'))
+                .justifyContent(FlexAlign.Center)
+
+                Column({ space: 4 }) {
+                  Text(this.mprisSnap().title.length > 0
+                    ? this.mprisSnap().title : $r('app.string.media_unknown_track'))
+                    .fontSize(15)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor($r('app.color.text_primary'))
+                    .maxLines(2)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .width('100%')
+                  Text(this.mprisArtistLine())
+                    .fontSize(11)
+                    .fontColor($r('app.color.text_muted'))
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .width('100%')
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+              }
+              .width('100%')
+
+              // 进度：拖动只在松手（End/Click）时发 SetPosition，避免拖动中刷包；
+              // 位置用「收包 pos + 本地经过时间」插值（mprisNowMs 由 1s ticker 驱动）
+              Row({ space: 8 }) {
+                Slider({ value: this.mprisPos(), min: 0, max: this.mprisMaxPos(), step: 1000 })
+                  .layoutWeight(1)
+                  .enabled(this.mprisSnap().canSeek && this.mprisSnap().length > 0)
+                  .onChange((value: number, mode: SliderChangeMode) => {
+                    if (mode === SliderChangeMode.Begin) {
+                      this.mprisSeekDragging = true;
+                      return;
+                    }
+                    if (mode === SliderChangeMode.Moving) {
+                      return;
+                    }
+                    if (!this.mprisSeekDragging) {
+                      return;
+                    }
+                    this.mprisSeekDragging = false;
+                    this.mediaSetPosition(value);
+                  })
+                Text(`${mprisTimeText(this.mprisPos())} / ${mprisTimeText(this.mprisSnap().length)}`)
+                  .fontSize(10)
+                  .fontColor($r('app.color.text_muted'))
+              }
+              .width('100%')
+
+              // 控制键（按 can* 置灰；播放/暂停统一发 PlayPause，由对端决定方向）
+              Row({ space: 20 }) {
+                Column() {
+                  SymbolGlyph($r('sys.symbol.backward_end_fill'))
+                    .fontSize(24)
+                    .fontColor([this.mprisSnap().canGoPrevious
+                      ? $r('app.color.text_primary') : $r('app.color.text_muted')])
+                }
+                .width(46)
+                .height(46)
+                .borderRadius(23)
+                .backgroundColor($r('app.color.chip_bg'))
+                .justifyContent(FlexAlign.Center)
+                .onClick(() => {
+                  this.mediaAction('previous');
+                })
+
+                Column() {
+                  SymbolGlyph(this.mprisSnap().isPlaying
+                    ? $r('sys.symbol.pause_fill') : $r('sys.symbol.play_fill'))
+                    .fontSize(28)
+                    .fontColor([$r('app.color.accent_text')])
+                }
+                .width(58)
+                .height(58)
+                .borderRadius(29)
+                .backgroundColor($r('app.color.chip_bg'))
+                .justifyContent(FlexAlign.Center)
+                .onClick(() => {
+                  this.mediaAction('toggle');
+                })
+
+                Column() {
+                  SymbolGlyph($r('sys.symbol.forward_end_fill'))
+                    .fontSize(24)
+                    .fontColor([this.mprisSnap().canGoNext
+                      ? $r('app.color.text_primary') : $r('app.color.text_muted')])
+                }
+                .width(46)
+                .height(46)
+                .borderRadius(23)
+                .backgroundColor($r('app.color.chip_bg'))
+                .justifyContent(FlexAlign.Center)
+                .onClick(() => {
+                  this.mediaAction('next');
+                })
+              }
+
+              // 音量（对端未报 volume 时禁用）
+              Row({ space: 8 }) {
+                SymbolGlyph(this.mprisVol() > 0
+                  ? $r('sys.symbol.speaker_wave_3_fill') : $r('sys.symbol.speaker_slash_fill'))
+                  .fontSize(16)
+                  .fontColor([$r('app.color.text_secondary')])
+                Slider({ value: this.mprisVol(), min: 0, max: 100, step: 1 })
+                  .layoutWeight(1)
+                  .enabled(this.mprisSnap().volume >= 0)
+                  .onChange((value: number, mode: SliderChangeMode) => {
+                    if (mode === SliderChangeMode.Begin) {
+                      this.mprisVolDragging = true;
+                      return;
+                    }
+                    if (mode === SliderChangeMode.Moving) {
+                      return;
+                    }
+                    if (!this.mprisVolDragging) {
+                      return;
+                    }
+                    this.mprisVolDragging = false;
+                    this.mediaSetVolume(value);
+                  })
+                Text(`${this.mprisVol()}`)
+                  .fontSize(10)
+                  .fontColor($r('app.color.text_muted'))
+                  .width(24)
+              }
+              .width('100%')
+
+              // 循环（None → Track → Playlist 三态）/ 随机
+              Row({ space: 10 }) {
+                Row({ space: 6 }) {
+                  SymbolGlyph($r('sys.symbol.repeat'))
+                    .fontSize(15)
+                    .fontColor([this.mprisSnap().loopStatus !== 'None'
+                      ? $r('app.color.accent_text') : $r('app.color.text_muted')])
+                  Text(this.mprisLoopText())
+                    .fontSize(11)
+                    .fontColor(this.mprisSnap().loopStatus !== 'None'
+                      ? $r('app.color.accent_text') : $r('app.color.text_muted'))
+                }
+                .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+                .borderRadius(999)
+                .backgroundColor($r('app.color.chip_bg'))
+                .onClick(() => {
+                  this.mediaToggleLoop();
+                })
+
+                Row({ space: 6 }) {
+                  SymbolGlyph($r('sys.symbol.shuffle'))
+                    .fontSize(15)
+                    .fontColor([this.mprisSnap().shuffle
+                      ? $r('app.color.accent_text') : $r('app.color.text_muted')])
+                  Text($r('app.string.media_shuffle'))
+                    .fontSize(11)
+                    .fontColor(this.mprisSnap().shuffle
+                      ? $r('app.color.accent_text') : $r('app.color.text_muted'))
+                }
+                .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+                .borderRadius(999)
+                .backgroundColor($r('app.color.chip_bg'))
+                .onClick(() => {
+                  this.mediaToggleShuffle();
+                })
+              }
+              .width('100%')
+            }
+
+            Row({ space: 10 }) {
+              Button($r('app.string.media_refresh'))
+                .layoutWeight(1)
+                .height(42)
+                .fontSize(14)
+                .backgroundColor($r('app.color.chip_bg'))
+                .fontColor($r('app.color.text_secondary'))
+                .borderRadius(12)
+                .onClick(() => {
+                  this.mediaRefresh();
+                })
+              Button($r('app.string.action_cancel'))
+                .layoutWeight(1)
+                .height(42)
+                .fontSize(14)
+                .backgroundColor($r('app.color.chip_bg'))
+                .fontColor($r('app.color.text_secondary'))
+                .borderRadius(12)
+                .onClick(() => {
+                  this.closeMprisDialog();
+                })
+            }
+            .width('100%')
+          }
+          .width('86%')
+          .padding(20)
+          .borderRadius(20)
+          .backgroundColor($r('app.color.card_bg'))
+          .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
+          .border({ width: 1, color: $r('app.color.card_border') })
+          .alignItems(HorizontalAlign.Center)
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .backgroundColor('#99000000')
+        .transition(TransitionEffect.OPACITY)
+        .onClick(() => {
+          this.closeMprisDialog();
+        })
       }
 
       // 远程命令弹窗（P1，MSG112 §1）：展示对端下发的预设命令列表，点一条即请求执行
