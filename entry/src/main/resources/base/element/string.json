@@ -350,28 +350,28 @@
       "value": "Share clipboard with the peer"
     },
     {
-      "name": "action_find_phone",
-      "value": "Find Phone"
+      "name": "action_find_device",
+      "value": "Find Device"
     },
     {
-      "name": "action_find_phone_desc",
+      "name": "action_find_device_desc",
       "value": "Ring and show a notice"
     },
     {
-      "name": "action_ring",
-      "value": "Ring"
+      "name": "action_remote_input",
+      "value": "Remote Input"
     },
     {
-      "name": "action_ring_desc",
-      "value": "Make the peer ring"
+      "name": "action_remote_input_desc",
+      "value": "Use as touchpad and keyboard"
     },
     {
-      "name": "action_battery",
-      "value": "Battery"
+      "name": "action_run_command",
+      "value": "Run Command"
     },
     {
-      "name": "action_battery_desc",
-      "value": "Show peer battery state"
+      "name": "action_run_command_desc",
+      "value": "Run a preset command on the peer"
     },
     {
       "name": "action_media",
@@ -380,6 +380,18 @@
     {
       "name": "action_media_desc",
       "value": "Control peer media playback"
+    },
+    {
+      "name": "run_command_dialog_title",
+      "value": "Run Command"
+    },
+    {
+      "name": "run_command_empty",
+      "value": "No command list from the peer yet"
+    },
+    {
+      "name": "run_command_empty_hint",
+      "value": "The peer sends its command list after connecting"
     },
     {
       "name": "device_detail_title",
@@ -452,6 +464,38 @@
     {
       "name": "toast_not_implemented",
       "value": "Not implemented yet"
+    },
+    {
+      "name": "toast_clipboard_request_sent",
+      "value": "Requested clipboard from the peer"
+    },
+    {
+      "name": "toast_clipboard_requested",
+      "value": "Peer requested your clipboard - tap Paste to send it"
+    },
+    {
+      "name": "toast_find_device_sent",
+      "value": "Find request sent"
+    },
+    {
+      "name": "toast_find_device_failed",
+      "value": "Find request failed"
+    },
+    {
+      "name": "toast_run_cmd_sent",
+      "value": "Command request sent"
+    },
+    {
+      "name": "toast_run_cmd_send_failed",
+      "value": "Command request failed"
+    },
+    {
+      "name": "toast_run_cmd_ok",
+      "value": "Command finished"
+    },
+    {
+      "name": "toast_run_cmd_failed",
+      "value": "Command failed"
     }
   ]
 }
