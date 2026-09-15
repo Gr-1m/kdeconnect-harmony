@@ -321,6 +321,26 @@
   - `.gitignore` 独有：`AgentsConversion/`（不入 git 但需跨机同步）、`docs/`（同上）、`devdocs/reference/`（同上）
 - 新增排除条目时必须同时检查两个文件
 
+### 9.4 编码安全：**不要用会按 ANSI/本地编码重存的工具改本仓库文件**（2026-09-15 事故）
+
+事故：Win10 侧用 **PowerShell 5.1 的 `Get-Content`/`Set-Content`**（默认 ANSI）改
+`entry/src/main/ets/pages/Index.ets` ⇒ 437 个中文字符变成替换字符、**字符串收尾引号被吞**
+（`'端口探测中'` → 「端口探测 + 乱码 + 无引号」）⇒ `CompileArkTS` 直接失败。
+损坏机理：引号前最后一个非 ASCII 字符的第 3 个 UTF-8 字节被吃掉、闭合引号变 `?`。
+（这是第二类「工具默认编码毁中文」的坑；第一类是编辑器把文件按非 UTF-8 重存。）
+
+规则：
+
+- **改文件一律用会保持 UTF-8 的工具**：DevEco Studio / VS Code / 本仓库的写入工具（其写入路径固定 UTF-8）；
+  确需脚本处理中文时，显式指定编码（PowerShell 用 `.NET` 的 `[IO.File]::ReadAllText/WriteAllText` + `UTF8Encoding($false)`；
+  Python 用 `encoding='utf-8'`；**不要**依赖 shell 重定向 + 平台默认编码）。
+- **提交前守卫**（本机 `pre-commit`，`tools/check-encoding.py`）：待提交文本文件里出现**非法 UTF-8** 或
+  **替换字符 U+FFFD** 即拒绝提交；新机器执行一次 `tools/sync-revision.sh --install` 安装。
+  仅注释里出现乱码时**构建门禁拦不住**，必须靠这道守卫。
+- **发现乱码先停下**：不要 `git checkout` 整文件（会丢掉同文件里的未提交工作）；先确认改动性质，
+  再用「字节级回填」把损坏处还原（本次即用 `Encoding(28591)` 纯字节替换，保住了同文件 733 行新工作）。
+- **历史干净是底线**：提交前用 `tools/check-encoding.py --all` 扫全树；一旦乱码进了历史，只能向前修，不得改写历史。
+
 ---
 
 ## 维护
