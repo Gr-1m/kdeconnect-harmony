@@ -6,7 +6,7 @@
 // 于是「native 到底能不能和真桌面完成配对/传文件」可以在这台机器上证完，再谈 App 侧。
 //
 // 用法：
-//   ./run_desktop.sh pair                    # 连 <host>:1716 并发起配对（桌面端需接受）
+//   ./run_desktop.sh pair                    # 连默认 host:1716 并发起配对（桌面端需接受）
 //   ./run_desktop.sh pair <host> <port>      # 指定对端
 //   ./run_desktop.sh sendfile <path>         # 配对后发文件（桌面端会收到 share.request）
 //   ./run_desktop.sh probe [host]            # 端口未知（0）拨号：native 自行探测并建链
@@ -245,7 +245,7 @@ int main(int argc, char **argv)
         return 2;
     }
     const std::string mode = argv[1];
-    std::string host = "<host>";
+    std::string host = std::getenv("KDC_HOST") ? std::getenv("KDC_HOST") : "127.0.0.1";
     uint16_t port = 1716;
     std::string filePath;
     int serveSeconds = 60;

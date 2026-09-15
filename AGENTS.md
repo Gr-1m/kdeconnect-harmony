@@ -1,6 +1,6 @@
 # KDE-H Connect 仓库级 AGENTS.md
 
-> **2026-09-12 迁移说明（zcode 落地）**：本文件自旧工作区 `<workspace>/AGENTS.md` 拷入**仓库根**（新正本，Syncthing 双机可见；旧工作区已降级为只读参考）。阅读下文时按此映射：
+> **2026-09-12 迁移说明（zcode 落地）**：本文件自旧工作区拷入**仓库根**（新正本，Syncthing 双机可见；旧工作区已降级为只读参考）。阅读下文时按此映射：
 > - 「主开发对象 `kdeconnect-harmony-PreDev/`」→ **现在就是本仓库根**（重建后的工程直接位于仓库根：`entry/`、`AppScope/`、`tools/`…）；
 > - 「中心仓库 gitcode 尚未同步 / 不 add remote」→ 本仓库已 clone 自 gitcode（remote origin 已配置，分支 `dev/zcodeinit`），**push 仍需用户明确授权**（CodeArts 掌握 commit/push 时机）；
 > - 「两机协作走共享目录/DevEco 副本」→ **已废弃**，改为 Syncthing 实时同步（机器本地产物以两侧 `.stignore` 排除）；
@@ -10,7 +10,7 @@
 ---
 # KDE Connect 鸿蒙版工作区
 
-> 项目位置：`<workspace>`（本机 CachyOS 工作区，**2026-09-12 起为项目正本**）。此前曾短暂放在 libvirt 共享目录 `/var/lib/libvirt/shares/harmonyDevShare/KDE_connect_hap`（Win10 VM 经 virtiofs 可见，内含 DevEco 专用副本 `kdeconnect-harmony-PreDevEco/`）——**该位置已不再是项目位置，副本已于 2026-09-12 按用户决定整体删除**（DevEco 专用配置存档：`~/WorkSpace2/tools/PreDevEco-deveco-configs-20260912.tar.gz`）。QEMU 模拟器镜像/日志一直在宿主 `~/WorkSpace2/`。
+> 项目位置：本机 CachyOS 工作区（**2026-09-12 起为项目正本**）。此前曾短暂放在 libvirt 共享目录（Win10 VM 经 virtiofs 可见，内含 DevEco 专用副本）——**该位置已不再是项目位置，副本已于 2026-09-12 按用户决定整体删除**。QEMU 模拟器镜像/日志一直在宿主工作区。
 
 主开发对象 `kdeconnect-harmony-PreDev/`（OpenHarmony API 26 / Stage 模型 / ArkTS，bundleName `org.kde.kdeconnect.harmony`），其余子项目是协议规范与参考实现。本根目录**不是** git 仓库；`kdeconnect-meta` / `kdeconnect-android` / `kdeconnect-kde` 是独立 git 仓库（上游参考代码，通常只读）；**`kdeconnect-harmony-PreDev` 已是 git 仓库**（2026-09-12 初始化，分支 `master`），**中心仓库为 gitcode <https://gitcode.com/Gr1m/kdeconnect-harmony>**（**已同步：`dev/zcodeinit` 与 `main` 均已 push，2026-09-15 起**，见「双机协作」）。**本文件与仓库内 `kdeconnect-harmony-PreDev/AGENTS.md` 是同一份**（仓库版供 Win10 侧 agent 加载），改任一份必须同步另一份（提交需用户授权）。
 
@@ -53,7 +53,7 @@ packet 以换行分隔的 JSON 字符串发送：`{"id", "type", "body", "versio
 
 - **中心仓库**：<https://gitcode.com/Gr1m/kdeconnect-harmony>（GPL-3.0）。**已同步（2026-09-15）**：`main` 与本机工程**同根**（初始提交 `8d6c639`），本机开发分支 `dev/zcodeinit` 已 push（首个 push 2026-09-15，`71c7b46..3c34001`），`main` 已推进到与 `dev/zcodeinit` 一致。开发仍在 `dev/zcodeinit`，**每次 push 需用户/CodeArts 明确授权**（CodeArts 掌握时机）。仓库范围**只有 `kdeconnect-harmony-PreDev/` 工程**（meta/android/kde 参考仓库与根 `docs/` 不入仓库）。
 - **GitHub 镜像（2026-09-15 建）**：<https://github.com/Gr-1m/kdeconnect-harmony>（GPL-3.0）。本机已配置第二远端 **`github`**（SSH；`~/.ssh/config` 需有 `github.com` → `IdentityFile ~/.ssh/github_ed25519`，否则报 `Permission denied (publickey)` —— 2026-09-15 踩过）。该仓库初始只是 `LICENSE` 空壳、与本机历史**无关**，已用 gitcode 侧历史**强推覆盖**（`git push --force github main:main`，`dev/zcodeinit` 一并新推；两分支与 gitcode 指向同一提交）。日常 push 仍走授权；两个远端内容应保持一致。
-- **本机 CachyOS** 为开发正本（工作区 `<workspace>`）；**Win10**（LTSC 21H1，DevEco Studio 26.0.0.821）用 DevEco 构建、跑模拟器做验证。**Win10 取码方式待其首验后由用户决定**（virtiofs 共享副本路线已废弃：`PreDevEco` 已删，配置存 `~/WorkSpace2/tools/PreDevEco-deveco-configs-20260912.tar.gz`）。**同一文件不要两台机器同时改**。
+- **本机 CachyOS** 为开发正本；**Win10**（LTSC 21H1，DevEco Studio 26.0.0.821）用 DevEco 构建、跑模拟器做验证。**同一文件不要两台机器同时改**。
 - 同步约定：改前先 pull、提交后 push；换行符：Win10 设 `core.autocrlf true`、本机设 `core.autocrlf input`，避免 CRLF diff 噪音。
 - **共享目录的版本标记（2026-09-14 起）**：`.git` **不同步**——Syncthing 搬不动活着的 git 仓库（`index`/`refs` 靠原子重命名与锁，冲突副本无法像普通文件那样手工合并，且会让两台机器都「看起来拥有历史」而破坏单写者不变式）。Win10 侧改用 `AgentsConversion/GIT_REVISION.md` 判断「同步过来的文件对应哪个提交」：由 `tools/sync-revision.sh` 在本机每次提交/合并/切分支后自动刷新（git hook）。新机器/新克隆需执行一次 `tools/sync-revision.sh --install`（hook 只写在本机 `.git/hooks`，不随同步）。该标记文件不是仓库内容，勿手改。
 - **提交前编码守卫（2026-09-15 起）**：同一个安装脚本还会装 **`pre-commit`**，由 `tools/check-encoding.py` 检查待提交文本文件——出现**非法 UTF-8** 或**替换字符 U+FFFD** 即拒绝提交（`git commit --no-verify` 可绕过）。构建门禁拦不住注释里的乱码：2026-09-15 有 Win10 编辑器按非 UTF-8 重存 `Index.ets`，437 处中文乱码、连字符串收尾引号都被吞掉才让 ArkTS 编译失败。检查器自身与其文档描述里**不得**出现真实的替换字符字面量（否则会被自己拦下）。
@@ -67,7 +67,7 @@ QEMU 手机镜像跑在宿主（非真机、非 IDE）：镜像/日志放 `~/Wor
 
 ## docs/ 参考资料（他机整理，引用需谨慎）
 
-`docs/` 17 篇 + `AGENTS1.md` 来自另一台机器的参考工作区（`<reference-workspace>`：子目录带 `-master` 后缀、含 iOS 端，与本工作区目录名**不一一对应**）。用途：01–09 项目理解；**10–11 开发者地图/功能点字典（新 agent 先读 10→11，按任务定位文件符号，省去全库搜索）**；12–15 鸿蒙移植四篇（Android/iOS 实践 / 移植指南 / 协议适配 / 问题与决策记录）；16 会话记录（标注哪些结论已验证、哪些是假设）。**鸿蒙侧结论基于公开文档调研（2026-09），未经真机验证，以实测为准**；文中 `文件:行号` 对应他那台快照，**按符号名搜索，勿按行号**。
+`docs/` 17 篇 + `AGENTS1.md` 来自另一台机器的参考工作区（子目录带 `-master` 后缀、含 iOS 端，与本工作区目录名**不一一对应**）。用途：01–09 项目理解；**10–11 开发者地图/功能点字典（新 agent 先读 10→11，按任务定位文件符号，省去全库搜索）**；12–15 鸿蒙移植四篇（Android/iOS 实践 / 移植指南 / 协议适配 / 问题与决策记录）；16 会话记录（标注哪些结论已验证、哪些是假设）。**鸿蒙侧结论基于公开文档调研（2026-09），未经真机验证，以实测为准**；文中 `文件:行号` 对应他那台快照，**按符号名搜索，勿按行号**。
 
 ## 工具与协作
 

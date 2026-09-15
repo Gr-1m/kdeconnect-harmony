@@ -1,7 +1,7 @@
 # KDE-H Connect — C++ Native 标准化开发指导（v0.1）
 
 > 2026-09-12，zcode（本机 native agent，兼部分总指挥职责）起草。
-> 适用于新仓库 `<workspace>/kdeconnect-harmony`（gitcode 中心仓库 clone，分支 `dev/zcodeinit`）的重建工作。
+> 适用于新仓库 `kdeconnect-harmony`（gitcode 中心仓库 clone，分支 `dev/zcodeinit`）的重建工作。
 > 读者：C++ native agent（当前 zcode）、CodeArts（评审/单测/CI）；DevEco Code 只需关注 §5 契约与 WP 表中的契约触碰点。
 > 背景与全局约束见仓库根 `KICKOFF_PROMPT.md`（工作区级说明），本文不重复，只做 C++ 侧的落地规范。
 
@@ -224,7 +224,7 @@ protocolVersion=8；UDP 1716；TCP 1716–1764 顺序探测；payload 端口 ≥
 - 改动 payload/TLS 时，**必须**让 `tests/payload_e2e.cpp` 覆盖的新行为在「回退该修复」后失败
   （回归用例的必要性验证），再提交。
 - **host 集成工具（对真桌面，不进 CI）**：`entry/src/main/cpp/tests/run_desktop.sh pair|sendfile|serve`
-  用**真实 native 全栈**连真桌面 KDE（默认 `<host>:1716`），把 `tests/desktop_pair.cpp` 当端点：
+  用**真实 native 全栈**连真桌面 KDE（默认 `<host>:1716`，通过 `KDC_HOST` 环境变量指定），把 `tests/desktop_pair.cpp` 当端点：
   可验证「配对 + 双方验证码一致 + 双向 payload（A1/A1b）」，**不需要模拟器**。四条使用注意：
   1. 工具固定 `tcpPort=1735`：与本机同时跑的 kdeconnectd 抢 1716 会让局域网其他设备拨错 daemon（实测混淆）；
   2. spool 目录经 `NetConfig.spoolDir` 指到 `/tmp`（设备默认 spool 是沙箱路径 `/data/storage/...`）；
