@@ -296,14 +296,22 @@ int main(int argc, char **argv)
 
     NetStack &ns = netStack();
     ns.setEventCallback(onEvent);
-    if (!ns.start(cfg)) {
-        note("[!] net stack start failed");
-        return 1;
-    }
     // 能力声明：对端据此决定是否把 packet 交插件处理。
     // 发文件要求 outgoing 里含 kdeconnect.share.request（KDE 侧
     // Device::privateReceivedPacket 按「对端 outgoingCaps」查插件映射；缺了会
     // 记 "discarding unsupported packet"，不会来拉 payload → 30s 超时）。
+    // **与 App 同顺序：先 setCapabilities 再 start**（ArkTS 就是这么调的；也正因为如此，
+    // MSG116 §3.1 的「广播 identity caps 为空」才长期存在）。native 现已把 caps 装进
+    // 首次广播（MSG117 §3 修复），本工具正好把该路径走一遍。
+    ns.setCapabilities({"kdeconnect.ping", "kdeconnect.identity", "kdeconnect.pair",
+                        "kdeconnect.share.request", "kdeconnect.clipboard"},
+                       {"kdeconnect.ping", "kdeconnect.share.request", "kdeconnect.clipboard"});
+    if (!ns.start(cfg)) {
+        note("[!] net stack start failed");
+        return 1;
+    }
+    // MSG117 §3 第二条路径：start 之后 caps 变更必须**立即**重播一次（原实现要等周期广播，
+    // 已建链时干脆不播）。这里再调一次，用于观察 UDP 上是否出现带 caps 的广播。
     ns.setCapabilities({"kdeconnect.ping", "kdeconnect.identity", "kdeconnect.pair",
                         "kdeconnect.share.request", "kdeconnect.clipboard"},
                        {"kdeconnect.ping", "kdeconnect.share.request", "kdeconnect.clipboard"});

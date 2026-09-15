@@ -163,6 +163,19 @@ bool NetStack::start(const NetConfig &config)
         stop();
         return false;
     }
+    // caps 必须进**广播** identity（DevEco MSG116 §3.1：广播里 incoming/outgoing 为空）：
+    // init() 建的是不带 caps 的 identity，而 ArkTS 按约定在 start() **之前**调 setCapabilities
+    // （那时 udp_ 还是空指针，那次调用被丢弃）⇒ 这里补一次，随后 start() 自己的首次广播即带 caps。
+    {
+        std::vector<std::string> inC, outC;
+        {
+            std::lock_guard<std::mutex> lk(capsMutex_);
+            inC = capsIncoming_;
+            outC = capsOutgoing_;
+        }
+        udp_->setCapabilities(inC, outC);
+        forceBroadcast_.store(false);   // start() 马上会广播一次，无需额外唤醒
+    }
     struct epoll_event udpEv {};
     udpEv.events = EPOLLIN;
     udpEv.data.fd = udp_->fd();
@@ -1271,6 +1284,11 @@ void NetStack::setCapabilities(const std::vector<std::string> &incomingCaps,
     }
     if (udp_) {
         udp_->setCapabilities(incomingCaps, outgoingCaps);
+        // caps 变了就**立即**重播一次（MSG117 §3）：对端按广播 identity 预筛选时，等到下一次
+        // 周期广播（最长 60s，或已建链时干脆不播）太迟。用既有的 forceBroadcast_ 机制交给
+        // 事件循环执行（本函数由 JS 线程调用），与 triggerBroadcast 同一套做法。
+        forceBroadcast_.store(true);
+        wakeLoop();
     }
     // 向已建加密链路重发 identity（对端据此重算插件装载；d.ts v2 语义）
     std::lock_guard<std::mutex> lk(connMutex_);
