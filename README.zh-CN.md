@@ -157,7 +157,7 @@ GPL-3.0 — 与上游 KDE Connect 一致。见 [LICENSE](LICENSE)。
 
 ## Agent 分工
 
-本项目由人类作者提出需求与关键裁决；日常实现、评审与验证由多个 AI Agent 分工完成（协作规则与踩坑记录见 `devdocs/PROCESS.md`）。
+本项目由**安全开发工程师 Gr%1m** 提出需求与关键裁决；日常实现、评审与验证由多个 AI Agent 分工完成（协作规则与踩坑记录见 `devdocs/PROCESS.md`）。
 
 | 角色 | 承担 | 说明 |
 |---|---|---|
