@@ -55,6 +55,7 @@ packet 以换行分隔的 JSON 字符串发送：`{"id", "type", "body", "versio
 - **本机 CachyOS** 为开发正本（工作区 `<workspace>`）；**Win10**（LTSC 21H1，DevEco Studio 26.0.0.821）用 DevEco 构建、跑模拟器做验证。**Win10 取码方式待其首验后由用户决定**（virtiofs 共享副本路线已废弃：`PreDevEco` 已删，配置存 `~/WorkSpace2/tools/PreDevEco-deveco-configs-20260912.tar.gz`）。**同一文件不要两台机器同时改**。
 - 同步约定：改前先 pull、提交后 push；换行符：Win10 设 `core.autocrlf true`、本机设 `core.autocrlf input`，避免 CRLF diff 噪音。
 - **共享目录的版本标记（2026-09-14 起）**：`.git` **不同步**——Syncthing 搬不动活着的 git 仓库（`index`/`refs` 靠原子重命名与锁，冲突副本无法像普通文件那样手工合并，且会让两台机器都「看起来拥有历史」而破坏单写者不变式）。Win10 侧改用 `AgentsConversion/GIT_REVISION.md` 判断「同步过来的文件对应哪个提交」：由 `tools/sync-revision.sh` 在本机每次提交/合并/切分支后自动刷新（git hook）。新机器/新克隆需执行一次 `tools/sync-revision.sh --install`（hook 只写在本机 `.git/hooks`，不随同步）。该标记文件不是仓库内容，勿手改。
+- **提交前编码守卫（2026-09-15 起）**：同一个安装脚本还会装 **`pre-commit`**，由 `tools/check-encoding.py` 检查待提交文本文件——出现**非法 UTF-8** 或**替换字符 U+FFFD** 即拒绝提交（`git commit --no-verify` 可绕过）。构建门禁拦不住注释里的乱码：2026-09-15 有 Win10 编辑器按非 UTF-8 重存 `Index.ets`，437 处中文乱码、连字符串收尾引号都被吞掉才让 ArkTS 编译失败。检查器自身与其文档描述里**不得**出现真实的替换字符字面量（否则会被自己拦下）。
 - **待 Win10 首验的三件事**：DevEco 商用 SDK 能否构建本 OpenHarmony(API 26) 工程、DevEco 模拟器能否安装运行、lint 面板是否有输出。结论回填 `AgentsConversion/`；若不可用，构建/运行回退本机 ohemu 路线（lint 仍受类型门禁，见「鸿蒙构建要点」）。
 - 机器专属事实（对方不可复现）：本机 = 商用 CLT `/opt/command-line-tools`、OpenHarmony SDK `/opt/ohos-sdk`、ohemu QEMU 手机模拟器（镜像/日志在 `~/WorkSpace2/`）、`sign-debug.sh` 签名安装、工作区根 `EMULATOR_NOTES.md`（**不在仓库内**）。Win10 = DevEco SDK/模拟器。
 

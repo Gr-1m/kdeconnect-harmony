@@ -62,3 +62,5 @@ entry/src/main/cpp/rust/kdc_core/target/
 target/
 # 代码索引缓存（PROCESS §9.1，机器本地）
 .codegraph/
+# DevEco IDE 产物目录（PROCESS §9.1，机器本地）
+/.deveco/

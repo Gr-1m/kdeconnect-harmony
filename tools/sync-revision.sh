@@ -27,7 +27,12 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 HOOK
     chmod +x ".git/hooks/$hook"
   done
-  echo "已安装 hook：post-commit / post-merge / post-checkout（仅本机 .git/hooks，不随 Syncthing 同步）"
+  # pre-commit：编码守卫（拒非法 UTF-8/U+FFFD），hook 体由 check-encoding.py 自带
+  if [ -x "$ROOT/tools/check-encoding.py" ]; then
+    "$ROOT/tools/check-encoding.py" --install-hook >/dev/null 2>&1 ||
+      echo "警告：pre-commit 编码守卫安装失败（可手动运行 tools/check-encoding.py --install-hook）" >&2
+  fi
+  echo "已安装 hook：pre-commit（编码守卫）、post-commit / post-merge / post-checkout（版本标记）"
 fi
 
 HASH="$(git rev-parse --short HEAD 2>/dev/null)" || exit 0
