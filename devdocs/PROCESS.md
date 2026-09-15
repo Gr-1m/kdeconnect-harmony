@@ -1,7 +1,7 @@
 # PROCESS.md — KDE-H Connect 工作流规范
 
 > CodeArts（流程总指挥）起草，2026-09-12。
-> 适用于新仓库 `<workspace>/kdeconnect-harmony`（gitcode 中心仓库 clone，分支 `dev/zcodeinit`）。
+> 适用于新仓库 `kdeconnect-harmony`（gitcode 中心仓库 clone，分支 `dev/zcodeinit`）。
 > 所有 agent 遵守本文；变更由 CodeArts 发起，异议走 `AgentsConversion/` 消息。
 
 ---

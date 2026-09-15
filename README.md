@@ -134,6 +134,19 @@ Implements KDE Connect protocol v8 with strict schema compliance (`kdeconnect-me
 | Identity packet | 8 KiB |
 | Pairing timestamp tolerance | ±1800s |
 
+## Development Environment
+
+This project is developed across two machines on the same LAN, with file synchronization handled by [Syncthing](https://syncthing.net/):
+
+| Machine | OS | Responsibilities |
+|---|---|---|
+| **CachyOS** (Linux) | CachyOS (Arch-based) | C++/Rust native development, host-side tests, KDE Connect desktop (for protocol verification), git operations (single writer) |
+| **Win10** | Windows 10 LTSC 21H1 | ArkTS development in DevEco Studio, HarmonyOS emulator & real-device debugging (MatePad Mini) |
+
+- Both machines share one working tree via Syncthing — **never edit the same file from both sides simultaneously**
+- `.git` exists only on the Linux side; Win10 tracks the corresponding commit via `AgentsConversion/GIT_REVISION.md`
+- KDE Connect desktop runs on the CachyOS machine, serving as the protocol counterpart for end-to-end testing
+
 ## Development
 
 ### Adding a Plugin
@@ -177,3 +190,4 @@ pre-commit encoding guard rejects mojibake).
 - [kdeconnect-android](https://invent.kde.org/network/kdeconnect-android) — Android reference implementation
 - [kdeconnect-kde](https://invent.kde.org/network/kdeconnect-kde) — Desktop reference implementation
 - [kdeconnect-meta](https://invent.kde.org/network/kdeconnect-meta) — Protocol schemas
+- [Syncthing](https://syncthing.net/) — Decentralized file synchronization powering our dual-machine workflow

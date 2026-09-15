@@ -134,6 +134,19 @@ kdeconnect-harmony/
 | Identity 包 | 8 KiB |
 | 配对时间戳容差 | ±1800 秒 |
 
+## 开发环境
+
+本项目在局域网内的两台机器上协作开发，文件同步由 [Syncthing](https://syncthing.net/) 完成：
+
+| 机器 | 操作系统 | 职责 |
+|---|---|---|
+| **CachyOS**（Linux） | CachyOS（Arch 系） | C++/Rust native 开发、host 侧测试、KDE Connect 桌面端（协议对端验证）、git 操作（单写者） |
+| **Win10** | Windows 10 LTSC 21H1 | ArkTS 开发（DevEco Studio）、HarmonyOS 模拟器与真机调试（MatePad Mini） |
+
+- 两台机器通过 Syncthing 共享同一个工作区——**同一文件不要两侧同时编辑**
+- `.git` 只存在于 Linux 侧；Win10 侧通过 `AgentsConversion/GIT_REVISION.md` 对齐文件对应的提交
+- KDE Connect 桌面端运行在 CachyOS 上，作为端到端测试的协议对端
+
 ## 开发
 
 ### 新增插件
@@ -176,3 +189,4 @@ GPL-3.0 — 与上游 KDE Connect 一致。见 [LICENSE](LICENSE)。
 - [kdeconnect-android](https://invent.kde.org/network/kdeconnect-android) — Android 参考实现
 - [kdeconnect-kde](https://invent.kde.org/network/kdeconnect-kde) — 桌面参考实现
 - [kdeconnect-meta](https://invent.kde.org/network/kdeconnect-meta) — 协议 schema
+- [Syncthing](https://syncthing.net/) — 去中心化文件同步，支撑双机协作开发

@@ -413,7 +413,15 @@ struct Index {
       } catch (e) {
         this.log('setCapabilities unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
       }
-      native.start(cfg);
+      // MSG136 §2 F1：native.start 现在返回 boolean（omp 已让 JsStart 回传 ok）。
+      // 旧代码不消费返回值、无条件置 running ⇒ 端口冲突 / UDP bind 失败时 UI 仍显示「运行中」，
+      // 用户根本看不到失败。返回 false 时置失败态并记日志（原因见日志：port conflict / UDP bind failure）。
+      const started: boolean = native.start(cfg);
+      if (!started) {
+        this.status = 'start failed';
+        this.log('native.start returned false (port conflict or UDP bind failure)');
+        return;
+      }
       this.status = 'running';
     } catch (e) {
       this.status = 'start failed: ' + (e instanceof Error ? e.message : 'unknown');
