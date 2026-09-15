@@ -41,6 +41,8 @@ def is_text_candidate(path: str) -> bool:
     base = os.path.basename(path)
     if base in TEXT_NAMES:
         return True
+    if base.startswith(".") and base.count(".") == 1:
+        return True   # 点文件（.gitignore/.stignore/.gitattributes …）：splitext 对它们返回空后缀
     return os.path.splitext(base)[1].lower() in TEXT_SUFFIXES
 
 
