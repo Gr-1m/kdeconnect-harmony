@@ -9,6 +9,7 @@ import { connection } from '@kit.NetworkKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { HdsTabs, HdsTabsController, hdsMaterial } from '@kit.UIDesignKit';
 import uiMaterial from '@ohos.arkui.uiMaterial';
+import deviceInfo from '@ohos.deviceInfo';
 import { PacketRouter, RouterCallbacks } from '../net/PacketRouter';
 import { PluginBase } from '../plugins/PluginBase';
 import { PluginRegistry } from '../plugins/PluginRegistry';
@@ -357,12 +358,27 @@ struct Index {
     }
   }
 
+  // 设备类型动态化（MSG117 §4）：UDP 广播/TCP identity 的 deviceType 决定对端图标与筛选，
+  // 原先恒为 'phone' ⇒ 平板在桌面端显示成手机。@ohos.deviceInfo.deviceType 取值
+  // phone / tablet / tv / wearable / 2in1 …；KDE 认 phone/tablet/desktop/laptop/tv/wearable，
+  // 故只做必要映射，未知一律 phone。
+  private peerDeviceType(): string {
+    const t: string = deviceInfo.deviceType;
+    if (t === 'tablet' || t === 'tv' || t === 'wearable') {
+      return t;
+    }
+    if (t === '2in1' || t === 'pc' || t === 'desktop') {
+      return 'desktop';
+    }
+    return 'phone';
+  }
+
   private startNative(): void {
     try {
       const cfg: NetConfig = {
         deviceId: this.deviceId,
         deviceName: this.deviceName,
-        deviceType: 'phone',
+        deviceType: this.peerDeviceType(),
         certPem: this.certPem,
         keyPem: this.keyPem,
         tcpPort: 0
