@@ -58,6 +58,7 @@ packet 以换行分隔的 JSON 字符串发送：`{"id", "type", "body", "versio
 - **提交前编码守卫（2026-09-15 起）**：同一个安装脚本还会装 **`pre-commit`**，由 `tools/check-encoding.py` 检查待提交文本文件——出现**非法 UTF-8** 或**替换字符 U+FFFD** 即拒绝提交（`git commit --no-verify` 可绕过）。构建门禁拦不住注释里的乱码：2026-09-15 有 Win10 编辑器按非 UTF-8 重存 `Index.ets`，437 处中文乱码、连字符串收尾引号都被吞掉才让 ArkTS 编译失败。检查器自身与其文档描述里**不得**出现真实的替换字符字面量（否则会被自己拦下）。
 - **待 Win10 首验的三件事**：DevEco 商用 SDK 能否构建本 OpenHarmony(API 26) 工程、DevEco 模拟器能否安装运行、lint 面板是否有输出。结论回填 `AgentsConversion/`；若不可用，构建/运行回退本机 ohemu 路线（lint 仍受类型门禁，见「鸿蒙构建要点」）。
 - 机器专属事实（对方不可复现）：本机 = 商用 CLT `/opt/command-line-tools`、OpenHarmony SDK `/opt/ohos-sdk`、ohemu QEMU 手机模拟器（镜像/日志在 `~/WorkSpace2/`）、`sign-debug.sh` 签名安装、工作区根 `EMULATOR_NOTES.md`（**不在仓库内**）。Win10 = DevEco SDK/模拟器。
+- **UI 规范参考（用户 2026-09-15 放置，改配色/图标时先查）**：Win10 本机 `C:\Users\<user>\Documents\cv\secai-tubiao.txt`（**不在仓库内**，Linux 侧不可复现）记了鸿蒙官方两份 UX 规范入口 —— 色彩 <https://developer.huawei.com/consumer/cn/doc/doccenter-ux-design/color-0000001776857164>、应用图标 <https://developer.huawei.com/consumer/cn/doc/doccenter-ux-design/application-icon-0000001953444009>。改图标/配色时先取这两份（页面为 JS 渲染，需联网抓取）。
 
 ## 模拟器调试（ohemu，本机兜底路线）
 
