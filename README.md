@@ -157,7 +157,7 @@ GPL-3.0 — same as upstream KDE Connect. See [LICENSE](LICENSE).
 
 ## Agent Division of Labour
 
-Requirements and key decisions come from the human author; day-to-day implementation, review and verification are split across several AI agents (collaboration rules and pitfalls: `devdocs/PROCESS.md`).
+Requirements and key decisions come from **security development engineer Gr%1m**; day-to-day implementation, review and verification are split across several AI agents (collaboration rules and pitfalls: `devdocs/PROCESS.md`).
 
 | Role | Scope | Notes |
 |---|---|---|
