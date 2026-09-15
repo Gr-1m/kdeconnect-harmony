@@ -1,8 +1,10 @@
 import { vibrator } from '@kit.SensorServiceKit';
 import { PluginBase } from './PluginBase';
 
-// 查找手机插件（kdeconnect.findmyphone.request）：收到请求即振动提醒。
+// 查找手机插件（kdeconnect.findmyphone.request）：**只收不发**——收到请求即振动提醒。
 // 说明：HarmonyOS 三方可振动（ohos.permission.VIBRATE，normal 级）；响铃需音频资源，M2 后期再评估。
+// 发送方向不用：对端 KDE 桌面收到 findmyphone.request 不会弹通知（用户 2026-09-15 实测），
+// 故「查找设备」按钮改发 `kdeconnect.ping`（桌面会弹通知），见 Index.onDeviceAction。
 export class FindMyPhonePlugin extends PluginBase {
   private ringing: boolean = false;
 

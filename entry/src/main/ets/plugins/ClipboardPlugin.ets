@@ -6,16 +6,20 @@ interface ClipboardBody {
   timestamp?: number;
 }
 
-// 剪贴板同步插件（kdeconnect.clipboard / .connect）。
-// 接收方向：把对端剪贴板内容写入系统剪贴板（桌面复制 → 手机剪贴板立即可用）。
-// 发送方向：sendClipboard() 已就绪，等 M2 的 UI 入口（设备详情页/设置项）挂上即可。
+// 剪贴板同步插件（kdeconnect.clipboard / .connect）——双向（MSG112 §1）。
+// - 收 `kdeconnect.clipboard`：对端剪贴板内容 → 写入系统剪贴板（桌面复制 → 手机立即可用）
+// - 收 `kdeconnect.clipboard.connect`：对端**索取**我方剪贴板。读取本机剪贴板需
+//   `ohos.permission.READ_PASTEBOARD`（system_basic，三方应用不可声明）→ 只能提示用户
+//   点 PasteButton 授权后发送，这里不自动回复。
+// - 发 `kdeconnect.clipboard`：本机剪贴板内容（PasteButton 授权后）
+// - 发 `kdeconnect.clipboard.connect`：**索取**对端剪贴板（timestamp=0 保证对端一定回复）
 export class ClipboardPlugin extends PluginBase {
   constructor() {
     super();
     this.displayName = 'Clipboard';
     this.description = 'Sync clipboard between devices';
     this.supportedPacketTypes = ['kdeconnect.clipboard', 'kdeconnect.clipboard.connect'];
-    this.outgoingPacketTypes = ['kdeconnect.clipboard'];
+    this.outgoingPacketTypes = ['kdeconnect.clipboard', 'kdeconnect.clipboard.connect'];
   }
 
   onPacketReceived(packetType: string, body: Object): boolean {
@@ -25,7 +29,13 @@ export class ClipboardPlugin extends PluginBase {
     const b: ClipboardBody = body as ClipboardBody;
     const content: string = b.content ?? '';
     if (content.length === 0) {
-      this.log('clipboard packet without content (ignored)');
+      if (packetType === 'kdeconnect.clipboard.connect') {
+        // 对端索取剪贴板：本侧无权读取 → 让 UI 提示用户点「粘贴」按钮授权发送
+        this.notify('clipboard.request', '');
+        this.log('peer requested clipboard (needs PasteButton authorization)');
+      } else {
+        this.log('clipboard packet without content (ignored)');
+      }
       return true;
     }
     try {
@@ -39,7 +49,7 @@ export class ClipboardPlugin extends PluginBase {
     return true;
   }
 
-  // 把本机剪贴板发给对端（UI 触发；M2 接入入口）
+  // 把本机剪贴板发给对端（PasteButton 拿到临时读权限后由 UI 触发）
   sendClipboard(): boolean {
     try {
       const sys: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard();
@@ -57,5 +67,13 @@ export class ClipboardPlugin extends PluginBase {
       this.log('read local clipboard failed');
       return false;
     }
+  }
+
+  // 索取对端剪贴板（卡片点击；对端回复 kdeconnect.clipboard → 走上面的写入分支）
+  requestPeerClipboard(): boolean {
+    const body: ClipboardBody = { content: '', timestamp: 0 };
+    const ok: boolean = this.send('kdeconnect.clipboard.connect', body);
+    this.log(ok ? 'clipboard request sent to peer' : 'clipboard request failed');
+    return ok;
   }
 }
