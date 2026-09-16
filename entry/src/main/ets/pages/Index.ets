@@ -88,6 +88,11 @@ struct Index {
   private buildCount: number = 0;
   // 事件日志开关：true 时打印完整事件 JSON（排查用）；常态 false ⇒ 只打轻量摘要
   private debugEventLog: boolean = false;
+  // 卡片忙碌态【补丁·待优化】（用户 2026-09-16 提案 / CodeArts MSG6-7 批准）：
+  // 点击卡片后该卡片短期内不接受再次点击，等「弹窗已弹出」或「功能已执行」再恢复；
+  // 5s 保险丝兜底（日志区分 fired by event / fired by timeout）。仅逻辑，不改视觉。
+  @State cardBusyKey: string = '';
+  private cardBusyTimer: number = -1;
   @State deviceName: string = DEFAULT_DEVICE_NAME;
   // 系统设备名称（只读展示 + 设置页「使用系统名称」）
   @State systemName: string = '';
@@ -1630,6 +1635,43 @@ struct Index {
     this.onDeviceAction('clipboard');
   }
 
+  // 卡片点击入口（卡片忙碌态：【补丁·待优化】）：
+  //   ① 有卡片处于忙碌态 ⇒ 直接忽略本次点击（日志留痕，视觉不变）；
+  //   ② 否则置忙碌 + 起 5s 保险丝 + 执行动作；
+  //   ③ 释放由**完成事件**驱动：弹窗类等弹窗打开（openMprisDialog/runCommandDialogOpen），
+  //      直发类在动作同步返回后立即释放；保险丝只在事件缺失时兜底（fired by timeout）。
+  private runCardAction(key: string): void {
+    if (this.cardBusyKey.length > 0) {
+      console.info(`KDC card busy: ignore tap ${key} (busy=${this.cardBusyKey})`);
+      return;
+    }
+    this.cardBusyKey = key;
+    if (this.cardBusyTimer >= 0) {
+      clearTimeout(this.cardBusyTimer);
+    }
+    this.cardBusyTimer = setTimeout((): void => {
+      this.cardBusyTimer = -1;
+      this.releaseCard(key, 'timeout');
+    }, 5000);
+    this.onDeviceAction(key);
+    // 直发类动作（剪贴板/查找设备/发送文件/远程输入）同步完成 ⇒ 立即释放；弹窗类由弹窗打开时释放
+    if (key !== 'media' && key !== 'run_command') {
+      this.releaseCard(key, 'event');
+    }
+  }
+
+  private releaseCard(key: string, by: string): void {
+    if (this.cardBusyKey !== key) {
+      return;
+    }
+    this.cardBusyKey = '';
+    if (this.cardBusyTimer >= 0) {
+      clearTimeout(this.cardBusyTimer);
+      this.cardBusyTimer = -1;
+    }
+    console.info(`KDC card released: ${key} (fired by ${by})`);
+  }
+
   // 设备详情页的大按钮动作（计划 B）：能落地的接真实插件，落地不了的给明确提示。
   // 用户要求：点「发送文件」**跳到文件导航**（发送入口在文件页），不直接弹系统选择器。
   private onDeviceAction(key: string): void {
@@ -1693,6 +1735,8 @@ struct Index {
       this.runCommands = this.commandsOf(id);
       this.runCommandDialogOpen = true;
       this.log(`run command dialog: ${this.runCommands.length} entries for ${id}`);
+      // 弹窗已弹出 ⇒ 释放该卡片的忙碌态（fired by event）
+      this.releaseCard('run_command', 'event');
       return;
     }
     if (key === 'media') {
@@ -1716,6 +1760,8 @@ struct Index {
       mp.requestPlayerList();
       mp.requestStatus();
       this.log(`media panel opened for ${id} (players=${this.mprisList().length})`);
+      // 弹窗已弹出 ⇒ 释放该卡片的忙碌态（fired by event）
+      this.releaseCard('media', 'event');
       return;
     }
     // remote_input：P1 只声明能力，UI 属 P2（MSG112 §4）→ 占位提示
@@ -2777,7 +2823,8 @@ struct Index {
                 },
                 selectedDeviceId: this.selectedDeviceId,
                 onPlaceholderAction: (key: string): void => {
-                  this.onDeviceAction(key);
+                  // 走卡片忙碌态入口（【补丁·待优化】，视觉无变化）
+                  this.runCardAction(key);
                 },
                 // 发送文件卡内按钮 = 文件页「选择文件并发送」同一动作
                 onSendFilePick: (): void => {

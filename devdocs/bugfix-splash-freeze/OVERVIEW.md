@@ -77,6 +77,22 @@ UIAbility.onCreate（无工作）
 5. **ArkTS 侧是"放大器"不是根因**：事件 JSON 往返、主题重应用等属净收益优化，但不是秒级卡顿的原因
 6. **用户"关 WiFi 就不卡"坐实**：冻结是网络事件驱动的——开 WiFi ⇒ 事件涌入 ⇒ JS 线程被 tsfn 回调占满
 
+## 根因定位（2026-09-16 23:16 突破）
+
+**慢 `sendPacket` = `connMutex_` 锁等待**（DevEco MSG11 用 Omp 的 CPU 埋点复跑后定性）：
+
+| 慢 JsSendPacket | maxJsLockWait | maxHold |
+|---|---|---|
+| 5776ms | 5775ms | 3205ms |
+| 1312ms | 1285ms | 1285ms |
+| 2560ms | 2560ms | 3220ms |
+| 1237ms | 1238ms | 12ms |
+
+- **1:1 吻合**（±1ms）→ JS 线程在等 `connMutex_`
+- **持锁方是网络线程**：`maxHold` 1.2~3.2s
+- **不是事件洪峰**：每 5s 只有个位数事件
+- **下一步**：Omp 加持锁段分段计时，定位是哪一段持锁数秒
+
 ## 两份分析的共识与分歧
 
 | 项 | Omp (native) | DevEco (ArkTS) | 结论 |

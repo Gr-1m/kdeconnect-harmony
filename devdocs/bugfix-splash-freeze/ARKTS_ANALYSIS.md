@@ -146,4 +146,105 @@ omp 的新埋点在 `NETLOOP` 行里加了两组数：`ev[disc/lost/conn/disc2/p
 
 > 已把该结论作为 `MSG11FromDevEco_TO_OMP` 发给 omp（附建议：持锁分段计时 + 把 `JsEntryTimer` 阈值临时降到 0 汇总）。
 
+## 12. 终局定性（23:30 轮，用 omp `a57ca4c` 的带标签持锁埋点）：**凶手是 `onConnectionReadable` / `eventLoop` 在锁内长计算**
+
+```
+KDC-LOCKHOLD] label=sendPacket          hold=4582ms cpu=1ms        ← 纯等锁（cpu≪hold）
+KDC-LOCKHOLD] label=onConnectionReadable hold=1304ms cpu=1298ms    ← 锁内真算（cpu≈hold）
+KDC-LOCKHOLD] label=eventLoop            hold=3281ms cpu=3273ms    ← 锁内真算（cpu≈hold）
+KDC-ENTRY-SPLIT] sendPacket wall=4582ms cpu=1ms lock=4582ms        ← 100% 等锁
+```
+
+- 慢发送与我的插件探针 **1:1**（4584/1290/3258/1316ms）；
+- `sendPacket` 自身 `cpu=0~1ms`、`lock=wall` ⇒ **它一行活都没干，全在等锁**；
+- 持锁方 `onConnectionReadable` / `eventLoop` 的 **`cpu ≈ hold` ⇒ 锁内长计算**（非锁序、非调度剥夺），单次 1.3~3.3s，集中在**建链突发期**（末窗口 `maxHold` 已回落 12ms）。
+
+**⇒ 开屏「点不动」的完整因果链（终版）**：
+`建链突发 → 网络线程在 connMutex_ 内做 1.3~3.3s 长计算 → JS 线程的 sendPacket 只能阻塞等待 → JS 线程（含 UI）冻结数秒 → 用户「界面出来了但点不动」`。
+ArkTS 侧所有改动（§8-A/B/C）都只是净收益，**不能**消除该冻结；根治点在 native（把长计算移出锁，或先算后持锁）。
+
+## 13. 专题：同一个凶手对**媒体控制卡片/面板卡顿**的影响（用户提问）
+
+**结论：是的，同一个凶手是媒体控制「点击卡顿」的主导原因——但只解释「点一下要等几秒」，不解释「面板自己在转时的每秒重绘」。**
+
+### 13.1 共同路径（为什么必然受影响）
+
+媒体控制卡片/面板的**每一个动作**都走与 `battery`/`connectivity_report` **完全同一条发送入口**：
+
+```
+点卡片 → onDeviceAction('media') → mp.requestPlayerList() / mp.requestStatus()
+面板内 → 播放/暂停/上一首/下一首 → control('PlayPause'|'Next'|'Previous')
+       音量 → setVolume() ｜ 进度 → setPosition() ｜ 刷新 → requestPlayerList+requestStatus ｜ 切播放器 → selectPlayer+requestStatus
+                   ↓（全部）
+        PluginBase.send()  →  sendFn  →  native.sendPacket()  →  ⏳ connMutex_
+```
+⇒ 只要此刻网络线程正持锁（`eventLoop` / `onConnectionReadable` 锁内长计算 1.3~3.3s），**该动作就被卡同样久**。
+
+### 13.2 实测证据
+
+1. **修复前的日志里已多次抓到 mpris 的慢发送**（与 battery/connectivity 同批）：
+   `KDC slow plugin send 1439ms / 3791ms / 2656ms / 1848ms -> kdeconnect.mpris.request`
+2. **本轮面板打开窗口（23:3x）再次抓到持锁**：
+   ```
+   KDC-LOCKHOLD] label=onConnectionReadable hold=1313ms cpu=1309ms
+   KDC-LOCKHOLD] label=eventLoop            hold=1304ms cpu=1301ms
+   ```
+   该窗口内**没有**打印慢 mpris 发送 ⇒ 那两次 `sendPacket` 恰好没撞上持锁窗口 ⇒ **表现为「时好时坏」**（这解释了用户观感的不稳定）。
+
+### 13.3 什么时候最严重
+
+稳态 `maxHold` 已回落（上轮末窗口 12ms）⇒ 媒体控制卡顿**集中在刚连上/刚重连/对端在重拨的那几秒**（建链突发期）。这与用户「点媒体控制就卡」的时机吻合。
+
+### 13.4 不属于该凶手的部分（已由 ArkTS 侧修掉）
+
+- **接收侧**：对端 ~1s 推 `kdeconnect.mpris` 状态走事件路径（native → `napi_threadsafe_function(nonblocking)` → JS 回调），**不占用锁** ⇒ 不受影响；
+- **面板每秒重绘**：ticker 已改「暂停不写 @State」；滑块改千分比；弹层/面板去模糊；日志合并 ⇒ 这部分是**渲染层放大器**，已修；
+- **面板关闭时**：不再写 `mprisItems` 镜像 ⇒ 后台推包不再驱动整页重绘。
+
+### 13.5 因此
+
+- **native 那把锁的锁内长计算一旦移出锁，媒体控制的点击会直接受益**，ArkTS 侧无需再改；
+- 反之，只要锁内长计算还在，无论我怎么在 ArkTS 侧加切分/限频，**点媒体控制仍有概率被卡 1~3 秒**（因为那是同步发送的固有路径）。
+
+## 14. 终局：子段拆分（omp `c05ba58`）把凶手钉到 **`drain → json_dispatch`**
+
+```
+KDC-PHASESPLIT] what=eventLoop:tick total=3259ms plain=0ms tls=0ms ident=0ms drain=3259ms json=0ms flush=0ms
+KDC-DRAINSPLIT] tls_decrypt_recv=1ms json_dispatch=1301ms
+KDC-DRAINSPLIT] tls_decrypt_recv=0ms json_dispatch=3259ms
+```
+- `plain`/`tls`/`ident` 全 0 ⇒ 与握手无关；**`drain` = total ⇒ 全部时间在 drain**；
+- drain 内：`tls_decrypt_recv` 0~3ms，**`json_dispatch` 1296~3315ms** ⇒ **凶手是「把包派发给 JS」这一步**；
+- 同一时刻 JS 线程正卡在 `sendPacket` 等同一把锁（`lock=wall=4558ms`）⇒ **形态上是「互相等」**：网络线程持锁派发、JS 线程等锁发不出包。
+
+**本次还现场抓到媒体控制卡的同一个卡顿**：
+```
+KDC-LOCKHOLD] label=onConnectionWritable hold=1297ms cpu=1297ms
+KDC slow plugin send 2599ms -> kdeconnect.mpris.request (d6c113f1…)
+```
+⇒ 与 §13 的结论一致：**媒体控制的点击卡顿 = 同一把锁**；`drain` 的派发移出锁后，媒体控制与开屏**同时受益**，ArkTS 侧无需再改。
+
+## 15. 收口验证（omp `f872b99`：帧解析不再每帧新建 32MiB 缓冲）
+
+omp 按 §14 的 `drain→json_dispatch` 定位读码，找到具体出处：`PacketIO::extractFrame` **每帧**新建 `out(32MiB+2)` 并零初始化，而它**全程持 `connMutex_`** ⇒ 收包突发期每帧一次 32MiB 分配 + memset；已改为线程局部复用缓冲。
+
+**同口径前后对比（真机）**：
+
+| 指标 | 修前 `c05ba58` | **修后 `f872b99`** |
+|---|---|---|
+| `drain` / `json_dispatch` | 1296~3315 ms | **384 ms（仅 1 次）** |
+| 慢 `sendPacket` | 4558/1284/2599/1318 ms（5 条） | **384 ms（1 条）** |
+| `maxJsLockWait` | 5775/2560/1238 ms | **0 ms** |
+| `maxHold` | 3205/1285/3220 ms | **11 / 5 ms** |
+| `THREAD_BLOCK_3S/6S` | 8/0 | **0/0** |
+| 网络线程 CPU | 14.5s / 110 iters | **0.87~0.97s / 182~217 iters** |
+
+**`[KDC-FRAMESPLIT] frames=1 bytes=2294 maxFrame=2294 total=384ms`** ⇒ 单帧 2.2KB 却曾耗 384ms ⇒ 印证「每帧固定开销」是主因。
+
+**结论**：开屏卡顿与媒体控制卡顿的**同一根因已消除 ~90%**（秒级冻结 → 384ms 轻微掉帧）；`ARKTS_ANALYSIS §8-A/B/C` 与卡片忙碌态是 ArkTS 侧的净收益补充。残留 384ms 若要继续压，走 omp 的「解析移出锁」设计。
+
+
+
+
+
 
