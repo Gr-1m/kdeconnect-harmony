@@ -96,10 +96,13 @@ bool copyFileAndRemove(const std::string &src, const std::string &dst)
     ::close(out);
     ::close(in);
     if (ok) {
-        ok = ::unlink(src.c_str()) == 0;
-    }
-    if (!ok) {
-        ::unlink(dst.c_str());
+        // 源文件可能已被并发清理（例如会话断开走 finishJobLocked 清半成品；而本拷贝持有源 fd、
+        // 已完整读完）。此时 unlink 失败属**预期**，绝不能因此删掉刚写好的目标文件。
+        if (::unlink(src.c_str()) != 0 && errno != ENOENT) {
+            LOGI("copyFileAndRemove: source unlink failed (errno=%d) but copy succeeded", errno);
+        }
+    } else {
+        ::unlink(dst.c_str());   // 拷贝确实失败：清掉半成品目标
     }
     return ok;
 }
@@ -629,41 +632,68 @@ void PayloadManager::onDeviceDown(const std::string &deviceId)
 
 bool PayloadManager::settle(uint64_t id, const std::string &destPath, bool keep)
 {
-    std::lock_guard<std::mutex> lk(mu_);
-    auto j = jobs_.find(id);
-    if (j == jobs_.end() || !j->second->finished || j->second->send) {
-        return false;
+    std::string spool;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto j = jobs_.find(id);
+        if (j == jobs_.end() || !j->second->finished || j->second->send) {
+            return false;
+        }
+        if (j->second->settling) {
+            return false;   // 已有一次落盘在进行：拒绝并发（比让调用方干等更好）
+        }
+        if (keep && (destPath.empty() || destPath.find("..") != std::string::npos)) {
+            // 路径非法：**不擦除任务**，App 可以换一个合法路径重试
+            LOGE("payload settle: invalid destPath '%s' (id=%llu)", destPath.c_str(),
+                 (unsigned long long) id);
+            return false;
+        }
+        spool = j->second->spoolPath;
+        j->second->settling = true;   // 锁外阶段由本函数独占该任务的文件操作
     }
-    const std::string spool = j->second->spoolPath;
-    if (keep && (destPath.empty() || destPath.find("..") != std::string::npos)) {
-        // 路径非法：**不擦除任务**，App 可以换一个合法路径重试
-        LOGE("payload settle: invalid destPath '%s' (id=%llu)", destPath.c_str(),
-             (unsigned long long) id);
-        return false;
-    }
+
+    // ——— 锁外做文件 I/O ———
+    // 这里可能耗时到秒级（跨文件系统 = copyFileAndRemove 整文件拷贝）。**绝不能持 mu_**：
+    // 该锁同时保护 payload 引擎的 FSM（onReadable/onWritable/onTick），持锁做 I/O 会让
+    // 进行中的传输（例如媒体页正在拉取的专辑封面）整体停摆；本函数又是由 JS 线程经
+    // JsKeepPayload 调用的，持锁还会连带拖住 UI（此前的"保存大文件卡顿"是同源问题）。
+    // 拷贝期间源文件被 finishJobLocked 并发 unlink 是安全的：copyFileAndRemove 保持源 fd
+    // 打开，POSIX 下 inode 存活到 close，拷贝仍能读完。
+    bool ok = true;
     if (!keep) {
         if (::unlink(spool.c_str()) != 0) {
             LOGE("payload settle: discard failed id=%llu spool='%s' err=%d(%s)",
                  (unsigned long long) id, spool.c_str(), errno, strerror(errno));
-            return false;
+            ok = false;
         }
-        jobs_.erase(j);
-        return true;
-    }
-    if (::rename(spool.c_str(), destPath.c_str()) != 0) {
+    } else if (::rename(spool.c_str(), destPath.c_str()) != 0) {
         const int err = errno;
         // 跨文件系统（EXDEV）等场景 rename 必失败 —— 设备上 spool 在 cacheDir，
         // 目标常在不同挂载点，必须退回「拷贝 + 删除 spool」，否则「保存」静默失败。
         if (!copyFileAndRemove(spool, destPath)) {
             LOGE("payload settle: save failed id=%llu '%s' -> '%s' rename_err=%d(%s)",
                  (unsigned long long) id, spool.c_str(), destPath.c_str(), err, strerror(err));
-            return false;   // 保留任务与 spool，允许 App 重试
+            ok = false;   // 保留任务与 spool，允许 App 重试
+        } else {
+            LOGI("payload settle: saved via copy id=%llu rename_err=%d(%s) -> '%s'",
+                 (unsigned long long) id, err, strerror(err), destPath.c_str());
         }
-        LOGI("payload settle: saved via copy id=%llu rename_err=%d(%s) -> '%s'",
-             (unsigned long long) id, err, strerror(err), destPath.c_str());
     }
-    jobs_.erase(j);
-    return true;
+
+    // ——— 回到锁内收尾 ———
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto j = jobs_.find(id);
+        if (j == jobs_.end()) {
+            // 锁外期间任务被销毁（设备断开等）：文件操作结果仍然有效，按结果返回即可
+            return ok;
+        }
+        j->second->settling = false;
+        if (ok) {
+            jobs_.erase(j);
+        }
+    }
+    return ok;
 }
 
 void PayloadManager::cancel(uint64_t id)

@@ -66,6 +66,9 @@ struct PayloadJob {
     std::vector<uint8_t> peerCaDnDer;
     bool started = false;
     bool finished = false;
+    // 落盘进行中（settle 在锁外做文件 I/O 时置位）：阻止并发 settle，并让 finishJobLocked
+    // 不再去动 spool（避免拷贝源在过程中被清理，见 PayloadManager::settle 注释）。
+    bool settling = false;
 };
 
 class PayloadManager {
