@@ -133,6 +133,41 @@ static void purgeStaleSpool(const std::string &dir)
     }
 }
 
+
+namespace {
+// 持锁计时（与 net_stack 同款）：payload 的 mu_ 若被长持有，会让「持 connMutex_ 的网络线程」在
+// 锁内等待（锁序 connMutex_ → mu_），进而让 JS 线程的 sendPacket 等数秒（DevEco MSG11）。
+struct HoldTimer {
+    const char *label;
+    int64_t t0;
+    int64_t cpu0;
+    explicit HoldTimer(const char *l)
+        : label(l),
+          t0(std::chrono::duration_cast<std::chrono::milliseconds>(
+                 std::chrono::steady_clock::now().time_since_epoch()).count()),
+          cpu0(clockCpuMs())
+    {
+    }
+    static int64_t clockCpuMs()
+    {
+        struct timespec ts {};
+        if (::clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) {
+            return -1;
+        }
+        return static_cast<int64_t>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+    }
+    ~HoldTimer()
+    {
+        const int64_t hold = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now().time_since_epoch()).count() - t0;
+        if (hold > LOCK_HOLD_LOG_MS) {
+            LOGI("[KDC-LOCKHOLD] label=%{public}s hold=%{public}lldms cpu=%{public}lldms",
+                 label, (long long) hold, (long long) (clockCpuMs() - cpu0));
+        }
+    }
+};
+}  // namespace
+
 PayloadManager::PayloadManager(PayloadHost *host, std::string spoolDir)
     : host_(host), spoolDir_(std::move(spoolDir))
 {
@@ -316,6 +351,7 @@ uint64_t PayloadManager::startSend(const std::string &deviceId, const std::strin
         return 0;
     }
 
+    HoldTimer _hold("payload::startSend");
     std::lock_guard<std::mutex> lk(mu_);
     auto job = std::make_unique<PayloadJob>();
     job->id = allocIdLocked();
@@ -346,6 +382,7 @@ uint64_t PayloadManager::startReceive(const std::string &deviceId, const std::st
                                   uint16_t port, int64_t payloadSize,
                                   const std::string &fileName)
 {
+    HoldTimer _hold("payload::startReceive");
     std::lock_guard<std::mutex> lk(mu_);
     if (!PacketIO::isValidDeviceId(deviceId) || spoolDir_.empty()) {
         return 0;
@@ -508,12 +545,14 @@ void PayloadManager::drainReceiveLocked(PayloadJob &job)
 
 bool PayloadManager::handlesFd(int fd) const
 {
+    HoldTimer _hold("payload::handlesFd");
     std::lock_guard<std::mutex> lk(mu_);
     return fdIndex_.count(fd) != 0;
 }
 
 void PayloadManager::onReadable(int fd)
 {
+    HoldTimer _hold("payload::onReadable");
     std::lock_guard<std::mutex> lk(mu_);
     auto it = fdIndex_.find(fd);
     if (it == fdIndex_.end()) {
@@ -586,6 +625,7 @@ void PayloadManager::onReadable(int fd)
 
 void PayloadManager::onWritable(int fd)
 {
+    HoldTimer _hold("payload::onWritable");
     std::lock_guard<std::mutex> lk(mu_);
     auto it = fdIndex_.find(fd);
     if (it == fdIndex_.end()) {
@@ -639,6 +679,7 @@ void PayloadManager::onWritable(int fd)
 
 void PayloadManager::onTick(int64_t nowMs)
 {
+    HoldTimer _hold("payload::onTick");
     std::lock_guard<std::mutex> lk(mu_);
     for (auto &p : jobs_) {
         PayloadJob &job = *p.second;
@@ -692,6 +733,7 @@ void PayloadManager::onTick(int64_t nowMs)
 
 void PayloadManager::onDeviceDown(const std::string &deviceId)
 {
+    HoldTimer _hold("payload::onDeviceDown");
     std::lock_guard<std::mutex> lk(mu_);
     for (auto &p : jobs_) {
         PayloadJob &job = *p.second;
@@ -705,6 +747,7 @@ bool PayloadManager::settle(uint64_t id, const std::string &destPath, bool keep)
 {
     std::string spool;
     {
+        HoldTimer _hold("payload::settle");
         std::lock_guard<std::mutex> lk(mu_);
         auto j = jobs_.find(id);
         if (j == jobs_.end() || !j->second->finished || j->second->send) {
@@ -753,6 +796,7 @@ bool PayloadManager::settle(uint64_t id, const std::string &destPath, bool keep)
 
     // ——— 回到锁内收尾 ———
     {
+        HoldTimer _hold("payload::settle");
         std::lock_guard<std::mutex> lk(mu_);
         auto j = jobs_.find(id);
         if (j == jobs_.end()) {
@@ -769,6 +813,7 @@ bool PayloadManager::settle(uint64_t id, const std::string &destPath, bool keep)
 
 void PayloadManager::cancel(uint64_t id)
 {
+    HoldTimer _hold("payload::cancel");
     std::lock_guard<std::mutex> lk(mu_);
     auto j = jobs_.find(id);
     if (j == jobs_.end() || j->second->finished) {

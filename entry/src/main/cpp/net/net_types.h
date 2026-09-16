@@ -25,6 +25,8 @@ constexpr int DISCOVERY_DEBOUNCE_MS = 500;
 constexpr int DISCOVERY_DEDUP_EVENT_MS = 2000;
 // sendPacket 慢调用判定阈值：超过即打 [KDC-ENTRY-SPLIT]（wall/cpu/lock 三段，见 NATIVE_ANALYSIS §2.4）
 constexpr int64_t ENTRY_SPLIT_LOG_MS = 50;
+// 持锁超时打点阈值（[KDC-LOCKHOLD]）：真机持锁达 1.2~3.2s，这里取 100ms 以便捕获中间态
+constexpr int64_t LOCK_HOLD_LOG_MS = 100;
 // 同 IP accept 限流（防连接风暴）。原为 1000ms：但 KDE 的「新链路替换旧链路」语义会让对端在
 // ~0.6~0.7s 后重拨一次，1000ms 会把这次**合法重拨**直接拒掉（真机配对失败成因之一，DevEco MSG181）。
 // 降到 300ms：仍能挡住真正风暴，又能容纳 KDE 的正常替换节奏。
