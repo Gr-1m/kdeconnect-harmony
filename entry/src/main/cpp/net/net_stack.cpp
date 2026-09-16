@@ -65,6 +65,43 @@ void NetStack::setEventCallback(EventCallback cb)
 //  ② 同一设备 2s 内重复的 DeviceDiscovered 去重：UDP 广播（onUdpReadable）与对端拨入
 //     （handlePlainIdentity）都会宣告同一设备，开屏期会成对放大 JS 侧处理量。
 namespace {
+// ── 持锁分段计时（CodeArts MSG7 P0 / DevEco MSG11 §2.1）──
+// 现象：真机 JS 线程等 connMutex_ 1.2~3.2s（maxJsLockWait 与慢 sendPacket 1:1），而套接字均为
+// 非阻塞 ⇒ 只可能是「锁内长 CPU 工作」或「持锁时又等另一把锁（锁序）」。本守卫按调用点打标签，
+// 超过阈值即打一行，并把窗口内最长的一次连同标签汇入 NETLOOP 行 —— 一次复跑即可指认凶手。
+int64_t lockCpuMs()
+{
+    struct timespec ts {};
+    if (::clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) {
+        return -1;
+    }
+    return static_cast<int64_t>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+}
+
+int64_t lockMonoMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+struct HoldTimer {
+    const char *label;
+    int64_t t0 = lockMonoMs();
+    int64_t cpu0 = lockCpuMs();
+    explicit HoldTimer(const char *l) : label(l) {}
+    ~HoldTimer()
+    {
+        const int64_t hold = lockMonoMs() - t0;
+        if (hold > LOCK_HOLD_LOG_MS) {
+            LOGI("[KDC-LOCKHOLD] label=%{public}s hold=%{public}lldms cpu=%{public}lldms",
+                 label, (long long) hold, (long long) (lockCpuMs() - cpu0));
+        }
+    }
+};
+}  // namespace
+
+namespace {
 // 本线程 CPU 时间（毫秒）。用途：区分「函数内真有活」与「线程未被调度/被阻塞」——
 // 这是 DevEco ARKTS_ANALYSIS 与 NATIVE_ANALYSIS §2.4 约定的决定性判据。
 int64_t threadCpuMs()
@@ -266,6 +303,7 @@ void NetStack::stop()
     }
 
     {
+        HoldTimer _hold("stop");
         std::lock_guard<std::mutex> lk(connMutex_);
         for (auto &p : connections_) {
             p.second->close();
@@ -332,6 +370,7 @@ bool NetStack::connectToPeer(const std::string &host, uint16_t port)
     conn->setPeerInfo(host, port);
 
     {
+        HoldTimer _hold("connectToPeer");
         std::lock_guard<std::mutex> lk(connMutex_);
         connections_[fd] = std::move(conn);
     }
@@ -344,6 +383,7 @@ bool NetStack::connectToPeer(const std::string &host, uint16_t port)
     ev.data.fd = fd;
     epoll_ctl(epollFd_, EPOLL_CTL_ADD, fd, &ev);
     {
+        HoldTimer _hold("connectToPeer");
         std::lock_guard<std::mutex> lk(connMutex_);
         auto rit = connections_.find(fd);
         if (rit != connections_.end()) {
@@ -431,6 +471,7 @@ bool NetStack::sendPacket(const std::string &deviceId, const std::string &packet
     // 必须区分「等 connMutex_」与「入口内部工作」。>50ms 打一行，峰值随 NETLOOP 行输出。
     SendPacketTimer _entryTimer;   // §2.4：wall/cpu/lock 三段（>50ms 才打）
     const int64_t lockT0 = nowMs();
+    HoldTimer _hold("sendPacket");
     std::lock_guard<std::mutex> lk(connMutex_);
     const int64_t lockWaitMs = nowMs() - lockT0;
     _entryTimer.lockWaitMs = lockWaitMs;
@@ -478,6 +519,7 @@ bool NetStack::sendPacket(const std::string &deviceId, const std::string &packet
 
 void NetStack::disconnectDevice(const std::string &deviceId)
 {
+    HoldTimer _hold("disconnectDevice");
     std::lock_guard<std::mutex> lk(connMutex_);
     bool any = false;
     for (auto it = connections_.begin(); it != connections_.end(); ) {
@@ -557,6 +599,7 @@ void NetStack::eventLoop()
                 if (ev & EPOLLIN) {
                     onConnectionReadable(fd);
                 }
+                HoldTimer _hold("eventLoop");
                 std::lock_guard<std::mutex> lk(connMutex_);
                 closeConnection(fd, "epoll err/hup");
                 ++wakeByConn_;
@@ -639,6 +682,7 @@ void NetStack::eventLoop()
         if (dueTick) {
         const int64_t holdT0 = nowMs();
         {
+            HoldTimer _hold("eventLoop");
             std::lock_guard<std::mutex> lk(connMutex_);
             // 快照（fd → 对象指针）：本循环内调用的回调（pumpPlainIdentity/drainEncrypted →
             // dispatchFrames → closeConnection）会把条目从 connections_ **摘除并析构**，
@@ -895,6 +939,7 @@ void NetStack::onTcpServerReadable()
 
         // 未配对连接数上限（此前该常量只用作 listen backlog，非语义本意）
         {
+            HoldTimer _hold("onTcpServerReadable");
             std::lock_guard<std::mutex> lk(connMutex_);
             int unpaired = 0;
             for (const auto &p : connections_) {
@@ -910,6 +955,7 @@ void NetStack::onTcpServerReadable()
         auto conn = std::make_unique<TcpConnection>(fd, true);
         conn->setPeerInfo(peerHostOf(fd), 0);
         {
+            HoldTimer _hold("onTcpServerReadable");
             std::lock_guard<std::mutex> lk(connMutex_);
             connections_[fd] = std::move(conn);
         }
@@ -952,6 +998,7 @@ void NetStack::updateWriteInterestLocked(int fd)
 
 void NetStack::updateWriteInterest(int fd)
 {
+    HoldTimer _hold("updateWriteInterest");
     std::lock_guard<std::mutex> lk(connMutex_);
     updateWriteInterestLocked(fd);
 }
@@ -1268,6 +1315,7 @@ void NetStack::onConnectionReadable(int fd)
 {
     // 同 onConnectionWritable：guard 先构造、lock 后构造 ⇒ 析构时锁已释放，可在 guard 内取锁。
     WriteInterestGuard _wig(this, fd);
+    HoldTimer _hold("onConnectionReadable");
     std::lock_guard<std::mutex> lk(connMutex_);
     auto it = connections_.find(fd);
     if (it == connections_.end()) return;
@@ -1348,6 +1396,7 @@ void NetStack::onConnectionWritable(int fd)
     // 注意声明顺序：guard 先构造、lock 后构造 ⇒ 析构顺序相反（lock 先释放），
     // 因此 guard 在析构里取锁是安全的（不会自锁）。
     WriteInterestGuard _wig(this, fd);
+    HoldTimer _hold("onConnectionWritable");
     std::lock_guard<std::mutex> lk(connMutex_);
     auto it = connections_.find(fd);
     if (it == connections_.end()) return;
@@ -1454,6 +1503,7 @@ int64_t NetStack::nowMs()
 std::string NetStack::peerCertPem(const std::string &deviceId)
 {
     {
+        HoldTimer _hold("peerCertPem");
         std::lock_guard<std::mutex> lk(connMutex_);
         for (auto &p : connections_) {
             TcpConnection &c = *p.second;
@@ -1473,6 +1523,7 @@ std::string NetStack::peerCertPem(const std::string &deviceId)
             return it->second;
         }
     }
+    HoldTimer _hold("peerCertPem");
     std::lock_guard<std::mutex> lk(connMutex_);
     auto it = peerCertPemCache_.find(deviceId);
     return it != peerCertPemCache_.end() ? it->second : std::string();
@@ -1545,6 +1596,7 @@ void NetStack::removeTrustedCertificate(const std::string &deviceId)
 
 std::string NetStack::getPeerCertificate(const std::string &deviceId)
 {
+    HoldTimer _hold("getPeerCertificate");
     std::lock_guard<std::mutex> lk(connMutex_);
     for (auto &p : connections_) {
         TcpConnection &c = *p.second;
@@ -1575,6 +1627,7 @@ std::string NetStack::getPairVerificationCode(const std::string &deviceId,
 {
     std::string peerCertDer;
     {
+        HoldTimer _hold("getPairVerificationCode");
         std::lock_guard<std::mutex> lk(connMutex_);
         for (auto &p : connections_) {
             TcpConnection &c = *p.second;
@@ -1637,6 +1690,7 @@ void NetStack::setCapabilities(const std::vector<std::string> &incomingCaps,
     // 网络线程（此前在这里直接 sendIdentityOverTls ⇒ 在 JS 线程的 socket 上做 I/O，
     // 高延迟链路上会连同 connMutex_ 一起冻结 UI；本改动是契约级修正，签名/语义不变）。
     {
+        HoldTimer _hold("setCapabilities");
         std::lock_guard<std::mutex> lk(connMutex_);
         bool any = false;
         for (auto &p : connections_) {

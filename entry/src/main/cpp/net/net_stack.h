@@ -178,6 +178,7 @@ private:
     uint64_t connOut_ = 0;
     uint64_t connHup_ = 0;
     int64_t maxTickHoldMs_ = 0;               // 窗口内单次持 connMutex_ 的最长耗时（循环线程写）
+    const char *maxHoldLabel_ = "?";          // 上述最长持锁来自哪个调用点（[KDC-LOCKHOLD] 同款标签）
     std::atomic<int64_t> maxJsLockWaitMs_{0}; // 窗口内 JS 线程等 connMutex_ 的最长耗时
     // —— 事件普查（用户「关 WiFi 就不卡」对照实验后的定位用）——
     // 开屏期 JS 线程被 tsfn 事件回调占住 ⇒ 点击无响应。这里按 EventType 计数，随 NETLOOP 行输出：
