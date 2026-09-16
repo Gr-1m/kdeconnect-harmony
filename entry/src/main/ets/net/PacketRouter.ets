@@ -205,7 +205,13 @@ export class PacketRouter {
 
   private sendFrame(deviceId: string, type: string, body: Object): boolean {
     const pkt: OutPacket = { id: Date.now(), type: type, body: body };
+    const t0: number = Date.now();
     const ok: boolean = native.sendPacket(deviceId, JSON.stringify(pkt) + '\n');
+    const dt: number = Date.now() - t0;
+    // 主线程是否被 native 发包阻塞的量化证据（用户报「媒体面板连点卡死」时先看这条）
+    if (dt > 100) {
+      console.warn(`KDC slow send ${dt}ms -> ${type} (${deviceId})`);
+    }
     if (!ok) {
       this.logFn('sendPacket failed (not encrypted yet?) ' + type + ' -> ' + deviceId);
     }

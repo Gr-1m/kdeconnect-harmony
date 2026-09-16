@@ -5,6 +5,9 @@ import uiMaterial from '@ohos.arkui.uiMaterial';
 export struct LogsTab {
   @Link logText: string;
   @Prop immersive: boolean = false;
+  // 清空走页面层（同时清缓冲，否则下一次合并刷新会把旧行贴回来）
+  onClearLogs: () => void = () => {
+  };
   cardMaterial: uiMaterial.Material | undefined = undefined;
 
   build() {
@@ -22,7 +25,7 @@ export struct LogsTab {
           .fontColor($r('app.color.text_secondary'))
           .borderRadius(8)
           .onClick(() => {
-            this.logText = '';
+            this.onClearLogs();
           })
       }
       .width('100%')
@@ -44,7 +47,7 @@ export struct LogsTab {
     .layoutWeight(1)
     .padding(14)
     .borderRadius(18)
-    .backgroundBlurStyle(this.immersive ? undefined : BlurStyle.BACKGROUND_THIN)
+    .backgroundBlurStyle(undefined)
     .backgroundColor(this.immersive ? Color.Transparent : $r('app.color.card_bg'))
     .border(this.immersive ? { width: 0 } : { width: 1, color: $r('app.color.card_border') })
     .alignItems(HorizontalAlign.Start)

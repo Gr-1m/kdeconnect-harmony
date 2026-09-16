@@ -129,6 +129,14 @@ struct Index {
   private noticeTimerId: number = -1;
   // 媒体面板的 1s 插值时钟（仅面板打开时运行，关闭/退出必清）
   private mprisTickerId: number = -1;
+  // 点击/发包限频（key = "设备:动作" → 上次触发时刻）。手机实测：卡片点太快会连发网络请求 +
+  // 连开弹窗，叠加重渲染直接把主线程压死（THREAD_BLOCK_3S/6S → 点击无响应）。
+  private actionGateMs: Map<string, number> = new Map();
+  // 日志缓冲：日志可能每秒来十几条（每个 packet 一条），逐条写 @State 会触发同频整页重渲染。
+  // 改为先入缓冲、定时合并刷新（见 log()/flushLog()）。
+  private logBuf: string[] = [];
+  private logFlushTimer: number = -1;
+  private logLastFlushMs: number = 0;   // 上次 flushLog 时刻（P2-2 动态窗用）
   // 进度/音量 Slider 的「用户是否真在拖」标志。
   // 实测坑：Slider 的 onChange 在**程序性**改 value/max 时也会回调（面板刚打开时 length 从 -1
   // 变成真实值 ⇒ 回调被当成 Click/End）→ 误发 SetPosition(1)，把对端播放位置拽回开头。
@@ -317,6 +325,47 @@ struct Index {
   onPageShow(): void {
     this.pageShown = true;
     this.applySettingsIfReady();
+    // 回到前台：媒体面板还开着就恢复插值时钟（onPageHide 会把它停掉）
+    if (this.mprisDialogOpen) {
+      this.startMprisTicker();
+    }
+  }
+
+  onPageHide(): void {
+    // 退后台：停插值时钟，别在后台每秒唤醒 UI（用户建议「实时同步的前后台分开」）
+    this.stopMprisTicker();
+  }
+
+  // 点击/发包限频：同一「设备:动作」在窗口内重复触发直接忽略。
+  // 用途：卡片连点、ping/查找设备/剪贴板索取这类会真的发网络请求的动作别被连点刷爆。
+  // JS→native 同步调用的耗时探针（>100ms 才打 hilog）：
+  // 目的 = 把「主线程被 native 卡住」钉到具体调用上（如 triggerBroadcast / start / setCapabilities）。
+  private probeNative(name: string, fn: () => void): void {
+    const t0: number = Date.now();
+    try {
+      fn();
+    } finally {
+      const dt: number = Date.now() - t0;
+      if (dt > 100) {
+        console.warn(`KDC slow native ${name}: ${dt}ms`);
+      }
+    }
+  }
+
+  private actionGate(key: string, windowMs: number): boolean {
+    const now: number = Date.now();
+    const last: number | undefined = this.actionGateMs.get(key);
+    if (last !== undefined && now - last < windowMs) {
+      // 同时打到 hilog（app 自身日志只在页面里，排查连点时看不到）
+      console.info(`KDC throttled: ${key} (${now - last}ms < ${windowMs}ms)`);
+      return false;
+    }
+    this.actionGateMs.set(key, now);
+    // P2-1② 兜底：条目异常膨胀时整体清空（限频窗最长 3s ⇒ 清空无正确性风险）
+    if (this.actionGateMs.size > 64) {
+      this.actionGateMs.clear();
+    }
+    return true;
   }
 
   private applySettingsIfReady(): void {
@@ -408,7 +457,9 @@ struct Index {
           .concat(this.pluginRegistry.incomingCapabilities());
         const outgoing: string[] = ['kdeconnect.identity', 'kdeconnect.pair']
           .concat(this.pluginRegistry.outgoingCapabilities());
-        native.setCapabilities(incoming, outgoing);
+        this.probeNative('setCapabilities', (): void => {
+          native.setCapabilities(incoming, outgoing);
+        });
         this.log(`caps: in=${incoming.length} out=${outgoing.length}`);
       } catch (e) {
         this.log('setCapabilities unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
@@ -416,7 +467,10 @@ struct Index {
       // MSG136 §2 F1：native.start 现在返回 boolean（omp 已让 JsStart 回传 ok）。
       // 旧代码不消费返回值、无条件置 running ⇒ 端口冲突 / UDP bind 失败时 UI 仍显示「运行中」，
       // 用户根本看不到失败。返回 false 时置失败态并记日志（原因见日志：port conflict / UDP bind failure）。
-      const started: boolean = native.start(cfg);
+      let started: boolean = false;
+      this.probeNative('start', (): void => {
+        started = native.start(cfg);
+      });
       if (!started) {
         this.status = 'start failed';
         this.log('native.start returned false (port conflict or UDP bind failure)');
@@ -521,6 +575,12 @@ struct Index {
     try {
       const conn: connection.NetConnection = connection.createNetConnection();
       conn.on('netAvailable', (): void => {
+        // 网络抖动 / 多网卡（WiFi+蜂窝+多张卡）会连着发 netAvailable，每次都同步调
+        // native.triggerBroadcast() 会在主线程上扎堆 —— 用户实测「手动打开 WiFi 那一瞬间 App 就卡住」。
+        // 这里先做 3s 限频（对端周期广播 + native 侧 caps 变更重播已能覆盖发现，少发一次不影响发现）。
+        if (!this.actionGate('net:triggerBroadcast', 3000)) {
+          return;
+        }
         this.log('network available — trigger discovery broadcast');
         this.triggerDiscoveryBroadcast();
       });
@@ -563,7 +623,9 @@ struct Index {
   // 触发一次 UDP identity 广播（native 未导出该符号时静默降级，不写屏幕日志）
   private triggerDiscoveryBroadcast(): void {
     try {
-      native.triggerBroadcast();
+      this.probeNative('triggerBroadcast', (): void => {
+        native.triggerBroadcast();
+      });
     } catch (e) {
       this.log('triggerBroadcast unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
     }
@@ -655,6 +717,11 @@ struct Index {
   }
 
   // ========== 媒体控制（方向 1：手机控电脑端播放器，FEATURE_PLAN_MPRIS §3）==========
+  // 当前是否正为该设备打开媒体面板（决定要不要把插件事件写进 @State）
+  private isMprisPanelFor(deviceId: string): boolean {
+    return this.mprisDialogOpen && this.mprisDeviceId === deviceId;
+  }
+
   // 按设备镜像对端播放器状态：@State mprisItems（对齐 batteryItems 的写法）
   private mprisItemOf(deviceId: string): MprisItem {
     for (const m of this.mprisItems) {
@@ -675,6 +742,11 @@ struct Index {
   }
 
   private setMprisList(deviceId: string, list: string[]): void {
+    // 前后台分离（用户建议）：面板没开就不写 @State —— 对端会周期推播放器状态，
+    // 关着面板还写会白白触发整页重渲染。面板打开时用 MprisPlugin.item() 重新播种，不会丢数据。
+    if (!this.isMprisPanelFor(deviceId)) {
+      return;
+    }
     const cur: MprisItem = this.mprisItemOf(deviceId);
     const next: MprisItem = {
       deviceId: cur.deviceId,
@@ -687,6 +759,10 @@ struct Index {
   }
 
   private setMprisSnapshot(deviceId: string, snap: MprisSnapshot): void {
+    // 同上：关着面板时不写 @State（对端 ~1s 推一次 pos，逐次写会持续触发整页重渲染）
+    if (!this.isMprisPanelFor(deviceId)) {
+      return;
+    }
     const cur: MprisItem = this.mprisItemOf(deviceId);
     const next: MprisItem = {
       deviceId: cur.deviceId,
@@ -723,14 +799,32 @@ struct Index {
     return !it.gotAny || it.playerList.length === 0;
   }
 
-  // 进度条位置：由「收包时的 pos + 本地经过时间」插值（1s ticker 驱动刷新）
+  // 进度条位置：由「收包时的 pos + 本地经过时间」插值（1s ticker 驱动刷新）。
+  // 注意量程用**千分比**而不是毫秒：曲目长度常达 1e6 ms（如 1129000），
+  // Slider 拿百万量程 + step=1000 时布局/刻度计算代价很大，手机快速连点开合面板会卡死主线程
+  // （实测 THREAD_BLOCK_3S，且只有带 Slider 的媒体面板会卡、无 Slider 的远程命令弹窗不卡）。
+  private mprisPosPermille(): number {
+    const len: number = this.mprisSnap().length;
+    if (len <= 0) {
+      return 0;
+    }
+    const pos: number = mprisDisplayPos(this.mprisSnap(), this.mprisNowMs);
+    return Math.round(pos * 1000 / len);
+  }
+
   private mprisPos(): number {
     return mprisDisplayPos(this.mprisSnap(), this.mprisNowMs);
   }
 
+  // 千分比 → 毫秒（拖动结束回传对端时用）
+  private mprisPermilleToMs(permille: number): number {
+    const len: number = this.mprisSnap().length;
+    return len > 0 ? Math.round(permille * len / 1000) : 0;
+  }
+
   private mprisMaxPos(): number {
     const len: number = this.mprisSnap().length;
-    return len > 0 ? len : 1;
+    return len > 0 ? 1000 : 1;
   }
 
   private mprisVol(): number {
@@ -797,6 +891,10 @@ struct Index {
 
   // 控制类动作：插件没装载（对端不支持）或发送失败都给明确提示
   private mediaAction(action: string): void {
+    // 连点保护：⏮⏯⏭ 每次都会真发包，连点会把主线程和对端一起刷爆
+    if (!this.actionGate(`mpris:${this.mprisDeviceId}:${action}`, 400)) {
+      return;
+    }
     const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
     if (p === undefined) {
       this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
@@ -816,6 +914,9 @@ struct Index {
   }
 
   private mediaSetVolume(v: number): void {
+    if (!this.actionGate(`mpris:${this.mprisDeviceId}:vol`, 200)) {
+      return;
+    }
     const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
     if (p === undefined || !p.setVolume(v)) {
       this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
@@ -823,6 +924,9 @@ struct Index {
   }
 
   private mediaSetPosition(ms: number): void {
+    if (!this.actionGate(`mpris:${this.mprisDeviceId}:pos`, 200)) {
+      return;
+    }
     const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
     if (p === undefined || !p.setPosition(ms)) {
       this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
@@ -854,6 +958,9 @@ struct Index {
   }
 
   private mediaRefresh(): void {
+    if (!this.actionGate(`mpris:${this.mprisDeviceId}:refresh`, 1500)) {
+      return;
+    }
     const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
     if (p === undefined) {
       this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
@@ -1046,8 +1153,16 @@ struct Index {
         };
         // 发现列表按 id 去重更新（对端周期广播 identity 会重复触发）。
         // 连接由用户从发现列表显式发起（与 iOS 一致），不再发现即自动连接。
+        // 关键：内容没变就**不写 @State** —— 对端每秒都可能重复广播，每次写都会让整页重渲染，
+        // 是本 App 主线程慢性饿死（THREAD_BLOCK_3S/6S）的主要来源之一。
         const known: boolean = this.discoveredDevices.some((d: DeviceItem) => d.id === id);
         if (known) {
+          const cur: DeviceItem | undefined = this.discoveredDevices.find((d: DeviceItem) => d.id === id);
+          const same: boolean = cur !== undefined && cur.name === item.name && cur.host === item.host
+            && cur.tcpPort === item.tcpPort && cur.online;
+          if (same) {
+            break;
+          }
           this.discoveredDevices = this.discoveredDevices.map(
             (d: DeviceItem) => d.id === id ? item : d);
         } else {
@@ -1126,6 +1241,12 @@ struct Index {
         const lid: string = event.deviceId ?? '';
         if (this.connectedDevices.some((d: DeviceItem) => d.id === lid)) {
           this.log(`lost ${lid} ignored (still connected)`);
+          break;
+        }
+        // 同上：已经标过离线就别再写 @State（否则离线设备每秒仍触发整页重渲染）
+        const stillOnline: boolean = this.discoveredDevices.some(
+          (d: DeviceItem) => d.id === lid && d.online);
+        if (!stillOnline) {
           break;
         }
         this.discoveredDevices = this.discoveredDevices.map(
@@ -1411,6 +1532,7 @@ struct Index {
       // 配对成功后顺带选中该设备 → 直接落到它的「功能页」（设备信息 + 大按钮），
       // 不再依赖用户之前是否在抽屉里选过设备
       this.selectedDeviceId = id;
+      this.pruneActionGate();   // P2-1①：选设备时清过期限频键
       this.requestedPairIds = this.requestedPairIds.filter((x: string) => x !== id);
     }
     this.showNotice('paired', '', false);
@@ -1482,6 +1604,12 @@ struct Index {
       return;
     }
     const id: string = this.selectedDeviceId;
+    // 连点保护（用户 2026-09-15 反馈「点太快就卡」）：卡片动作会真发网络请求 + 开弹窗。
+    // 窗口取 300ms：只为挡住抖动式连点；700ms 会让用户「开→取消→马上再开」被误吞（实测被感知成卡顿）。
+    if (!this.actionGate(`act:${id}:${key}`, 300)) {
+      this.log(`action ${key} throttled (rapid taps)`);
+      return;
+    }
     const list: PluginBase[] = this.pluginHost === undefined ? [] : this.pluginHost.pluginsFor(id);
     if (key === 'clipboard') {
       for (const p of list) {
@@ -1534,6 +1662,10 @@ struct Index {
       return;
     }
     if (key === 'media') {
+      // P2-1②（MSG145）：面板开合入口也要限频 —— 快速开合会堆叠弹窗/面板动画（关闭是收敛操作，不需要 gate）。
+      if (!this.actionGate(`mpris-open:${id}`, 500)) {
+        return;
+      }
       // 媒体控制（方向 1，P2）：打开面板并主动拉一次「播放器列表 + 当前播放器状态」。
       // 对端只在状态变化时推包，不主动拉可能长时间停在旧态。
       const mp: MprisPlugin | undefined = this.mprisPluginOf(id);
@@ -1612,6 +1744,7 @@ struct Index {
       return;
     }
     this.selectedDeviceId = d.id;
+    this.pruneActionGate();   // P2-1①：选设备时清过期限频键
     this.deviceSection = 0;
     this.log(`open device detail: ${d.id}`);
   }
@@ -1887,7 +2020,51 @@ struct Index {
 
   private log(line: string): void {
     const t: string = new Date().toTimeString().substring(0, 8);
-    this.logText = (this.logText + `[${t}] ${line}\n`).split('\n').slice(-50).join('\n');
+    this.logBuf.push(`[${t}] ${line}`);
+    if (this.logBuf.length > 200) {
+      this.logBuf.splice(0, this.logBuf.length - 200);
+    }
+    // 合并刷新：窗口内的多条日志攒成一次 @State 写入，避免日志频率直接驱动渲染频率。
+    // P2（MSG145 §2 P2-2）：原实现让「低频期首条」也要等满 900ms（用户体感：卡一下才出日志）。
+    // 改为动态窗：距上次 flush 已空闲 ≥900ms ⇒ 视为新批次，100ms 短窗让首条尽快出现；
+    // 高频期（距上次 flush <900ms）保持 900ms 节拍不变 —— 即**不会**退回「逐条渲染」。
+    if (this.logFlushTimer < 0) {
+      const idleMs: number = Date.now() - this.logLastFlushMs;
+      const waitMs: number = idleMs >= 900 ? 100 : 900;
+      this.logFlushTimer = setTimeout((): void => {
+        this.logFlushTimer = -1;
+        this.flushLog();
+      }, waitMs);
+    }
+  }
+
+  private flushLog(): void {
+    if (this.logBuf.length === 0) {
+      return;
+    }
+    this.logText = this.logBuf.slice(-50).join('\n');
+    this.logLastFlushMs = Date.now();
+  }
+
+  // P2（MSG145 §2 P2-1）：actionGateMs 只增不减 ⇒ 随「设备 × 动作」缓慢泄漏。
+  // ①选择设备时清过期键（限频窗最长 3s，删 5s 前的键无语义风险）；②另有 64 条兜底上限。
+  private pruneActionGate(): void {
+    const now: number = Date.now();
+    const stale: string[] = [];
+    this.actionGateMs.forEach((t: number, k: string): void => {
+      if (now - t > 5000) {
+        stale.push(k);
+      }
+    });
+    for (const k of stale) {
+      this.actionGateMs.delete(k);
+    }
+  }
+
+  // 清空日志（含缓冲，否则下一次 flush 会把旧行又贴回来）
+  private clearLog(): void {
+    this.logBuf = [];
+    this.logText = '';
   }
 
   // 沉浸光感能力探测（仅记录）。底栏材质由 HdsTabs 的 barFloatingStyle.systemMaterialEffect
@@ -2375,7 +2552,8 @@ struct Index {
         top: this.getUIContext().px2vp(this.statusBarHeightPx) + 16,
         bottom: 16
       })
-      .backgroundColor($r('app.color.bar_bg'))
+      // 抽屉：恢复毛玻璃，并换用更实的 drawer_bg（用户反馈去掉模糊后太透、文字看不清）
+      .backgroundColor($r('app.color.drawer_bg'))
       .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
       .borderRadius({ topRight: 22, bottomRight: 22 })
       .border({ width: 1, color: $r('app.color.bar_border') })
@@ -2460,7 +2638,7 @@ struct Index {
         .width('100%')
         .padding({ left: 14, right: 14, top: 10, bottom: 10 })
         .borderRadius(18)
-        .backgroundBlurStyle(BlurStyle.BACKGROUND_THIN)
+        .backgroundBlurStyle(undefined)
         .backgroundColor($r('app.color.card_bg'))
         .border({ width: 1, color: $r('app.color.card_border') })
 
@@ -2568,10 +2746,13 @@ struct Index {
 
           TabContent() {
             Column() {
-              LogsTab({
-                logText: this.logText,
-                immersive: false
-              })
+                LogsTab({
+                  logText: this.logText,
+                  immersive: false,
+                  onClearLogs: (): void => {
+                    this.clearLog();
+                  }
+                })
             }
             .padding({ top: 12, bottom: 108 })
           }
@@ -2592,6 +2773,8 @@ struct Index {
           barBottomMargin: this.getUIContext().px2vp(this.navBarHeightPx) + 24,
           // 显式给全透明遮罩：覆盖 HdsTabs 默认的底部渐隐（暗色下会呈一条渐黑带）
           gradientMask: { maskColor: '#00000000', maskHeight: 96 },
+          // 沉浸光感材质：2026-09-16 做过「关掉它」的对照实验，确认与主线程卡顿无关，
+          // 按用户要求恢复（关掉时胶囊观感变平，用户明确要还原）。
           systemMaterialEffect: {
             materialType: hdsMaterial.MaterialType.ADAPTIVE,
             materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
@@ -2698,8 +2881,9 @@ struct Index {
           .width('86%')
           .padding(20)
           .borderRadius(20)
-          .backgroundColor($r('app.color.card_bg'))
-          .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
+          // 弹层不用毛玻璃（手机实测：BACKGROUND_THICK 在弹层上会让整屏重算背景模糊，
+          // 叠上面板每秒重绘就把主线程拖死 → THREAD_BLOCK_3S/6S、点击无响应）。用更实的底色替代。
+          .backgroundColor('#F2111A36')
           .border({ width: 1, color: $r('app.color.card_border') })
           .alignItems(HorizontalAlign.Center)
         }
@@ -2708,7 +2892,6 @@ struct Index {
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
         .backgroundColor('#99000000')
-        .transition(TransitionEffect.OPACITY)
       }
 
       // 媒体控制面板（P2 方向 1，FEATURE_PLAN_MPRIS §3.3）：控电脑端播放器。
@@ -2798,7 +2981,7 @@ struct Index {
               // 进度：拖动只在松手（End/Click）时发 SetPosition，避免拖动中刷包；
               // 位置用「收包 pos + 本地经过时间」插值（mprisNowMs 由 1s ticker 驱动）
               Row({ space: 8 }) {
-                Slider({ value: this.mprisPos(), min: 0, max: this.mprisMaxPos(), step: 1000 })
+                Slider({ value: this.mprisPosPermille(), min: 0, max: this.mprisMaxPos(), step: 1 })
                   .layoutWeight(1)
                   .enabled(this.mprisSnap().canSeek && this.mprisSnap().length > 0)
                   .onChange((value: number, mode: SliderChangeMode) => {
@@ -2813,7 +2996,7 @@ struct Index {
                       return;
                     }
                     this.mprisSeekDragging = false;
-                    this.mediaSetPosition(value);
+                    this.mediaSetPosition(this.mprisPermilleToMs(value));
                   })
                 Text(`${mprisTimeText(this.mprisPos())} / ${mprisTimeText(this.mprisSnap().length)}`)
                   .fontSize(10)
@@ -2965,17 +3148,20 @@ struct Index {
           .width('86%')
           .padding(20)
           .borderRadius(20)
-          .backgroundColor($r('app.color.card_bg'))
-          .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
+          // 弹层不用毛玻璃（手机实测：BACKGROUND_THICK 在弹层上会让整屏重算背景模糊，
+          // 叠上面板每秒重绘就把主线程拖死 → THREAD_BLOCK_3S/6S、点击无响应）。用更实的底色替代。
+          .backgroundColor('#F2111A36')
           .border({ width: 1, color: $r('app.color.card_border') })
           .alignItems(HorizontalAlign.Center)
+          // onClick 为同类型手势竞争（非冒泡）：卡片自身也绑一个空点击把空白区域的点击消费掉，
+          // 否则点卡片内的空白处会被外层遮罩的 onClick 抢走 → 弹窗被误关。空白处=只关「卡外」。
+          .onClick(() => {})
         }
         .width('100%')
         .height('100%')
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
         .backgroundColor('#99000000')
-        .transition(TransitionEffect.OPACITY)
         .onClick(() => {
           this.closeMprisDialog();
         })
@@ -3053,17 +3239,19 @@ struct Index {
           .width('86%')
           .padding(20)
           .borderRadius(20)
-          .backgroundColor($r('app.color.card_bg'))
-          .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
+          // 弹层不用毛玻璃（手机实测：BACKGROUND_THICK 在弹层上会让整屏重算背景模糊，
+          // 叠上面板每秒重绘就把主线程拖死 → THREAD_BLOCK_3S/6S、点击无响应）。用更实的底色替代。
+          .backgroundColor('#F2111A36')
           .border({ width: 1, color: $r('app.color.card_border') })
           .alignItems(HorizontalAlign.Center)
+          // 同媒体面板：卡片自身消费点击，只有点「卡外」的遮罩才关弹窗
+          .onClick(() => {})
         }
         .width('100%')
         .height('100%')
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
         .backgroundColor('#99000000')
-        .transition(TransitionEffect.OPACITY)
         .onClick(() => {
           this.runCommandDialogOpen = false;
         })
