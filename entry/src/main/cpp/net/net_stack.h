@@ -63,6 +63,7 @@ public:
 
     // PayloadHost（payload/ 模块宿主钩子，仅网络线程语义见 payload.h）
     bool epollAdd(int fd, uint32_t events) override;
+    bool epollMod(int fd, uint32_t events) override;
     void epollDel(int fd) override;
     const std::string &certPem() override { return config_.certPem; }
     const std::string &keyPem() override { return config_.keyPem; }
@@ -172,6 +173,10 @@ private:
     uint64_t wakeByConn_ = 0;
     uint64_t wakeByPayload_ = 0;
     uint64_t wakeByIdle_ = 0;                 // epoll_wait 超时（n == 0）
+    // 连接事件的掩码分布（§3.2：判定 wake[conn] 3270/s 的来源）
+    uint64_t connIn_ = 0;
+    uint64_t connOut_ = 0;
+    uint64_t connHup_ = 0;
     int64_t maxTickHoldMs_ = 0;               // 窗口内单次持 connMutex_ 的最长耗时（循环线程写）
     std::atomic<int64_t> maxJsLockWaitMs_{0}; // 窗口内 JS 线程等 connMutex_ 的最长耗时
     // —— 事件普查（用户「关 WiFi 就不卡」对照实验后的定位用）——
