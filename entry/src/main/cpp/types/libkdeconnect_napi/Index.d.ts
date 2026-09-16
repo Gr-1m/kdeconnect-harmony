@@ -71,7 +71,8 @@ export const stop: () => void;
 // 主动连接对端（发起 TCP → 我方=TLS server）。结果经 connected/error 事件通知。
 export const connectToPeer: (host: string, port: number) => void;
 
-// 发送 packet（JSON 字符串）。true=已排队，false=deviceId 未连接。
+// 发送 packet（JSON 字符串）。true=已受理并入队（**含 TLS 握手中**：那时只入队，
+// 握手完成后由网络线程自动发出，不会明文裸发）；false=deviceId 无对应链路（未连接/已断开）。
 export const sendPacket: (deviceId: string, packetJson: string) => boolean;
 
 // 断开对端。
