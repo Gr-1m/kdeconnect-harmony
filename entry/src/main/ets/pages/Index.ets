@@ -336,6 +336,10 @@ struct Index {
     if (this.mprisDialogOpen) {
       this.startMprisTicker();
     }
+    // 回前台/首次进入时主动广播一次：对端广播间隔较长，若启动时刚好错过上一轮，
+    // 设备页会长时间空着（用户 2026-09-16 反馈「列表里什么都没有」）。
+    // 有 3s 门控（actionGate 'net:triggerBroadcast'），不会放大主线程负担。
+    this.triggerDiscoveryBroadcast();
   }
 
   onPageHide(): void {
@@ -2885,6 +2889,10 @@ struct Index {
         .width('100%')
         .onChange((index: number) => {
           this.currentTab = index;
+          // 切回「设备」页签时主动广播一次（3s 门控内自动跳过），让列表尽快有内容
+          if (index === 0) {
+            this.triggerDiscoveryBroadcast();
+          }
         })
       }
       .width('100%')
