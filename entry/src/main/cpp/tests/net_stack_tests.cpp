@@ -220,6 +220,10 @@ void muteePeerTimesOutBounded()
 // 让它主动拨入被测栈；被测栈必须收到 identity 帧的 packetReceived。
 void peerIdentityIsDispatchedAsPacket()
 {
+    // 同 IP accept 限流 300ms：上一用例（muteePeerTimesOutBounded）也来自 127.0.0.1，
+    // 若间隔过近本用例的对端会被拒 ⇒ 表现为「偶发连不上」。前置等待即可稳定（同
+    // sendPacketQueuesDuringHandshake 的做法）。
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
     const pid_t child = ::fork();
     CHECK_MSG(child >= 0, "fork 失败");
     if (child < 0) {
@@ -235,7 +239,7 @@ void peerIdentityIsDispatchedAsPacket()
     bool sawIdentityPacket = false;
     bool sawPeerIdentity = false;
     bool sawConnected = false;
-    const int64_t deadline = nowMs() + 12000;
+    const int64_t deadline = nowMs() + 20000;   // 12s→20s：负载下对端拨入+握手可能超过 12s（harness 稳定性，非产品缺陷）
     while (nowMs() < deadline) {
         {
             std::lock_guard<std::mutex> lk(g_mu);
@@ -387,6 +391,9 @@ int runPeerMode(uint16_t targetPort)
     cfg.certPem = cert.certPem;
     cfg.keyPem = cert.keyPem;
     cfg.tcpPort = 1746;
+    // 与主测试栈同用非标准 UDP 端口：否则本对端会在真实局域网广播/被真实桌面吸引
+    // ⇒ 既是真机 hilog 噪声源（DevEco MSG4 §3），也是 peerIdentityIsDispatchedAsPacket 偶发失败的根因。
+    cfg.udpPort = 17160;
     cfg.spoolDir = "/tmp/kdc_nettest_spool";
 
     NetStack &ns = netStack();

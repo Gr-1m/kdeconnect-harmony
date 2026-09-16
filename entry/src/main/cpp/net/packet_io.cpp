@@ -15,9 +15,15 @@ bool PacketIO::extractFrame(std::string &buf, std::string &frame, size_t maxSize
 {
     frame.clear();
     // Rust 侧就地处理接收缓冲（取帧/丢帧后写回剩余内容）⇒ 用工作副本，成功才回写 buf。
-    std::vector<uint8_t> work(buf.begin(), buf.end());
-    // 完整帧长度必 ≤ maxSize（更长的按超限丢弃）⇒ 帧缓冲一次给足，无需长度重试。
-    std::vector<uint8_t> out(maxSize + 2);
+    // 性能（2026-09-16 真机定位）：原实现**每次调用**都新建 `out(maxSize+2)`（= 32MiB 零初始化）
+    // 外加一份 work 拷贝；dispatchFrames 对**每一帧**都会调用本函数 ⇒ 收包突发时成为持 connMutex_
+    // 的纯 CPU 大头（真机 json_dispatch 1.3~3.3s，cpu≈hold）。改为线程局部复用（本函数仅网络线程调用）。
+    static thread_local std::vector<uint8_t> work;
+    static thread_local std::vector<uint8_t> out;
+    work.assign(buf.begin(), buf.end());
+    if (out.size() < maxSize + 2) {
+        out.assign(maxSize + 2, 0);   // 只在需要时扩容（摊还）
+    }
     size_t newLen = work.size();
     const int32_t rc =
         kdc_extract_frame(work.data(), work.size(), maxSize, out.data(), out.size(), &newLen);
