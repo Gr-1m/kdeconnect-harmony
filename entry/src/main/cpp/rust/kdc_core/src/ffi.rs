@@ -182,41 +182,44 @@ pub extern "C" fn kdc_extract_frame(
     let Some(bytes) = (unsafe { as_slice(buf, buf_len) }) else {
         return -1;
     };
-    let Ok(mut s) = std::str::from_utf8(bytes).map(|v| v.to_string()) else {
-        return -1;
-    };
-    match packet::extract_frame(&mut s, max_size) {
-        packet::FrameOutcome::Half => {
+    // R-OPT-1：零拷贝扫描 —— 不再 `from_utf8(..).to_string()`（原实现每帧多两次分配/拷贝）。
+    // 注意顺序：**先**把帧写入 out，**再**把剩余字节前移；否则前移会覆盖尚未输出的帧字节。
+    match packet::scan_frame(bytes, max_size) {
+        packet::FrameScan::Half => {
             if !new_len.is_null() {
                 unsafe { *new_len = buf_len };
             }
             0
         }
-        packet::FrameOutcome::DroppedOversize => {
-            let remaining = s.as_bytes();
+        packet::FrameScan::DroppedOversize { consumed } => {
+            let remaining = &bytes[consumed..];
             if remaining.len() > buf_len {
                 return -1; // 不可能：丢帧只会缩短
             }
             if !remaining.is_empty() {
-                unsafe { std::ptr::copy_nonoverlapping(remaining.as_ptr(), buf, remaining.len()) };
+                unsafe { std::ptr::copy(remaining.as_ptr(), buf, remaining.len()) };
             }
             if !new_len.is_null() {
                 unsafe { *new_len = remaining.len() };
             }
             -2
         }
-        packet::FrameOutcome::Frame(frame) => {
-            let remaining = s.as_bytes();
+        packet::FrameScan::Frame { len } => {
+            let rc = unsafe { write_out(&bytes[..len], out, out_cap) };
+            if rc < 0 {
+                return rc;
+            }
+            let remaining = &bytes[len..];
             if remaining.len() > buf_len {
                 return -1;
             }
             if !remaining.is_empty() {
-                unsafe { std::ptr::copy_nonoverlapping(remaining.as_ptr(), buf, remaining.len()) };
+                unsafe { std::ptr::copy(remaining.as_ptr(), buf, remaining.len()) };
             }
             if !new_len.is_null() {
                 unsafe { *new_len = remaining.len() };
             }
-            unsafe { write_out(frame.as_bytes(), out, out_cap) }
+            rc
         }
     }
 }

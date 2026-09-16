@@ -54,6 +54,9 @@ public:
     {
         return plainPending() || txPending() || (tls_ && tls_->wantsWrite());
     }
+    // 对端证书 CN 是否已与 deviceId 校验过（控制链路的协议硬约束，见 NetStack::drainEncrypted）
+    bool cnVerified() const { return cnVerified_; }
+    void markCnVerified() { cnVerified_ = true; }
     // EPOLLOUT 兴趣当前是否已挂（仅网络线程读写；用于只在状态变化时 epoll_ctl(MOD)）
     bool epollWriteArmed() const { return epollWriteArmed_; }
     void setEpollWriteArmed(bool v) { epollWriteArmed_ = v; }
@@ -130,6 +133,7 @@ private:
     std::string plainTx_;
     size_t plainOffset_ = 0;
     bool plainIdentityQueued_ = false;
+    bool cnVerified_ = false;
     bool epollWriteArmed_ = false;   // EPOLLOUT 兴趣是否已挂（**须持 connMutex_ 读写**：
                                      // 网络线程与 sendPacket(JS 线程) 都会改它）
 };

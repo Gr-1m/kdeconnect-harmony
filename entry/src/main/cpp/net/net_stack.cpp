@@ -1443,6 +1443,23 @@ void NetStack::drainEncrypted(TcpConnection &conn)
     if (conn.state() != ConnectionState::Encrypted) {
         return;
     }
+    // —— 协议硬约束：deviceId == 对端证书 CN（AGENTS.md；AtomCode 全量排查 域2 P2-1）——
+    // 控制连接此前只依赖「identity 声明 + 已配对设备的证书钉扎」间接保证；未配对首次连接时，
+    // 持有自签证书者可声明任意 deviceId。这里在**握手完成且 deviceId 已知**后一次性校验，
+    // 不一致即断链（fail-closed）。payload 通道早已有同义校验（verifyPeerLocked）。
+    // 注：拨号方的 deviceId 来自握手后收到的 identity ⇒ 故等待 deviceId 非空再判，判过即置位。
+    if (!conn.cnVerified() && !conn.deviceId().empty()) {
+        const std::string cn =
+            conn.tlsEngine() != nullptr ? conn.tlsEngine()->peerCommonName() : std::string();
+        if (cn.empty() || cn != conn.deviceId()) {
+            LOGE("control link cert CN mismatch: cn='%s' deviceId='%s' fd=%d", cn.c_str(),
+                 conn.deviceId().c_str(), conn.fd());
+            dispatchError(conn.deviceId(), EACCES, "peer cert CN != deviceId");
+            closeConnection(conn.fd(), "cert CN mismatch");
+            return;
+        }
+        conn.markCnVerified();
+    }
     if (conn.needsSendIdentity()) {
         sendIdentityOverTls(conn);
     }
