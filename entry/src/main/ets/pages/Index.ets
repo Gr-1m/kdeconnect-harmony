@@ -4,7 +4,7 @@ import { util } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
 import { Context, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
-import { display } from '@kit.ArkUI';
+import { display, SymbolGlyphModifier } from '@kit.ArkUI';
 import { connection } from '@kit.NetworkKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { HdsTabs, HdsTabsController, hdsMaterial } from '@kit.UIDesignKit';
@@ -29,6 +29,7 @@ import { MprisItem, MprisSnapshot, emptyMprisItem, mprisDisplayPos, mprisTimeTex
 import { PayloadTransfer, PayloadDirection, PayloadState } from '../model/PayloadModels';
 import { TrustedDevice } from '../model/TrustModels';
 import { TrustStore } from '../common/TrustStore';
+import { PayloadHistory } from '../common/PayloadHistory';
 import { colorModeOf, languageOf, LANG_SYSTEM, THEME_FOLLOW_SYSTEM, systemDeviceName } from '../common/AppSettings';
 import { DevicesTab } from '../components/DevicesTab';
 import { FilesTab } from '../components/FilesTab';
@@ -155,6 +156,10 @@ struct Index {
   @State runCommandDeviceId: string = '';
   // 远程命令弹窗显隐
   @State runCommandDialogOpen: boolean = false;
+  // 文件页「查看已接收」弹窗（只读列表，展示本次会话收到的文件及其状态）
+  @State receivedDialogOpen: boolean = false;
+  // 已接收文件历史（跨重启保留；只存终态记录，见 common/PayloadHistory.ets）
+  @State receivedHistory: PayloadTransfer[] = [];
   // 媒体控制面板（方向 1：手机控电脑端播放器）：按设备镜像对端播放器状态
   @State mprisItems: MprisItem[] = [];
   @State mprisDeviceId: string = '';
@@ -209,6 +214,8 @@ struct Index {
     try {
       const pref = await preferences.getPreferences(ctx, 'kdeconnect');
       deviceId = String(await pref.get('deviceId', ''));
+      // 已接收文件历史：跨重启保留（与应用设置同一个 Preferences 库）
+      this.receivedHistory = await PayloadHistory.load(ctx);
       certPem = String(await pref.get('certPem', ''));
       keyPem = String(await pref.get('keyPem', ''));
       // 设备名称：用户改过就用用户的；没改过 → 读**系统设备名称**（设置→关于本机→设备名称，回退市场名/型号）
@@ -861,6 +868,10 @@ struct Index {
     this.stopMprisTicker();
     this.mprisNowMs = Date.now();
     this.mprisTickerId = setInterval((): void => {
+      // 暂停时进度不前进 ⇒ 不必每秒写页面级 @State（omp MSG174 §2-3：ticker 写 @State 会带动整页重建）
+      if (!this.mprisSnap().isPlaying) {
+        return;
+      }
       this.mprisNowMs = Date.now();
     }, 1000);
   }
@@ -1797,6 +1808,10 @@ struct Index {
     if (state !== 'progress') {
       this.log(`payload ${state} ${item.direction} #${tid} ${item.fileName}`);
     }
+    // 终态的接收记录写入历史（内存 + Preferences），供跨重启查看
+    if (item.direction === 'receive' && (state === 'finished' || state === 'failed' || state === 'cancelled')) {
+      this.putReceivedHistory(item);
+    }
     // 计划 A（用户/AtomCode 现象② 裁决）：接收完成**自动落盘 + 明确通知**，
     // 不再要求用户到文件页手动点「保存」；授权被拒/失败时给可操作提示（文件页仍可手动保存）。
     if (state === 'finished' && item.direction === 'receive' && !item.settled && item.filePath.length > 0) {
@@ -1840,6 +1855,75 @@ struct Index {
       name = name.substring(0, 128);
     }
     return name;
+  }
+
+  // 「查看已接收」弹窗的数据与展示辅助（文件页入口触发）
+  // 列表 = 本次会话的接收记录 ∪ 持久化历史（同 transferId 以内存为准），按 transferId 倒序（新的在前）
+  private receivedFiles(): PayloadTransfer[] {
+    const merged: PayloadTransfer[] = [];
+    for (const p of this.payloads) {
+      if (p.direction === 'receive') {
+        merged.push(p);
+      }
+    }
+    for (const h of this.receivedHistory) {
+      if (!merged.some((m: PayloadTransfer) => m.transferId === h.transferId)) {
+        merged.push(h);
+      }
+    }
+    return merged.sort((a: PayloadTransfer, b: PayloadTransfer) => b.transferId - a.transferId);
+  }
+
+  // 终态接收记录入库（内存 + Preferences；写失败不影响主流程）
+  private putReceivedHistory(item: PayloadTransfer): void {
+    const exists: boolean = this.receivedHistory.some((h: PayloadTransfer) => h.transferId === item.transferId);
+    this.receivedHistory = exists
+      ? this.receivedHistory.map((h: PayloadTransfer) => h.transferId === item.transferId ? item : h)
+      : [item].concat(this.receivedHistory);
+    const hostCtx: Context | undefined = this.getUIContext().getHostContext();
+    if (hostCtx !== undefined) {
+      PayloadHistory.save(hostCtx, this.receivedHistory).catch((e: Error): void => {
+        this.log('payload history save failed: ' + e.message);
+      });
+    }
+  }
+
+  // 「清除历史」：清掉已结束的接收记录（内存 + 持久化），进行中的传输保留
+  private clearReceivedHistory(): void {
+    this.receivedHistory = [];
+    this.payloads = this.payloads.filter((p: PayloadTransfer) =>
+      p.direction !== 'receive' || p.state === 'started' || p.state === 'progress');
+    const hostCtx: Context | undefined = this.getUIContext().getHostContext();
+    if (hostCtx !== undefined) {
+      PayloadHistory.clear(hostCtx).catch((e: Error): void => {
+        this.log('payload history clear failed: ' + e.message);
+      });
+    }
+    this.log('received file history cleared');
+    this.toastText(this.resText($r('app.string.toast_history_cleared').id));
+  }
+
+  private fmtBytes(bytes: number): string {
+    if (bytes <= 0) {
+      return '0 B';
+    }
+    if (bytes < 1024) {
+      return `${bytes} B`;
+    }
+    if (bytes < 1024 * 1024) {
+      return `${(bytes / 1024).toFixed(1)} KB`;
+    }
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  private payloadStateText(p: PayloadTransfer): string {
+    if (p.state === 'started' || p.state === 'progress') {
+      return this.resText($r('app.string.files_receiving').id);
+    }
+    if (p.state === 'finished') {
+      return this.resText(p.settled ? $r('app.string.files_saved').id : $r('app.string.files_finished').id);
+    }
+    return this.resText(p.state === 'failed' ? $r('app.string.files_failed').id : $r('app.string.files_cancelled').id);
   }
 
   private markPayloadSettled(transferId: number): void {
@@ -2094,26 +2178,16 @@ struct Index {
     return $r('sys.symbol.text_alignleft');
   }
 
-  // 底部页签（自绘，供 HdsTabs 作 CustomBuilder 用）：整条悬浮胶囊由 HdsTabs 提供，
-  // 激活态只做「变色 + 内缩半透明高亮」，不加边框/分隔线，视觉上保持一整个胶囊。
-  // 版式对齐参考稿（我的华为底栏）：**图标在上、文字在下**。
-  @Builder
-  tabBuilder(index: number) {    Column({ space: 2 }) {
-      SymbolGlyph(this.tabIcon(index))
-        .fontSize(20)
-        .fontColor([this.currentTab === index ? $r('app.color.accent_text') : $r('app.color.text_secondary')])
-      Text(this.tabs[index].label)
-        .fontSize(11)
-        .fontWeight(this.currentTab === index ? FontWeight.Medium : FontWeight.Normal)
-        .fontColor(this.currentTab === index ? $r('app.color.accent_text') : $r('app.color.text_secondary'))
-        .maxLines(1)
-    }
-    .width('100%')
-    .margin({ left: 4, right: 4 })
-    .padding({ top: 4, bottom: 4 })
-    .borderRadius(16)
-    .backgroundColor(this.currentTab === index ? $r('app.color.accent_soft') : Color.Transparent)
+  // 底栏图标修饰器：显式给字号 —— 本 SDK（API 26）的 BottomTabBarStyle 在 modifier 不带字号时，
+  // 个别符号（如 gearshape/text_alignleft）会按自身 intrinsic 尺寸绘制，观感偏大且与胶囊不齐。
+  private tabIconModifier(index: number): SymbolGlyphModifier {
+    return new SymbolGlyphModifier(this.tabIcon(index)).fontSize(24);
   }
+
+  // 底部页签不再自绘：改用官方 BottomTabBarStyle.of(符号图标, 文案)（对齐参考实现 ohtotptoken），
+  // 由 HdsTabs 渲染「图标在上、文字在下」的标准胶囊项；选中态高亮交给系统样式，
+  // 避免自绘时 selected 态与沉浸光感材质叠出两套高亮。
+  // 各 Tab 的图标仍取本工程的 tabIcon(index)。
 
   // 汉堡按钮（三条横线自绘，不依赖资源）：放在标题旁边（对齐参考稿）
   @Builder
@@ -2690,7 +2764,13 @@ struct Index {
             .height('100%')
             .padding({ top: 12, bottom: 108 })
           }
-          .tabBar(this.tabBuilder(0))
+          .tabBar(BottomTabBarStyle.of(
+            {
+              normal: this.tabIconModifier(0),
+              selected: this.tabIconModifier(0)
+            },
+            this.tabs[0].label)
+            .verticalAlign(VerticalAlign.Center))
 
           TabContent() {
             Column() {
@@ -2709,12 +2789,21 @@ struct Index {
                     },
                     onSendFile: (): void => {
                       this.pickAndSendFile();
+                    },
+                    onOpenReceivedFiles: (): void => {
+                      this.receivedDialogOpen = true;
                     }
                   })
             }
             .padding({ top: 12, bottom: 108 })
           }
-          .tabBar(this.tabBuilder(1))
+          .tabBar(BottomTabBarStyle.of(
+            {
+              normal: this.tabIconModifier(1),
+              selected: this.tabIconModifier(1)
+            },
+            this.tabs[1].label)
+            .verticalAlign(VerticalAlign.Center))
 
           TabContent() {
             Column() {
@@ -2742,7 +2831,13 @@ struct Index {
             }
             .padding({ top: 12, bottom: 108 })
           }
-          .tabBar(this.tabBuilder(2))
+          .tabBar(BottomTabBarStyle.of(
+            {
+              normal: this.tabIconModifier(2),
+              selected: this.tabIconModifier(2)
+            },
+            this.tabs[2].label)
+            .verticalAlign(VerticalAlign.Center))
 
           TabContent() {
             Column() {
@@ -2756,21 +2851,27 @@ struct Index {
             }
             .padding({ top: 12, bottom: 108 })
           }
-          .tabBar(this.tabBuilder(3))
+          .tabBar(BottomTabBarStyle.of(
+            {
+              normal: this.tabIconModifier(3),
+              selected: this.tabIconModifier(3)
+            },
+            this.tabs[3].label)
+            .verticalAlign(VerticalAlign.Center))
         }
         .barPosition(BarPosition.End)
         .vertical(false)
         .barOverlap(true)
-        .scrollable(false)
-        .animationDuration(200)
+        // 以下一组对齐参考实现（ohtotptoken）：blur 底栏 + 固定模式 + 300ms 切换动画
+        .barMode(BarMode.Fixed)
+        .barBackgroundBlurStyle(BlurStyle.Regular)
+        .animationDuration(300)
         // TabBar 自身背景置透明：否则暗色下会在材质层下压出一块深灰底
         .barBackgroundColor(Color.Transparent)
         .barFloatingStyle({
-          barWidth: { smallWidth: 300, mediumWidth: 420, largeWidth: 520 },
-          // 悬浮胶囊离底边的距离：设备导航条高度 + 24vp（对齐「我的华为」的底栏留白）。
-          // 注意：平板实测 navBarHeightPx 常为 0（系统未上报底部避让区），所以不能只靠它，
-          // 必须再叠一个固定留白，否则胶囊会贴着底边（用户 2026-09-15 反馈）。
-          barBottomMargin: this.getUIContext().px2vp(this.navBarHeightPx) + 24,
+          // 离底边距离：参考稿是固定 28vp；本工程保留「设备导航条高度 + 28」的自适应写法——
+          // 平板实测 navBarHeightPx 常为 0，纯固定值会让胶囊贴边（用户 2026-09-15 反馈）。
+          barBottomMargin: this.getUIContext().px2vp(this.navBarHeightPx) + 28,
           // 显式给全透明遮罩：覆盖 HdsTabs 默认的底部渐隐（暗色下会呈一条渐黑带）
           gradientMask: { maskColor: '#00000000', maskHeight: 96 },
           // 沉浸光感材质：2026-09-16 做过「关掉它」的对照实验，确认与主线程卡顿无关，
@@ -3254,6 +3355,93 @@ struct Index {
         .backgroundColor('#99000000')
         .onClick(() => {
           this.runCommandDialogOpen = false;
+        })
+      }
+
+      // 「查看已接收」弹窗（文件页入口）：只读列出本次会话收到的文件 + 大小 + 状态。
+      // 结构与其它弹层一致（卡片自身消费点击，只有点卡外遮罩才关）。
+      if (this.receivedDialogOpen) {
+        Column() {
+          Column({ space: 12 }) {
+            Text($r('app.string.files_received_dialog_title'))
+              .fontSize(16)
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.text_primary'))
+            if (this.receivedFiles().length === 0) {
+              Text($r('app.string.files_received_empty'))
+                .fontSize(13)
+                .fontColor($r('app.color.text_secondary'))
+            } else {
+              Scroll() {
+                Column({ space: 8 }) {
+                  ForEach(this.receivedFiles(), (p: PayloadTransfer) => {
+                    Row({ space: 10 }) {
+                      Text(p.fileName)
+                        .fontSize(12)
+                        .fontColor($r('app.color.text_primary'))
+                        .maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        .layoutWeight(1)
+                      Text(this.fmtBytes(p.size))
+                        .fontSize(11)
+                        .fontColor($r('app.color.text_muted'))
+                      Text(this.payloadStateText(p))
+                        .fontSize(11)
+                        .fontColor($r('app.color.accent_text'))
+                    }
+                    .width('100%')
+                    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+                    .borderRadius(12)
+                    .backgroundColor($r('app.color.chip_bg'))
+                  }, (p: PayloadTransfer) => `recv_${p.transferId}`)
+                }
+                .width('100%')
+              }
+              .width('100%')
+              .constraintSize({ maxHeight: 320 })
+              .align(Alignment.TopStart)
+              .scrollBar(BarState.Off)
+            }
+            Row({ space: 10 }) {
+              Button($r('app.string.files_history_clear'))
+                .layoutWeight(1)
+                .height(42)
+                .fontSize(14)
+                .backgroundColor($r('app.color.danger_bg'))
+                .fontColor($r('app.color.danger_text'))
+                .borderRadius(12)
+                .enabled(this.receivedFiles().length > 0)
+                .onClick(() => {
+                  this.clearReceivedHistory();
+                })
+              Button($r('app.string.action_close'))
+                .layoutWeight(1)
+                .height(42)
+                .fontSize(14)
+                .backgroundColor($r('app.color.chip_bg'))
+                .fontColor($r('app.color.text_secondary'))
+                .borderRadius(12)
+                .onClick(() => {
+                  this.receivedDialogOpen = false;
+                })
+            }
+            .width('100%')
+          }
+          .width('86%')
+          .padding(20)
+          .borderRadius(20)
+          .backgroundColor('#F2111A36')
+          .border({ width: 1, color: $r('app.color.card_border') })
+          .alignItems(HorizontalAlign.Center)
+          .onClick(() => {})
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .backgroundColor('#99000000')
+        .onClick(() => {
+          this.receivedDialogOpen = false;
         })
       }
 
