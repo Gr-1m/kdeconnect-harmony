@@ -1183,6 +1183,12 @@ void NetStack::dispatchFrames(TcpConnection &conn)
     // 帧循环内不得销毁 conn（引用悬垂）：标记后出循环统一关闭
     bool dropConn = false;
     const char *dropReason = nullptr;
+    // 帧普查（CodeArts MSG9 P0 收尾用）：一次 drain 里有多少帧、多少字节、最大帧多大。
+    // 目的：区分「大量小帧（每帧固定开销）」与「少量超大帧（解析成本）」——两者修法不同。
+    int64_t _censusFrames = 0;
+    int64_t _censusBytes = 0;
+    size_t _censusMaxFrame = 0;
+    const int64_t _censusT0 = monoMs();
     while (PacketIO::extractFrame(conn.rxBuf(), frame)) {
         if (frame.empty()) {
             continue;  // 超限帧已丢弃
@@ -1191,6 +1197,9 @@ void NetStack::dispatchFrames(TcpConnection &conn)
         std::string json = frame;
         if (!json.empty() && json.back() == '\n') json.pop_back();
         if (json.empty()) continue;
+        ++_censusFrames;
+        _censusBytes += static_cast<int64_t>(json.size());
+        if (json.size() > _censusMaxFrame) _censusMaxFrame = json.size();
 
         std::string type;
         std::string body;
@@ -1320,6 +1329,13 @@ void NetStack::dispatchFrames(TcpConnection &conn)
         ev.payloadSize = payloadSize;
         ev.payloadTransferPort = payloadPort;
         dispatchEvent(ev);
+    }
+    const int64_t _censusMs = monoMs() - _censusT0;
+    if (_censusMs > 100) {
+        LOGI("[KDC-FRAMESPLIT] frames=%{public}lld bytes=%{public}lld maxFrame=%{public}llu "
+             "total=%{public}lldms",
+             (long long) _censusFrames, (long long) _censusBytes,
+             (unsigned long long) _censusMaxFrame, (long long) _censusMs);
     }
     if (dropConn) {
         closeConnection(conn.fd(), dropReason);
