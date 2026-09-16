@@ -1185,6 +1185,10 @@ void NetStack::dispatchFrames(TcpConnection &conn)
     const char *dropReason = nullptr;
     // 帧普查（CodeArts MSG9 P0 收尾用）：一次 drain 里有多少帧、多少字节、最大帧多大。
     // 目的：区分「大量小帧（每帧固定开销）」与「少量超大帧（解析成本）」——两者修法不同。
+    // 第 N 次进入 dispatchFrames（进程内累计）：用于区分"首次/惰性初始化"与"稳态每帧开销"
+    // ——真机两台机型都出现"整轮唯一一次 ~330ms、frames=1 bytes=2294"，形态更像前者（DevEco MSG16 §2）。
+    static std::atomic<uint64_t> s_dispatchSeq{1};
+    const uint64_t _dispatchSeq = s_dispatchSeq.fetch_add(1, std::memory_order_relaxed);
     int64_t _censusFrames = 0;
     int64_t _censusBytes = 0;
     size_t _censusMaxFrame = 0;
@@ -1332,10 +1336,11 @@ void NetStack::dispatchFrames(TcpConnection &conn)
     }
     const int64_t _censusMs = monoMs() - _censusT0;
     if (_censusMs > 100) {
-        LOGI("[KDC-FRAMESPLIT] frames=%{public}lld bytes=%{public}lld maxFrame=%{public}llu "
-             "total=%{public}lldms",
-             (long long) _censusFrames, (long long) _censusBytes,
-             (unsigned long long) _censusMaxFrame, (long long) _censusMs);
+        LOGI("[KDC-FRAMESPLIT] n=%{public}llu frames=%{public}lld bytes=%{public}lld "
+             "maxFrame=%{public}llu total=%{public}lldms",
+             (unsigned long long) _dispatchSeq, (long long) _censusFrames,
+             (long long) _censusBytes, (unsigned long long) _censusMaxFrame,
+             (long long) _censusMs);
     }
     if (dropConn) {
         closeConnection(conn.fd(), dropReason);

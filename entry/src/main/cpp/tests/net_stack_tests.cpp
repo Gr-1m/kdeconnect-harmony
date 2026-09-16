@@ -407,7 +407,11 @@ int runPeerMode(uint16_t targetPort)
     if (!ns.start(cfg)) {
         return 1;
     }
-    ns.connectToPeer("127.0.0.1", targetPort);
+    // 诊断：本用例偶发失败（约 1/3）表现为「主栈收到对端 UDP 广播但没有 PairingRequest」，
+    // 即对端 TCP 身份交换未完成。这里打印拨号结果，便于归属方定位（不影响通过路径）。
+    const bool dialed = ns.connectToPeer("127.0.0.1", targetPort);
+    std::fprintf(stderr, "[peer] connectToPeer(%s:%u) -> %d\n", "127.0.0.1",
+                 (unsigned) targetPort, dialed ? 1 : 0);
     std::this_thread::sleep_for(std::chrono::milliseconds(8000));
     ns.stop();
     return 0;
