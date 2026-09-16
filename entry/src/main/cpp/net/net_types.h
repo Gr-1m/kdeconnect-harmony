@@ -20,6 +20,9 @@ constexpr int PROTOCOL_VERSION = 8;
 constexpr int MAX_UNPAIRED_CONNECTIONS = 42;
 constexpr int IDENTITY_TIMEOUT_MS = 1000;
 constexpr int DISCOVERY_DEBOUNCE_MS = 500;
+// 同一设备重复 DeviceDiscovered 的事件级去重窗口（UDP 广播 + 对端拨入两条来源会重复告知；
+// 开屏期成对放大 ArkTS 侧处理量）。用户「关 WiFi 就不卡」对照实验后加入。
+constexpr int DISCOVERY_DEDUP_EVENT_MS = 2000;
 // 同 IP accept 限流（防连接风暴）。原为 1000ms：但 KDE 的「新链路替换旧链路」语义会让对端在
 // ~0.6~0.7s 后重拨一次，1000ms 会把这次**合法重拨**直接拒掉（真机配对失败成因之一，DevEco MSG181）。
 // 降到 300ms：仍能挡住真正风暴，又能容纳 KDE 的正常替换节奏。

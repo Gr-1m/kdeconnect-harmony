@@ -4,6 +4,7 @@
 #include "net_types.h"
 #include "payload/payload.h"
 #include <thread>
+#include <array>
 #include <atomic>
 #include <unordered_map>
 #include <memory>
@@ -173,6 +174,13 @@ private:
     uint64_t wakeByIdle_ = 0;                 // epoll_wait 超时（n == 0）
     int64_t maxTickHoldMs_ = 0;               // 窗口内单次持 connMutex_ 的最长耗时（循环线程写）
     std::atomic<int64_t> maxJsLockWaitMs_{0}; // 窗口内 JS 线程等 connMutex_ 的最长耗时
+    // —— 事件普查（用户「关 WiFi 就不卡」对照实验后的定位用）——
+    // 开屏期 JS 线程被 tsfn 事件回调占住 ⇒ 点击无响应。这里按 EventType 计数，随 NETLOOP 行输出：
+    // 若窗口内只有几十条 ⇒ 瓶颈在 ArkTS 单事件成本（每秒整页重建）；若是数千条 ⇒ native 过度派发。
+    std::array<std::atomic<uint64_t>, 8> evCounts_{};
+    // 同一设备 2s 内的重复 DeviceDiscovered 不再派发（UDP 广播与「对端拨入」两条来源会重复告知；
+    // 仅网络线程写此表，故无需额外锁）。
+    std::unordered_map<std::string, int64_t> lastDiscoveredMs_;
     size_t statTxQueuedBytes_ = 0;            // 窗口内观测到的 TX 队列字节（含明文队列）
     size_t statPlainQueuedBytes_ = 0;
 
