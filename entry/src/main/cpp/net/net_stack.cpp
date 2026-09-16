@@ -60,8 +60,24 @@ void NetStack::setEventCallback(EventCallback cb)
     eventCallback_ = std::move(cb);
 }
 
+// 事件派发唯一收口。除转发外做两件事：
+//  ① 按类型普查（[KDC-EVENTS] 随 NETLOOP 行输出）——用于判断"JS 线程被事件回调占住"的规模；
+//  ② 同一设备 2s 内重复的 DeviceDiscovered 去重：UDP 广播（onUdpReadable）与对端拨入
+//     （handlePlainIdentity）都会宣告同一设备，开屏期会成对放大 JS 侧处理量。
 void NetStack::dispatchEvent(const NetEvent &event)
 {
+    const size_t ti = static_cast<size_t>(event.type);
+    if (ti < evCounts_.size()) {
+        evCounts_[ti].fetch_add(1, std::memory_order_relaxed);
+    }
+    if (event.type == EventType::DeviceDiscovered && !event.deviceId.empty()) {
+        const int64_t now = nowMs();
+        auto it = lastDiscoveredMs_.find(event.deviceId);
+        if (it != lastDiscoveredMs_.end() && now - it->second < DISCOVERY_DEDUP_EVENT_MS) {
+            return;   // 冗余发现：已在上一次派发中告知 ArkTS
+        }
+        lastDiscoveredMs_[event.deviceId] = now;
+    }
     std::lock_guard<std::mutex> lk(callbackMutex_);
     if (eventCallback_) {
         eventCallback_(event);
@@ -547,14 +563,20 @@ void NetStack::eventLoop()
                  "wake[wakefd=%{public}llu udp=%{public}llu srv=%{public}llu conn=%{public}llu "
                  "payload=%{public}llu idle=%{public}llu] "
                  "maxHold=%{public}lldms maxJsLockWait=%{public}lldms "
-                 "txQueued=%{public}llu plainQueued=%{public}llu",
+                 "txQueued=%{public}llu plainQueued=%{public}llu "
+                 "ev[disc=%{public}llu lost=%{public}llu conn=%{public}llu disc2=%{public}llu "
+                 "pkt=%{public}llu pair=%{public}llu err=%{public}llu xfer=%{public}llu]",
                  cpuMs, (unsigned long long) loopIters_.load(), (unsigned long long) epollWake_.load(),
                  (unsigned long long) eventsHandled_.load(), LOOP_TICK_MS, (long long) dtMs,
                  (unsigned long long) wakeByWakeFd_, (unsigned long long) wakeByUdp_,
                  (unsigned long long) wakeBySrv_, (unsigned long long) wakeByConn_,
                  (unsigned long long) wakeByPayload_, (unsigned long long) wakeByIdle_,
                  (long long) maxTickHoldMs_, (long long) maxJsLockWaitMs_.load(),
-                 (unsigned long long) statTxQueuedBytes_, (unsigned long long) statPlainQueuedBytes_);
+                 (unsigned long long) statTxQueuedBytes_, (unsigned long long) statPlainQueuedBytes_,
+                 (unsigned long long) evCounts_[0].load(), (unsigned long long) evCounts_[1].load(),
+                 (unsigned long long) evCounts_[2].load(), (unsigned long long) evCounts_[3].load(),
+                 (unsigned long long) evCounts_[4].load(), (unsigned long long) evCounts_[5].load(),
+                 (unsigned long long) evCounts_[6].load(), (unsigned long long) evCounts_[7].load());
             maxTickHoldMs_ = 0;
             maxJsLockWaitMs_.store(0);
             lastStatsMs_ = now;
