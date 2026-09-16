@@ -158,8 +158,9 @@ bool NetStack::start(const NetConfig &config)
     epoll_ctl(epollFd_, EPOLL_CTL_ADD, tcpServer_->fd(), &srvEv);
 
     udp_ = std::make_unique<UdpDiscovery>();
+    const uint16_t udpPort = config_.udpPort != 0 ? config_.udpPort : UDP_PORT;
     if (!udp_->init(config_.deviceId, config_.deviceName, config_.deviceType,
-                    tcpServer_->port())) {
+                    tcpServer_->port(), udpPort)) {
         LOGE("udp init failed");
         stop();
         return false;

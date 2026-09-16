@@ -174,9 +174,10 @@ void PayloadManager::closeSocketsLocked(PayloadJob &job)
     }
 }
 
-void PayloadManager::emitLocked(const PayloadJob &job, const char *state,
+void PayloadManager::emitLocked(PayloadJob &job, const char *state,
                                 int code, const char *msg)
 {
+    job.lastState = state != nullptr ? state : "?";
     NetEvent ev {};
     ev.type = EventType::PayloadTransfer;
     ev.deviceId = job.deviceId;
@@ -414,6 +415,7 @@ void PayloadManager::startHandshakeLocked(PayloadJob &job)
 
 void PayloadManager::pumpSendLocked(PayloadJob &job)
 {
+    // 任意 return 路径都刷新写兴趣（局部 RAII，避免在多个返回点重复写）
     uint8_t buf[PAYLOAD_CHUNK];
     while (true) {
         if (!job.pending.empty()) {
@@ -561,6 +563,7 @@ void PayloadManager::onWritable(int fd)
         return;
     }
     PayloadJob &job = *j->second;
+
     if (job.sockFd != fd) {
         return;
     }
@@ -615,6 +618,22 @@ void PayloadManager::onTick(int64_t nowMs)
         if (job.send && job.tls != nullptr && job.tls->handshakeDone() &&
             !job.pending.empty()) {
             pumpSendLocked(job);
+        }
+    }
+    // FSM 埋点（DevEco MSG179 §2「文件永远停在接收中」定位用；CodeArts MSG4 §3 授权）：
+    // 每 5s 每任务一行 —— 直接区分「少收字节」与「终态没发」。
+    if (nowMs - lastStatsMs_ >= 5000) {
+        lastStatsMs_ = nowMs;
+        for (auto &p : jobs_) {
+            PayloadJob &job = *p.second;
+            LOGI("[KDC-PAYLOAD] id=%{public}llu send=%{public}d finished=%{public}d "
+                 "total=%{public}lld done=%{public}lld pending=%{public}llu tlsDone=%{public}d "
+                 "spool=%{public}s state=%{public}s",
+                 (unsigned long long) job.id, job.send ? 1 : 0, job.finished ? 1 : 0,
+                 (long long) job.total, (long long) job.done,
+                 (unsigned long long) job.pending.size(),
+                 (job.tls != nullptr && job.tls->handshakeDone()) ? 1 : 0,
+                 job.spoolPath.c_str(), job.lastState.c_str());
         }
     }
 }

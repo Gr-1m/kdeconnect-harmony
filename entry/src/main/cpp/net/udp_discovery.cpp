@@ -17,8 +17,9 @@ UdpDiscovery::~UdpDiscovery()
 }
 
 bool UdpDiscovery::init(const std::string &deviceId, const std::string &deviceName,
-                        const std::string &deviceType, uint16_t tcpPort)
+                        const std::string &deviceType, uint16_t tcpPort, uint16_t udpPort)
 {
+    port_ = udpPort;
     fd_ = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (fd_ < 0) {
         LOGE("udp socket: %s", strerror(errno));
@@ -32,7 +33,7 @@ bool UdpDiscovery::init(const std::string &deviceId, const std::string &deviceNa
     struct sockaddr_in addr {};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(UDP_PORT);
+    addr.sin_port = htons(port_);
     if (bind(fd_, reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)) < 0) {
         LOGE("udp bind: %s", strerror(errno));
         ::close(fd_);
@@ -45,7 +46,7 @@ bool UdpDiscovery::init(const std::string &deviceId, const std::string &deviceNa
     identityFields_[2] = deviceType;
     identityPort_ = tcpPort;
     identityJson_ = PacketIO::buildIdentity(deviceId, deviceName, deviceType, tcpPort);
-    LOGI("udp discovery init on port %u", UDP_PORT);
+    LOGI("udp discovery init on port %u", port_);   // 日志用实际端口（可注入）
     return true;
 }
 
@@ -94,7 +95,7 @@ bool UdpDiscovery::broadcast()
             struct sockaddr_in baddr {};
             baddr.sin_family = AF_INET;
             baddr.sin_addr.s_addr = addr->sin_addr.s_addr | ~mask->sin_addr.s_addr;
-            baddr.sin_port = htons(UDP_PORT);
+            baddr.sin_port = htons(port_);
             const ssize_t sent = sendto(fd_, identity.data(), identity.size(), 0,
                                         reinterpret_cast<struct sockaddr *>(&baddr),
                                         sizeof(baddr));
@@ -112,7 +113,7 @@ bool UdpDiscovery::broadcast()
     struct sockaddr_in gaddr {};
     gaddr.sin_family = AF_INET;
     gaddr.sin_addr.s_addr = htonl(0xFFFFFFFF);
-    gaddr.sin_port = htons(UDP_PORT);
+    gaddr.sin_port = htons(port_);
     const ssize_t n = sendto(fd_, identity.data(), identity.size(), 0,
                              reinterpret_cast<struct sockaddr *>(&gaddr), sizeof(gaddr));
     if (n > 0) {
