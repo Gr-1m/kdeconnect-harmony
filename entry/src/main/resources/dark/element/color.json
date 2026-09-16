@@ -103,6 +103,10 @@
     {
       "name": "mask_fade",
       "value": "#CC0D2B4D"
+    },
+    {
+      "name": "drawer_bg",
+      "value": "#F00D142C"
     }
   ]
 }
