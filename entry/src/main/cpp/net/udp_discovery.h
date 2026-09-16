@@ -17,7 +17,7 @@ public:
     UdpDiscovery &operator=(const UdpDiscovery &) = delete;
 
     bool init(const std::string &deviceId, const std::string &deviceName,
-              const std::string &deviceType, uint16_t tcpPort);
+              const std::string &deviceType, uint16_t tcpPort, uint16_t udpPort = UDP_PORT);
     void close();
 
     int fd() const { return fd_; }
@@ -35,6 +35,7 @@ public:
 
 private:
     int fd_ = -1;
+    uint16_t port_ = UDP_PORT;   // 监听/广播端口（可注入，默认 UDP_PORT）
     std::mutex capsMutex_;
     std::string identityFields_[3];   // deviceId / deviceName / deviceType
     uint16_t identityPort_ = 0;

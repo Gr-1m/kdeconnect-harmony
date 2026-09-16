@@ -542,6 +542,7 @@ int main(int argc, char **argv)
     cfg.certPem = cert.certPem;
     cfg.keyPem = cert.keyPem;
     cfg.tcpPort = 1745;                      // 避开 1716（可能与在跑的桌面 daemon 冲突）
+    cfg.udpPort = 17160;                     // 非标准端口：避免假对端广播污染真实局域网（DevEco MSG4 §3）
     cfg.spoolDir = "/tmp/kdc_nettest_spool";
     cfg.connectHandshakeTimeoutMs = 1500;    // 短上限，保证 CI 快
     g_baseCfg = cfg;

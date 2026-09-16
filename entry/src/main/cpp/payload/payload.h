@@ -69,6 +69,8 @@ struct PayloadJob {
     // 落盘进行中（settle 在锁外做文件 I/O 时置位）：阻止并发 settle，并让 finishJobLocked
     // 不再去动 spool（避免拷贝源在过程中被清理，见 PayloadManager::settle 注释）。
     bool settling = false;
+    // 最近一次对外派发的状态字面量（仅供埋点诊断，见 [KDC-PAYLOAD]）
+    std::string lastState = "pending";
 };
 
 class PayloadManager {
@@ -98,7 +100,7 @@ private:
     void failJobLocked(PayloadJob &job, int code, const char *msg);
     void finishJobLocked(PayloadJob &job, const char *state, int code, const char *msg);
     void closeSocketsLocked(PayloadJob &job);
-    void emitLocked(const PayloadJob &job, const char *state, int code, const char *msg);
+    void emitLocked(PayloadJob &job, const char *state, int code, const char *msg);
     void startHandshakeLocked(PayloadJob &job);
     void pumpSendLocked(PayloadJob &job);
     void drainReceiveLocked(PayloadJob &job);
@@ -110,6 +112,7 @@ private:
     std::map<int, uint64_t> fdIndex_;     // sockFd/listenFd → jobId
     std::map<uint64_t, std::unique_ptr<PayloadJob>> jobs_;
     uint64_t nextId_ = 1;
+    int64_t lastStatsMs_ = 0;   // [KDC-PAYLOAD] 埋点节流（仅 mu_ 内读写）
 };
 
 } // namespace kdeconnect

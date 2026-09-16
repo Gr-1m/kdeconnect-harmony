@@ -130,7 +130,8 @@ private:
     std::string plainTx_;
     size_t plainOffset_ = 0;
     bool plainIdentityQueued_ = false;
-    bool epollWriteArmed_ = false;   // EPOLLOUT 兴趣是否已挂（仅网络线程读写）
+    bool epollWriteArmed_ = false;   // EPOLLOUT 兴趣是否已挂（**须持 connMutex_ 读写**：
+                                     // 网络线程与 sendPacket(JS 线程) 都会改它）
 };
 
 } // namespace kdeconnect

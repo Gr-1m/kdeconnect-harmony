@@ -91,6 +91,9 @@ struct NetConfig {
     std::string certPem;
     std::string keyPem;
     uint16_t tcpPort = 0;
+    // UDP 监听/广播端口（0 = 用 UDP_PORT 默认 1716）。host 测试注入非标准端口，避免假对端
+    // 在真实局域网广播污染真机 hilog（DevEco MSG4 §3）。
+    uint16_t udpPort = 0;
     // payload 接收落盘的 spool 目录（空 = 设备默认 cacheDir 路径，见 payload.h）。
     // 设计 v0.2 §3 要求由 ArkTS 传入；当前 ArkTS 未传，native 保留可注入能力
     // （host 集成工具 tests/desktop_pair.cpp 用它把 spool 指到 /tmp）。

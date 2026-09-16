@@ -53,6 +53,10 @@ public:
     bool doHandshake();
     bool handshakeDone() const { return handshakeDone_; }
     // 引擎是否还有待写出的记录（BR_SSL_SENDREC）。
+    // 前置条件（隐式耦合，AtomCode P3）：本判据只看 SENDREC。若应用数据已进引擎但尚未 flush 成
+    // 记录（SENDAPP 非零、SENDREC 为零），此处会返回 false —— 现有调用序（先 runUntil/flush 再判断）
+    // 下正确；未来改调用序须一并考虑 SENDAPP（注意 SENDAPP 几乎常真，直接纳入会让 EPOLLOUT 常驻，
+    // 反而回到本函数要解决的陷阱）。
     // 用途（P0-b2-c）：网络循环**按需**挂/摘 EPOLLOUT —— 只有真有可能写出东西时才注册可写兴趣。
     // 否则 EPOLLET + EPOLLOUT 会在「无可写内容」时被 epoll_wait 每轮重复上报（真机实测连接事件
     // ~1 万次/秒、烧掉约一个核，并把配对 ack 推迟到对端超时，见 DevEco MSG180）。
