@@ -3,11 +3,33 @@
 #include "net/napi_exports.h"
 #include "net/net_stack.h"
 #include "napi/napi_events.h"
+#include <chrono>
+
+// ── JS 线程入口耗时埋点（DevEco MSG141 §3.3 / MSG142 §3 请求）──
+// 设备侧证据：主线程每 3~6s 被卡 3~6s，WiFi 开才出现；JS 侧已排除。这里把每个 NAPI 导出的
+// 执行时长量出来，>100ms 就写一行 hilog：复现时直接看出「主线程卡在哪个 native 调用里」。
+// 开销 = 两次 steady_clock 读；无锁、无分配、不改任何行为。
+struct JsEntryTimer {
+    const char *name;
+    std::chrono::steady_clock::time_point t0;
+    explicit JsEntryTimer(const char *n) : name(n), t0(std::chrono::steady_clock::now()) {}
+    ~JsEntryTimer()
+    {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0).count();
+        if (ms > 100) {
+            OH_LOG_Print(LOG_APP, LOG_WARN, 0x0001, "KDEConnect",
+                         "[KDC-JS-ENTRY] %{public}s took %{public}lld ms", name,
+                         (long long) ms);
+        }
+    }
+};
 
 // 占位 init 已由事件桥接管：注册 ArkTS 事件回调（threadsafe function）。
 // 注意：napi_threadsafe_function 必须在主线程创建，init 只能被 ArkTS 主线程调用。
 static napi_value OnInit(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("init");
     size_t argc = 1;
     napi_value args[1] = {nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -41,6 +63,7 @@ static napi_value OnInit(napi_env env, napi_callback_info info)
 // 这里同时停掉网络栈，否则事件回调已被摘掉、栈却仍在跑（事件静默丢弃，且 start() 会重复建栈）。
 static napi_value OnShutdown(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("shutdown");
     (void) env;
     (void) info;
     kdeconnect::netStack().setEventCallback(nullptr);
@@ -49,6 +72,7 @@ static napi_value OnShutdown(napi_env env, napi_callback_info info)
     OH_LOG_Print(LOG_APP, LOG_INFO, 0x0001, LOG_TAG, "event bridge + net stack shutdown");
     return nullptr;
 }
+
 
 static napi_value RegisterModule(napi_env env, napi_value exports)
 {

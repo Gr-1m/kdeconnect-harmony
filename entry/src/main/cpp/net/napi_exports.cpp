@@ -1,4 +1,5 @@
 #include "napi_exports.h"
+#include <chrono>
 #include "net_stack.h"
 #include "cert_gen.h"
 #include "net_log.h"
@@ -69,8 +70,30 @@ static bool napiGetInt(napi_env env, napi_value obj, const char *name, int32_t &
     return true;
 }
 
+
+// ── JS 线程入口耗时埋点（DevEco MSG141 §3.3 / MSG142 §3 请求）──
+// 设备侧证据：主线程每 3~6s 被卡 3~6s，WiFi 开才出现；JS 侧已排除。这里把每个 NAPI 导出的
+// 执行时长量出来，>100ms 就写一行 hilog：复现时直接看出「主线程卡在哪个 native 调用里」。
+// 开销 = 两次 steady_clock 读；无锁、无分配、不改任何行为。
+struct JsEntryTimer {
+    const char *name;
+    std::chrono::steady_clock::time_point t0;
+    explicit JsEntryTimer(const char *n) : name(n), t0(std::chrono::steady_clock::now()) {}
+    ~JsEntryTimer()
+    {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0).count();
+        if (ms > 100) {
+            OH_LOG_Print(LOG_APP, LOG_WARN, 0x0001, "KDEConnect",
+                         "[KDC-JS-ENTRY] %{public}s took %{public}lld ms", name,
+                         (long long) ms);
+        }
+    }
+};
+
 napi_value JsStart(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("JsStart");
     size_t argc = 1;
     napi_value args[1];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -104,6 +127,7 @@ napi_value JsStart(napi_env env, napi_callback_info info)
 
 napi_value JsStop(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("JsStop");
     (void) env; (void) info;
     netStack().stop();
     LOGI("native stop");
@@ -112,6 +136,7 @@ napi_value JsStop(napi_env env, napi_callback_info info)
 
 napi_value JsConnectToPeer(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("JsConnectToPeer");
     size_t argc = 2;
     napi_value args[2];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -134,6 +159,7 @@ napi_value JsConnectToPeer(napi_env env, napi_callback_info info)
 
 napi_value JsSendPacket(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("JsSendPacket");
     size_t argc = 2;
     napi_value args[2];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -161,6 +187,7 @@ napi_value JsSendPacket(napi_env env, napi_callback_info info)
 
 napi_value JsDisconnect(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("JsDisconnect");
     size_t argc = 1;
     napi_value args[1];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -180,6 +207,7 @@ napi_value JsDisconnect(napi_env env, napi_callback_info info)
 
 napi_value JsGenerateCert(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("JsGenerateCert");
     size_t argc = 1;
     napi_value args[1];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -231,6 +259,7 @@ bool jsGetDouble(napi_env env, napi_value v, double &out)
 
 napi_value JsSendPayload(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("JsSendPayload");
     size_t argc = 4;
     napi_value args[4] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -250,6 +279,7 @@ napi_value JsSendPayload(napi_env env, napi_callback_info info)
 
 napi_value JsKeepPayload(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("JsKeepPayload");
     size_t argc = 2;
     napi_value args[2] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -266,6 +296,7 @@ napi_value JsKeepPayload(napi_env env, napi_callback_info info)
 
 napi_value JsDiscardPayload(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("JsDiscardPayload");
     size_t argc = 1;
     napi_value args[1] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -281,6 +312,7 @@ napi_value JsDiscardPayload(napi_env env, napi_callback_info info)
 
 napi_value JsCancelPayload(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("JsCancelPayload");
     size_t argc = 1;
     napi_value args[1] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -295,6 +327,7 @@ napi_value JsCancelPayload(napi_env env, napi_callback_info info)
 
 napi_value JsSetCapabilities(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("JsSetCapabilities");
     // d.ts v2：setCapabilities(incoming: string[], outgoing: string[])
     size_t argc = 2;
     napi_value args[2] = {};
@@ -333,6 +366,7 @@ napi_value JsSetCapabilities(napi_env env, napi_callback_info info)
 
 napi_value JsGetPeerCertificate(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("JsGetPeerCertificate");
     size_t argc = 1;
     napi_value args[1] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -350,6 +384,7 @@ napi_value JsGetPeerCertificate(napi_env env, napi_callback_info info)
 
 napi_value JsGetPairVerificationCode(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("JsGetPairVerificationCode");
     size_t argc = 2;
     napi_value args[2] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -369,6 +404,7 @@ napi_value JsGetPairVerificationCode(napi_env env, napi_callback_info info)
 
 napi_value JsGetOwnCertificate(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("JsGetOwnCertificate");
     std::string pem = netStack().getOwnCertificate();
     napi_value out = nullptr;
     napi_create_string_utf8(env, pem.c_str(), pem.size(), &out);
@@ -378,6 +414,7 @@ napi_value JsGetOwnCertificate(napi_env env, napi_callback_info info)
 // —— WP-2 信任设备证书钉扎（持久化在 ArkTS TrustStore/Preferences，启动时回灌）——
 napi_value JsSetTrustedCertificate(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("JsSetTrustedCertificate");
     size_t argc = 2;
     napi_value args[2] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -394,6 +431,7 @@ napi_value JsSetTrustedCertificate(napi_env env, napi_callback_info info)
 
 napi_value JsRemoveTrustedCertificate(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("JsRemoveTrustedCertificate");
     size_t argc = 1;
     napi_value args[1] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -411,6 +449,7 @@ napi_value JsRemoveTrustedCertificate(napi_env env, napi_callback_info info)
 // —————— UDP 发现：UI 主动触发一次广播（CodeArts MSG73_TO_OMP 修复 4）——————
 napi_value JsTriggerBroadcast(napi_env env, napi_callback_info info)
 {
+    JsEntryTimer _t("JsTriggerBroadcast");
     (void) info;
     netStack().triggerBroadcast();
     napi_value out = nullptr;

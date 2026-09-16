@@ -10,6 +10,8 @@
 //   ./run_desktop.sh pair <host> <port>      # 指定对端
 //   ./run_desktop.sh sendfile <path>         # 配对后发文件（桌面端会收到 share.request）
 //   ./run_desktop.sh probe [host]            # 端口未知（0）拨号：native 自行探测并建链
+//   ./run_desktop.sh latency [seconds]       # 主线程（JS 线程）入口耗时探针：周期调 native 入口，
+//                                            # 把 >100ms 的调用连函数名打出来（定位持锁跨 I/O）
 //                                            # （KDE 拨入的 identity 不带 tcpPort，见 net_util.h）
 //
 // 退出码：0 = 成功（收到对端 {pair:true} / 传输 finished），1 = 失败/超时。
@@ -47,6 +49,7 @@ std::string g_verificationCode;    // 本机算出的验证码（与对端通知
 // dispatchEvent 持有的锁自锁（实测：收到接受后进程永久卡住，reject 路径不调所以正常）。
 std::string g_pairPeerId;
 int64_t g_pairTimestamp = -1;
+std::atomic<int> g_eventCount{0};   // 事件总数（latency 探针用来算事件率）
 int64_t g_sentPairTs = -1;   // 我方发出的请求时间戳（v8 验证码用它；接受包不带 ts）
 uint64_t g_xferId = 0;
 std::string g_xferState;
@@ -101,6 +104,7 @@ bool pairBodyOf(const std::string &frame, bool &pair, int64_t &ts)
 
 void onEvent(const NetEvent &e)
 {
+    g_eventCount.fetch_add(1);
     switch (e.type) {
     case EventType::DeviceDiscovered:
         note("[event] deviceDiscovered  %s (%s) @ %s:%u",
@@ -260,6 +264,10 @@ int main(int argc, char **argv)
         }
         if (argc > 4) {
             port = static_cast<uint16_t>(std::atoi(argv[4]));
+        }
+    } else if (mode == "latency") {
+        if (argc > 2) {
+            serveSeconds = std::atoi(argv[2]);
         }
     } else if (mode == "serve") {
         if (argc > 2) {
@@ -423,6 +431,90 @@ int main(int argc, char **argv)
                 lastSettled = id;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        rc = 0;
+    } else if (mode == "latency") {
+        // 主线程入口耗时探针（DevEco MSG141 §3.3 / MSG142 §3 请求）：
+        // 设备侧实测「WiFi 开 ⇒ 主线程每 3~6s 被卡 3~6s；关 ⇒ 0」，JS 侧已排除。
+        // 这里在**非网络线程**上周期调用各 native 入口（= JS 线程走的是同一条加锁路径），
+        // 把 >100ms 的调用连函数名打出来 —— 复现即定位到「持锁跨 I/O」的那个函数。
+        const int seconds = serveSeconds > 0 ? serveSeconds : 75;
+        const std::string peer = peerIdSnapshot();
+        note("[*] latency 探针 %d 秒（对端 %s）", seconds, peer.c_str());
+
+        struct CallStat {
+            const char *name;
+            int calls = 0;
+            int slow = 0;
+            int64_t maxMs = 0;
+        };
+        CallStat cSend{"sendPacket"}, cCert{"getPeerCertificate"}, cOwn{"getOwnCertificate"},
+                 cCaps{"setCapabilities"}, cBcast{"triggerBroadcast"};
+        auto timeCall = [&](CallStat &st, const std::function<void()> &fn) {
+            const int64_t t0 = nowMs();
+            fn();
+            const int64_t dt = nowMs() - t0;
+            st.calls++;
+            if (dt > st.maxMs) st.maxMs = dt;
+            if (dt > 100) {
+                st.slow++;
+                note("[!] SLOW %-18s %lld ms", st.name, (long long) dt);
+            }
+        };
+        auto cpuMs = []() -> long long {
+            FILE *f = ::fopen("/proc/self/stat", "r");
+            if (f == nullptr) return 0;
+            char buf[1024];
+            size_t n = ::fread(buf, 1, sizeof(buf) - 1, f);
+            ::fclose(f);
+            buf[n] = '\0';
+            // /proc/self/stat：pid (comm) state ppid … cmajflt utime stime …（comm 可能含空格 ⇒ 从右括号后解析）
+            const char *rest = ::strrchr(buf, ')');
+            if (rest == nullptr) return 0;
+            rest += 1;
+            char state = 0;
+            long long ppid = 0, pgrp = 0, sess = 0, tty = 0, tpgid = 0, utime = 0, stime = 0;
+            unsigned long long flags = 0, minflt = 0, cminflt = 0, majflt = 0, cmajflt = 0;
+            const int got = ::sscanf(rest,
+                                     " %c %lld %lld %lld %lld %lld %llu %llu %llu %llu %llu %lld %lld",
+                                     &state, &ppid, &pgrp, &sess, &tty, &tpgid, &flags, &minflt,
+                                     &cminflt, &majflt, &cmajflt, &utime, &stime);
+            if (got != 13) return 0;
+            return (utime + stime) * 10;   // USER_HZ=100 ⇒ 1 tick = 10ms
+        };
+
+        const long long cpu0 = cpuMs();
+        int ev0 = g_eventCount.load();
+        const int64_t end = nowMs() + static_cast<int64_t>(seconds) * 1000;
+        int64_t lastReport = nowMs();
+        char frame[192];
+        std::snprintf(frame, sizeof frame,
+                      "{\"id\":%lld,\"type\":\"kdeconnect.ping\",\"body\":{}}\n",
+                      (long long) nowMs());
+        while (nowMs() < end) {
+            timeCall(cSend, [&] { ns.sendPacket(peer, frame); });
+            timeCall(cCert, [&] { ns.getPeerCertificate(peer); });
+            timeCall(cOwn, [&] { ns.getOwnCertificate(); });
+            timeCall(cCaps, [&] {
+                ns.setCapabilities({"kdeconnect.ping", "kdeconnect.identity", "kdeconnect.pair",
+                                     "kdeconnect.share.request", "kdeconnect.clipboard"},
+                                    {"kdeconnect.ping", "kdeconnect.share.request",
+                                     "kdeconnect.clipboard"});
+            });
+            timeCall(cBcast, [&] { ns.triggerBroadcast(); });
+            if (nowMs() - lastReport >= 5000) {
+                const int ev = g_eventCount.load();
+                note("[*] %llds: 事件 %d 条（近 5s %d 条），CPU %lld ms",
+                     (long long) ((nowMs() - (end - seconds * 1000)) / 1000), ev, ev - ev0, cpuMs() - cpu0);
+                ev0 = ev;
+                lastReport = nowMs();
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        CallStat all[] = {cSend, cCert, cOwn, cCaps, cBcast};
+        for (const CallStat &st : all) {
+            note("[=] %-18s 调用 %5d 次，>100ms %d 次，最长 %lld ms", st.name, st.calls, st.slow,
+                 (long long) st.maxMs);
         }
         rc = 0;
     } else if (mode == "probe") {

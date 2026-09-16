@@ -1,4 +1,5 @@
 #include "napi/napi_events.h"
+#include <chrono>
 
 #include <memory>
 #include <mutex>
@@ -98,10 +99,20 @@ void CallJs(napi_env env, napi_value callback, void *context, void *data)
     }
     auto *eventPtr = static_cast<std::unique_ptr<NetEvent> *>(data);
     if (eventPtr != nullptr) {
+        // 埋点（MSG149 §3.3）：这段跑在 **JS 线程** 上 —— 量出「事件回调体本身」的耗时，
+        // 用于区分「主线程卡在 native 入口」还是「卡在事件回调/JS 处理里」。>100ms 才打。
+        const auto t0 = std::chrono::steady_clock::now();
         napi_value eventObj = BuildEventObject(env, **eventPtr);
         napi_value result = nullptr;
         napi_value args[] = {eventObj};
         (void) napi_call_function(env, nullptr, callback, 1, args, &result);
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0).count();
+        if (ms > 100) {
+            OH_LOG_Print(LOG_APP, LOG_WARN, 0x0001, "KDEConnect",
+                         "[KDC-JS-CB] event=%{public}d callback took %{public}lld ms",
+                         static_cast<int>((*eventPtr)->type), (long long) ms);
+        }
         delete eventPtr;
     }
 }
