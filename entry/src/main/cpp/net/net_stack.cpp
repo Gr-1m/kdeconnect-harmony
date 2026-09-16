@@ -85,6 +85,43 @@ int64_t lockMonoMs()
         .count();
 }
 
+// 锁内子段计时（CodeArts MSG9 P0）：先定位「锁内长计算」到底花在哪一段，再谈移出锁。
+// 只在总耗时超阈值时打一行，故对稳态零噪声。
+int64_t monoMs();   // 定义见下方（供 PhaseAccum 使用）
+
+struct PhaseAccum {
+    const char *what;
+    int64_t t0 = monoMs();
+    int64_t plain = 0;   // 明文 identity 读/解析
+    int64_t tls = 0;     // TLS 握手推进
+    int64_t ident = 0;   // 加密通道内 identity 发送
+    int64_t drain = 0;   // 排空读（含 TLS 解密）
+    int64_t json = 0;    // dispatchFrames（cJSON 解析 + 派发）
+    int64_t flush = 0;   // TX 出队写
+    int64_t other = 0;
+    int conns = 0;
+    explicit PhaseAccum(const char *w) : what(w) {}
+    int64_t mark()
+    {
+        return monoMs();
+    }
+    void done(int64_t &slot, int64_t t)
+    {
+        slot += monoMs() - t;
+    }
+    ~PhaseAccum()
+    {
+        const int64_t total = monoMs() - t0;
+        if (total > 100) {
+            LOGI("[KDC-PHASESPLIT] what=%{public}s total=%{public}lldms conns=%{public}d "
+                 "plain=%{public}lldms tls=%{public}lldms ident=%{public}lldms "
+                 "drain=%{public}lldms json=%{public}lldms flush=%{public}lldms",
+                 what, (long long) total, conns, (long long) plain, (long long) tls,
+                 (long long) ident, (long long) drain, (long long) json, (long long) flush);
+        }
+    }
+};
+
 struct HoldTimer {
     const char *label;
     int64_t t0 = lockMonoMs();
@@ -681,6 +718,7 @@ void NetStack::eventLoop()
         //   内部内容未重排缩进，以保持 diff 最小、便于复核。
         if (dueTick) {
         const int64_t holdT0 = nowMs();
+        PhaseAccum _phases("eventLoop:tick");
         {
             HoldTimer _hold("eventLoop");
             std::lock_guard<std::mutex> lk(connMutex_);
@@ -736,7 +774,9 @@ void NetStack::eventLoop()
                     // 明文 identity 帧会一直滞留。每 tick 兜底读一次即消除该依赖。
                     if (c.state() == ConnectionState::Idle ||
                         c.state() == ConnectionState::PlainIdentity) {
+                        const int64_t _tp = _phases.mark();
                         pumpPlainIdentity(c);
+                        _phases.done(_phases.plain, _tp);
                         // 回调可能已 closeConnection 并摘除本连接：必须按 (fd, 指针) 重新确认，
                         // 否则下面继续用 c 就是读已释放对象（实测 std::bad_alloc）。
                         it = connections_.find(cfd);
@@ -773,12 +813,16 @@ void NetStack::eventLoop()
                     // P0-c：caps 变更后重发 identity —— JS 线程只置标志（setCapabilities），
                     // 实际的 TLS 写出由网络线程完成（CPP_GUIDE §4：JS 线程不做 socket I/O）。
                     if (c.state() == ConnectionState::Encrypted && c.needsSendIdentity()) {
+                        const int64_t _ti = _phases.mark();
                         sendIdentityOverTls(c);
+                        _phases.done(_phases.ident, _ti);
                     }
                     // 读取兜底：EPOLLET 下任何边沿丢失都会让已到达的帧滞留（对端 caps 协商失败），
                     // 故每 tick 对 Encrypted 连接兜底排空一次（fillTlsRx 无数据时开销为一次 recv）。
                     if (c.state() == ConnectionState::Encrypted) {
+                        const int64_t _td = _phases.mark();
                         drainEncrypted(c);
+                        _phases.done(_phases.drain, _td);
                         // dispatchFrames 可能关闭并摘除本连接 ⇒ 重新确认后再继续使用 c
                         it = connections_.find(cfd);
                         if (it == connections_.end() || it->second.get() != entry.second) {
@@ -1372,13 +1416,18 @@ void NetStack::onConnectionReadable(int fd)
 // （现象：配对/连接成功，但对端发来的 packet 全部 unhandled）。
 void NetStack::drainEncrypted(TcpConnection &conn)
 {
+    // json 段（cJSON 解析 + 逐帧派发）计时：仅用于 PHASESPLIT 打点，静态累计，不改签名
+    static thread_local int64_t s_jsonMs = 0;
+    s_jsonMs = 0;
     if (conn.state() != ConnectionState::Encrypted) {
         return;
     }
     if (conn.needsSendIdentity()) {
         sendIdentityOverTls(conn);
     }
+    const int64_t _tIo = monoMs();
     const ssize_t n = conn.fillTlsRx();
+    const int64_t _ioMs = monoMs() - _tIo;
     if (n < 0) {
         const int fd = conn.fd();
         dispatchError(conn.deviceId(), EIO, "tls read failed");
@@ -1388,7 +1437,14 @@ void NetStack::drainEncrypted(TcpConnection &conn)
     if (n == 0) {
         return;
     }
+    const int64_t _tJson = monoMs();
     dispatchFrames(conn);
+    s_jsonMs = monoMs() - _tJson;
+    // 只在这两段合计超阈值时打一行（与 PHASESPLIT 同口径）
+    if (_ioMs + s_jsonMs > 100) {
+        LOGI("[KDC-DRAINSPLIT] tls_decrypt_recv=%{public}lldms json_dispatch=%{public}lldms",
+             (long long) _ioMs, (long long) s_jsonMs);
+    }
 }
 
 void NetStack::onConnectionWritable(int fd)
