@@ -271,7 +271,17 @@ bool TlsEngine::init(const std::string &certPem, const std::string &keyPem,
 
 int TlsEngine::runUntil(unsigned target)
 {
+    // P0-a（根因）：本循环原先在「引擎无任何可推进状态」时会 flush→continue 空转
+    // （state 不变 ⇒ 死循环烧满一个核；真机实测单次迭代 ≈5.4s CPU，见 DevEco MSG160 §1.2）。
+    // 三道防御：① 停摆（state 四位全不命中）立即返回；② flush 后状态未变 ⇒ 无进展返回；
+    // ③ 迭代上限兜底，任何病态路径都不再占满 CPU。
+    constexpr unsigned kMaxDrives = 4096;
+    unsigned drives = 0;
     for (;;) {
+        if (++drives > kMaxDrives) {
+            LOGI("tls runUntil: drive guard hit (target=0x%x) — 无进展，按暂不可用返回", target);
+            return 0;
+        }
         unsigned state = br_ssl_engine_current_state(engine_);
         if (state & BR_SSL_CLOSED) {
             int err = br_ssl_engine_last_error(engine_);
@@ -336,7 +346,16 @@ int TlsEngine::runUntil(unsigned target)
             continue;
         }
 
+        // 兜底：既无可读写缓冲区（SENDAPP/RECVAPP/SENDREC/RECVREC 全不命中）、target 又未满足
+        // ⇒ 引擎停摆，交回调用方等下次事件/tick。原实现此处 br_ssl_engine_flush + continue，
+        // state 不变时即无限空转（本次卡顿 CPU 饱和的直接来源）。
+        if (!(state & (BR_SSL_SENDAPP | BR_SSL_RECVAPP | BR_SSL_SENDREC | BR_SSL_RECVREC))) {
+            return 0;
+        }
         br_ssl_engine_flush(engine_, 0);
+        if (br_ssl_engine_current_state(engine_) == state) {
+            return 0;  // flush 未能改变引擎状态 ⇒ 本轮无进展，退出而非空转
+        }
     }
 }
 

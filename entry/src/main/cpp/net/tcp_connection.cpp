@@ -94,27 +94,43 @@ ssize_t TcpConnection::readPlainFrame(std::string &out, size_t maxSize, int *err
     return static_cast<ssize_t>(frameLen);
 }
 
-bool TcpConnection::writePlainAll(const uint8_t *data, size_t len)
+void TcpConnection::queuePlainFrame(std::string data)
 {
-    size_t off = 0;
-    while (off < len) {
-        ssize_t n = send(fd_, data + off, len - off, MSG_NOSIGNAL);
+    if (data.empty()) {
+        return;
+    }
+    if (plainOffset_ >= plainTx_.size()) {
+        plainTx_.clear();
+        plainOffset_ = 0;
+    }
+    plainTx_ += data;
+}
+
+bool TcpConnection::flushPlain()
+{
+    while (plainOffset_ < plainTx_.size()) {
+        const size_t rest = plainTx_.size() - plainOffset_;
+        ssize_t n = ::send(fd_, plainTx_.data() + plainOffset_, rest, MSG_NOSIGNAL);
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                struct pollfd pfd {};
-                pfd.fd = fd_;
-                pfd.events = POLLOUT;
-                if (poll(&pfd, 1, TLS_WRITE_WAIT_MS) <= 0) {
-                    LOGE("writePlainAll fd=%d: timeout waiting writable", fd_);
-                    return false;
-                }
-                continue;
+                // 对端读得慢 / socket 缓冲区满：余量留在队列里，等 EPOLLOUT 或 tick 续传。
+                // P0-b：这里**不再** poll(2000ms) 原地等待 —— 那会把调用方的锁（connMutex_）
+                // 一并扣住数秒，导致 JS 线程的 sendPacket 冻结（本轮卡顿根因）。
+                return false;
             }
-            LOGE("writePlainAll fd=%d: %s", fd_, strerror(errno));
+            LOGE("flushPlain fd=%d: %s", fd_, strerror(errno));
+            state_ = ConnectionState::Closing;  // 硬错误：交调用方（网络线程）关闭连接
             return false;
         }
-        off += static_cast<size_t>(n);
+        if (n == 0) {
+            LOGE("flushPlain fd=%d: send returned 0 (peer gone?)", fd_);
+            state_ = ConnectionState::Closing;
+            return false;
+        }
+        plainOffset_ += static_cast<size_t>(n);
     }
+    plainTx_.clear();
+    plainOffset_ = 0;
     return true;
 }
 
@@ -246,6 +262,14 @@ void TcpConnection::close()
     }
     tls_.reset();
     rxBuf_.clear();
+    // 会话结束即丢弃待发数据（DevEco MSG160 §2.1）：明文队列与 TX 队列都随连接销毁，
+    // 上一会话的 battery/connectivity_report 不会再落到新会话（语义上是旧值）。
+    // 丢弃是静默的：不派发任何错误事件（§2.2：避免给用户弹无意义的失败 toast）。
+    txQueue_.clear();
+    txOffset_ = 0;
+    txQueuedBytes_ = 0;
+    plainTx_.clear();
+    plainOffset_ = 0;
     state_ = ConnectionState::Closed;
 }
 

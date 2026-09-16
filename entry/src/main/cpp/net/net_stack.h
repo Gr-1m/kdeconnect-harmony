@@ -92,6 +92,8 @@ private:
     void onTcpServerReadable();
     void onConnectionReadable(int fd);
     void onConnectionWritable(int fd);
+    // 明文 identity 阶段读取（调用方持 connMutex_）；事件路径与 tick 兜底共用
+    void pumpPlainIdentity(TcpConnection &conn);
     void closeConnection(int fd, const char *reason);
     // 排空读后按 '\n' 切分逐帧派发（接收缓冲在连接对象内，半包留待下次）
     void dispatchFrames(TcpConnection &conn);
