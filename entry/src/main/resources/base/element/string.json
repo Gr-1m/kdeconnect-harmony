@@ -590,6 +590,10 @@
       "value": "Close"
     },
     {
+      "name": "action_send_pick",
+      "value": "Choose & send"
+    },
+    {
       "name": "files_history_clear",
       "value": "Clear history"
     },

@@ -84,6 +84,10 @@ struct Index {
   @State status: string = 'booting';
   @State logText: string = '';
   @State currentTab: number = 0;
+  // 开屏卡顿排查用：build() 调用计数（非 @State，避免自身触发重建）
+  private buildCount: number = 0;
+  // 事件日志开关：true 时打印完整事件 JSON（排查用）；常态 false ⇒ 只打轻量摘要
+  private debugEventLog: boolean = false;
   @State deviceName: string = DEFAULT_DEVICE_NAME;
   // 系统设备名称（只读展示 + 设置页「使用系统名称」）
   @State systemName: string = '';
@@ -384,8 +388,13 @@ struct Index {
       return;
     }
     this.settingsApplied = true;
-    this.applyTheme(this.themeMode, false);
-    this.applyLanguage(this.language, false);
+    // ARKTS_ANALYSIS §8-B（根治）：主题/语言的切换会引发**全量重主题**（字体/颜色/资源重解析）。
+    // 启动时它紧跟首帧之后（实测 +1.23s）执行，会与 native 的建链首批发包叠在同一时间窗内。
+    // 延后一拍（首帧后再 300ms）执行，把这段开销从"首屏可交互前的窗口"里挪出去。
+    setTimeout((): void => {
+      this.applyTheme(this.themeMode, false);
+      this.applyLanguage(this.language, false);
+    }, 300);
   }
 
   aboutToDisappear(): void {
@@ -1150,8 +1159,18 @@ struct Index {
   }
 
   private handleEvent(event: NetEvent): void {
-    // 验证事件桥是否端到端到达 ArkTS（验证后可删）
-    console.info('KDC net event: ' + JSON.stringify(event));
+    // 事件日志（性能关键路径）：原实现对**每个**事件做整对象 JSON.stringify + 打一行 hilog，
+    // 而 packet 字段本身已是数 KB 字符串 ⇒ 每事件一次数 KB 拷贝 + 一次同步 hilog 写。
+    // omp（NATIVE_ANALYSIS §2）指出慢 `JsSendPacket`(1.3~5.8s) 疑似「调度延迟或 hilog 同步写阻塞」，
+    // 与我 ARKTS_ANALYSIS §5(#2) 指向同一处 ⇒ 收敛为：
+    //   ① 常态只打「类型 + deviceId 前 8 位 + packet 长度」（轻量，仍够排查时序）；
+    //   ② 需要 packet 原文时把 debugEventLog 置 true（临时排查用）。
+    const pktLen: number = event.packet === undefined || event.packet === null ? 0 : event.packet.length;
+    if (this.debugEventLog) {
+      console.info('KDC net event: ' + JSON.stringify(event));
+    } else {
+      console.info(`KDC event ${event.type ?? '?'} dev=${(event.deviceId ?? '').substring(0, 8)} pktLen=${pktLen}`);
+    }
     switch (event.type) {
       case 'deviceDiscovered': {
         const id: string = event.deviceId ?? '';
@@ -2130,8 +2149,21 @@ struct Index {
     if (this.logBuf.length === 0) {
       return;
     }
+    // ARKTS_ANALYSIS §8-A（根治）：日志页不可见时不写 @State。
+    // 写 logText 会触发**整页重建**；开屏/日常操作期大量日志都发生在别的页签上，
+    // 这些重建纯属浪费（用户看不到日志）。切回日志页时由 tabs onChange 补一次 flush。
+    if (this.currentTab !== 3) {
+      return;
+    }
     this.logText = this.logBuf.slice(-50).join('\n');
     this.logLastFlushMs = Date.now();
+    // 开屏卡顿排查（MSG8 §4 问题 1/#1）：每次 flushLog 都会写 @State logText ⇒ 触发一次整页重建。
+    // 这里计数并在首屏窗口内打印，用来量化「开屏期日志驱动的重建次数」。build() 里不能写任意语句，
+    // 所以计数放在这个真正触发重建的点上。
+    this.buildCount++;
+    if (this.buildCount <= 3 || this.buildCount % 50 === 0) {
+      console.info(`KDC logflush #${this.buildCount} @${Date.now()}`);
+    }
   }
 
   // P2（MSG145 §2 P2-1）：actionGateMs 只增不减 ⇒ 随「设备 × 动作」缓慢泄漏。
@@ -2747,6 +2779,10 @@ struct Index {
                 onPlaceholderAction: (key: string): void => {
                   this.onDeviceAction(key);
                 },
+                // 发送文件卡内按钮 = 文件页「选择文件并发送」同一动作
+                onSendFilePick: (): void => {
+                  this.pickAndSendFile();
+                },
                 onOpenDevice: (d: DeviceItem): void => {
                   this.openDeviceDetail(d);
                 },
@@ -2892,6 +2928,10 @@ struct Index {
           // 切回「设备」页签时主动广播一次（3s 门控内自动跳过），让列表尽快有内容
           if (index === 0) {
             this.triggerDiscoveryBroadcast();
+          }
+          // ARKTS_ANALYSIS §8-A：切到「日志」页签时补一次 flush（页面不可见期间日志只进缓冲、不写 @State）
+          if (index === 3) {
+            this.flushLog();
           }
         })
       }

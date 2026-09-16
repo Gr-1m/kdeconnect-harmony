@@ -38,6 +38,9 @@ export struct DevicesTab {
   // 大按钮占位回调（功能暂未实现）
   onPlaceholderAction: (key: string) => void = () => {
   };
+  // 发送文件卡的**卡内按钮**：直接拉起文件选择器并发送（= 文件页「选择文件并发送」同一动作）
+  onSendFilePick: () => void = () => {
+  };
   // 点设备行（发现页/已连接列表）→ 回到该设备的「功能页」（设备信息 + 大按钮）
   onOpenDevice: (d: DeviceItem) => void = () => {
   };
@@ -515,6 +518,59 @@ export struct DevicesTab {
     })
   }
 
+  // 发送文件卡（用户 2026-09-16 要求）：整卡点击仍 = 跳到文件页；卡内按钮 = 直接选文件并发送，
+  // 与文件页「选择文件并发送」同一个动作。版式对齐剪贴板卡（等高 + 控件贴底）。
+  @Builder
+  sendFileCard(icon: Resource, title: ResourceStr, desc: ResourceStr) {
+    Column() {
+      Column({ space: 6 }) {
+        SymbolGlyph(icon)
+          .fontSize(24)
+          .fontColor([$r('app.color.accent_text')])
+        Text(title)
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .maxLines(1)
+        Text(desc)
+          .fontSize(11)
+          .fontColor($r('app.color.text_muted'))
+          .maxLines(1)
+      }
+      .alignItems(HorizontalAlign.Start)
+
+      // 与剪贴板卡的 PasteButton 观感一致：用**系统按钮的普通样式**（ButtonStyleMode.NORMAL =
+      // 浅底深字的中性按钮；默认的 EMPHASIZED 是品牌蓝强调按钮，这正是之前观感不同的原因）。
+      // 不覆盖任何颜色，交给系统主题（黑夜/白天模式都自动正确）。
+      Button({ type: ButtonType.Capsule, buttonStyle: ButtonStyleMode.NORMAL }) {
+        Row({ space: 6 }) {
+          SymbolGlyph($r('sys.symbol.paperplane'))
+            .fontSize(14)
+            .fontColor([$r('sys.color.brand')])
+          Text($r('app.string.action_send_pick'))
+            .fontSize(12)
+        }
+      }
+      .height(26)
+      .padding({ left: 12, right: 12 })
+      .onClick(() => {
+        this.onSendFilePick();
+      })
+    }
+    .layoutWeight(1)
+    .height(ACTION_CARD_HEIGHT)
+    .alignItems(HorizontalAlign.Start)
+    .justifyContent(FlexAlign.SpaceBetween)
+    .padding({ left: 14, right: 14, top: 14, bottom: 14 })
+    .borderRadius(16)
+    .backgroundColor($r('app.color.card_bg'))
+    .backgroundBlurStyle(undefined)
+    .border({ width: 1, color: $r('app.color.card_border') })
+    .onClick(() => {
+      this.onPlaceholderAction('send_file');
+    })
+  }
+
   // 设备详情（对齐参考稿主页面）：上方设备信息 + 下方大按钮
   // 剪贴板卡：读本机剪贴板需 `ohos.permission.READ_PASTEBOARD`，而它在 SDK 权限定义里是
   // `availableLevel: system_basic`（三方应用申请会导致安装失败）→ 必须改用官方**安全控件**
@@ -630,8 +686,8 @@ export struct DevicesTab {
       // 6 个按钮按 MSG112 §1 定版：发送文件 / 剪贴板（双向）/ 查找设备 / 远程输入 / 远程命令 / 媒体控制
       if (this.cardColumns() >= 3) {
         Row({ space: 10 }) {
-          this.actionCard('send_file', $r('sys.symbol.paperplane'),
-            $r('app.string.action_send_file'), $r('app.string.action_send_file_desc'))
+      this.sendFileCard($r('sys.symbol.paperplane'),
+        $r('app.string.action_send_file'), $r('app.string.action_send_file_desc'))
           this.clipboardCard($r('sys.symbol.text_clipboard'),
             $r('app.string.action_clipboard'), $r('app.string.action_clipboard_desc'))
           this.actionCard('find_device', $r('sys.symbol.location_up'),
@@ -652,8 +708,8 @@ export struct DevicesTab {
         .alignItems(VerticalAlign.Top)
       } else {
         Row({ space: 10 }) {
-          this.actionCard('send_file', $r('sys.symbol.paperplane'),
-            $r('app.string.action_send_file'), $r('app.string.action_send_file_desc'))
+      this.sendFileCard($r('sys.symbol.paperplane'),
+        $r('app.string.action_send_file'), $r('app.string.action_send_file_desc'))
           this.clipboardCard($r('sys.symbol.text_clipboard'),
             $r('app.string.action_clipboard'), $r('app.string.action_clipboard_desc'))
         }

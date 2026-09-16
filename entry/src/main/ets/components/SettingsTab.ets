@@ -105,34 +105,25 @@ export struct SettingsTab {
     }
   }
 
-  // 「标签: 地址」行（字号与卡片其它文字一致，地址可点）。条目缩进一级，后面继续追加仓库条目也自动一致。
-  // 显示只保留「能定位到仓库」的那段（去掉 https://host/ 前缀），完整地址仍用于跳转。
+  // 「标签: 值」纯文字行（用户 2026-09-16 裁决：开源仓库不再做链接，直接写文字）。
+  // 标签用固定宽度 ⇒ 两个仓库名的起始位置对齐；整体缩进一级，与后面的条目保持一致。
   @Builder
-  linkRow(label: string, url: string) {
-    Flex({ wrap: FlexWrap.Wrap }) {
-      Text(label + ': ')
+  indentedTextRow(label: string, value: string) {
+    Row() {
+      Text(label + ':')
         .fontSize(12)
         .fontColor($r('app.color.text_secondary'))
-      Text(SettingsTab.shortUrl(url))
+        .width(72)
+      Text(value)
         .fontSize(12)
-        .fontColor($r('app.color.accent_text'))
-        .decoration({ type: TextDecorationType.Underline, color: $r('app.color.accent_text') })
-        .onClick(() => {
-          this.openUrl(url);
-        })
+        .fontColor($r('app.color.text_primary'))
+        .layoutWeight(1)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
     }
     .width('100%')
+    .alignItems(VerticalAlign.Center)
     .padding({ left: 14 })
-  }
-
-  // 去掉 scheme + host，只留路径（如 https://gitcode.com/Gr1m/kdeconnect-harmony → Gr1m/kdeconnect-harmony）
-  private static shortUrl(url: string): string {
-    const schemeEnd: number = url.indexOf('://');
-    if (schemeEnd < 0) {
-      return url;
-    }
-    const pathStart: number = url.indexOf('/', schemeEnd + 3);
-    return pathStart < 0 ? url : url.substring(pathStart + 1);
   }
 
   // 资源字符串取值（SettingsTab 里没有 Index 的 resText，照同款写法补一个）
@@ -300,9 +291,9 @@ export struct SettingsTab {
               Text($r('app.string.settings_about_repo'))
                 .fontSize(12)
                 .fontColor($r('app.color.text_secondary'))
-              // 写全「名字: 地址」，地址部分可点（12fp，与卡片其它文字同规格）
-              this.linkRow('GitCode', 'https://gitcode.com/Gr1m/kdeconnect-harmony')
-              this.linkRow('GitHub', 'https://github.com/Gr-1m/kdeconnect-harmony')
+              // 仅文字展示（不再可点）；两个仓库名的起始位置由标签固定宽度对齐
+              this.indentedTextRow('GitCode', 'Gr1m/kdeconnect-harmony')
+              this.indentedTextRow('GitHub', 'Gr-1m/kdeconnect-harmony')
             }
             .width('100%')
             .alignItems(HorizontalAlign.Start)
