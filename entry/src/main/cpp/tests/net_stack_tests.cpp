@@ -30,6 +30,7 @@
 #include "../net/cert_gen.h"
 #include "../net/net_stack.h"
 #include "../net/net_util.h"
+#include "../net/packet_io.h"
 
 using namespace kdeconnect;
 
@@ -38,6 +39,8 @@ namespace {
 int g_failed = 0;
 int g_cases = 0;
 const char *g_case = "?";
+// P0 回归用的假对端 deviceId（必须在被测栈与子进程之间保持一致）
+constexpr const char *kMutePeerId = "hosttest33333333333333333333333333";
 // main() 里启动用的基础配置：需要改配置重启 net stack 的用例（端口探测）用完要还原
 NetConfig g_baseCfg;
 
@@ -270,6 +273,108 @@ void peerIdentityIsDispatchedAsPacket()
     ::waitpid(child, &status, 0);
 }
 
+// P0 回归（MSG163 §4 / DevEco MSG160 §2）：TLS 握手未完成时 sendPacket 必须「入队 + 立即返回 true」。
+// 修复前：sendPacket 只匹配 state==Encrypted 的连接 ⇒ 返回 false。启动时首批
+// battery/connectivity_report/mpris.request 恰好落在握手窗口内，其「成功」纯靠
+// sendPacket 被 connMutex_ 扣住数秒、等到了握手完成（本轮 UI 冻结根因）。
+// 本用例构造「对端只发明文 identity 就沉默」⇒ 被测栈侧连接停在 TlsHandshake（未加密），断言：
+//   ① 接受入队并返回 true    ② 调用不阻塞（<100ms，JS 线程不得等 connMutex_）
+void sendPacketQueuesDuringHandshake()
+{
+    const std::string peerId = kMutePeerId;
+    const uint16_t targetPort = g_baseCfg.tcpPort;
+
+    // 被测栈对「同 IP 连接」有 1000ms 限流（KDE/Android 同款语义，见 onTcpServerReadable）。
+    // 上一个用例的连接同样来自 127.0.0.1，故此处先等过限流窗口，否则本用例的连接会被拒。
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+
+    const pid_t child = ::fork();
+    CHECK_MSG(child >= 0, "fork 失败");
+    if (child < 0) {
+        return;
+    }
+    if (child == 0) {
+        // 注意：必须 exec（不能直接在 fork 出的副本里跑）——父进程是多线程且持有可能已锁的
+        // 分配器/stdio 锁，fork 副本里继续执行会在第一次打印/分配时死锁。
+        char portArg[16];
+        std::snprintf(portArg, sizeof(portArg), "%u", (unsigned) targetPort);
+        ::execl("/proc/self/exe", "kdc_net_tests", "--mute-peer", portArg, nullptr);
+        ::_exit(127);
+    }
+
+    // 等对端明文 identity 到达（PairingRequest）⇒ 被测栈侧连接进入 TlsHandshake
+    bool sawPeerIdentity = false;
+    const int64_t deadline = nowMs() + 8000;
+    while (nowMs() < deadline) {
+        {
+            std::lock_guard<std::mutex> lk(g_mu);
+            for (const NetEvent &e : g_events) {
+                if (e.type == EventType::PairingRequest) {
+                    sawPeerIdentity = true;
+                }
+            }
+        }
+        if (sawPeerIdentity) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    CHECK_MSG(sawPeerIdentity, "未收到对端明文 identity（PairingRequest）");
+    if (!sawPeerIdentity) {
+        std::lock_guard<std::mutex> lk(g_mu);
+        std::fprintf(stderr, "  [dbg] 事件总数=%zu\n", g_events.size());
+        size_t shown = 0;
+        for (const NetEvent &e : g_events) {
+            if (shown++ >= 12) {
+                break;
+            }
+            std::fprintf(stderr, "  [dbg] type=%d device=%s pkt=%.90s\n", (int) e.type,
+                         e.deviceId.c_str(), e.packet.c_str());
+        }
+    }
+
+    const std::string pkt =
+        "{\"id\":\"p0reg\",\"type\":\"kdeconnect.ping\",\"body\":{},\"version\":8}";
+    const int64_t t0 = nowMs();
+    const bool ok = netStack().sendPacket(peerId, pkt);
+    const int64_t elapsed = nowMs() - t0;
+
+    CHECK_MSG(ok, "TLS 握手中的连接必须接受入队并返回 true（修复前此处返回 false）");
+    CHECK_MSG(elapsed < 100, "sendPacket 阻塞 %lldms（P0 回归：JS 线程在等 connMutex_）",
+              (long long) elapsed);
+
+    ::kill(child, SIGKILL);
+    int status = 0;
+    ::waitpid(child, &status, 0);
+}
+
+// 子进程入口（P0 回归用）：连入被测栈，只发明文 identity 帧后沉默（不参与 TLS 握手）。
+// 目的：让被测栈侧连接停在 TlsHandshake（未加密）状态，用于验证 sendPacket 的入队语义。
+int runMutePeerMode(uint16_t targetPort)
+{
+    const int s = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) {
+        return 3;
+    }
+    struct sockaddr_in a {};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(targetPort);
+    ::inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+    if (::connect(s, reinterpret_cast<struct sockaddr *>(&a), sizeof(a)) != 0) {
+        std::fprintf(stderr, "[mute] connect 失败 port=%u errno=%d\n", (unsigned) targetPort, errno);
+        return 4;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    std::string frame = PacketIO::buildIdentity(kMutePeerId, "mute-peer", "desktop", 0,
+                                               PROTOCOL_VERSION, {}, {});
+    frame.push_back('\n');
+    const ssize_t sent = ::send(s, frame.data(), frame.size(), 0);
+    std::fprintf(stderr, "[mute] connected port=%u sent=%zd/%zu\n", (unsigned) targetPort, sent,
+                 frame.size());
+    std::this_thread::sleep_for(std::chrono::seconds(20));
+    return 0;
+}
+
 // 子进程入口：起一个对端栈并拨入父进程
 int runPeerMode(uint16_t targetPort)
 {
@@ -426,6 +531,9 @@ int main(int argc, char **argv)
     if (argc >= 3 && std::strcmp(argv[1], "--peer") == 0) {
         return runPeerMode(static_cast<uint16_t>(std::atoi(argv[2])));
     }
+    if (argc >= 3 && std::strcmp(argv[1], "--mute-peer") == 0) {
+        return runMutePeerMode(static_cast<uint16_t>(std::atoi(argv[2])));
+    }
     CertPair cert = CertGen::generateSelfSignedEc("hosttest11111111111111111111111111", 10);
     NetConfig cfg;
     cfg.deviceId = "hosttest11111111111111111111111111";
@@ -448,6 +556,7 @@ int main(int argc, char **argv)
     runCase("connectToClosedPortReportsReason", connectToClosedPortReportsReason);
     runCase("muteePeerTimesOutBounded", muteePeerTimesOutBounded);
     runCase("peerIdentityIsDispatchedAsPacket", peerIdentityIsDispatchedAsPacket);
+    runCase("sendPacketQueuesDuringHandshake", sendPacketQueuesDuringHandshake);
     runCase("portProbeFindsListener", portProbeFindsListener);
     runCase("dialUnknownPortProbesAndConnects", dialUnknownPortProbesAndConnects);
 

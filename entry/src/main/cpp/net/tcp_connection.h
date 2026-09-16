@@ -38,13 +38,25 @@ public:
     // errOut（可选）：失败时回填真实 errno（ECONNREFUSED/ECONNRESET/EMSGSIZE…），
     // 供上层把「连不上」的原因如实报给用户（strerror 会覆盖 errno，故必须就地捕获）。
     ssize_t readPlainFrame(std::string &out, size_t maxSize, int *errOut = nullptr);
-    // 明文全写（identity 发送）；返回 true 表示 len 字节全部写出。
-    bool writePlainAll(const uint8_t *data, size_t len);
+    // ——— 明文发送侧队列（P0-b：任何线程都不得在 socket 上阻塞等待）———
+    // queuePlainFrame 只做内存入队（可从 JS 线程/网络线程调用）；
+    // flushPlain 由**网络线程**调用：尽量写，遇 EAGAIN 立即把余量留在队列里返回 false
+    // （不 poll、不重试等待）；硬错误置 state_=Closing 并返回 false。
+    // 语义：flushPlain() == true ⇒ 队列已排空。TLS 握手必须**在明文队列排空后**启动，
+    // 否则明文 identity 会与 TLS 记录交错（协议顺序不变量）。
+    void queuePlainFrame(std::string data);
+    bool flushPlain();
+    bool plainPending() const { return plainOffset_ < plainTx_.size(); }
+    void markPlainIdentityQueued() { plainIdentityQueued_ = true; }
+    bool plainIdentityQueued() const { return plainIdentityQueued_; }
 
     bool startTlsHandshake(const std::string &certPem, const std::string &keyPem);
     bool doTlsHandshake();
     bool needsSendIdentity() const { return needsSendIdentity_; }
     void clearNeedsSendIdentity() { needsSendIdentity_ = false; }
+    // 请求重发 identity（P0-c）：JS 线程只置标志，实际写出由网络线程的 tick/可写路径完成。
+    // 必须在 connMutex_ 内调用（与读取方同锁，避免数据竞争）。
+    void requestSendIdentity() { needsSendIdentity_ = true; }
     bool tlsHandshakeDone() const;
     TlsEngine *tlsEngine() { return tls_.get(); }
 
@@ -104,6 +116,10 @@ private:
     std::deque<std::string> txQueue_;
     size_t txOffset_ = 0;
     size_t txQueuedBytes_ = 0;
+    // 明文发送队列（仅拨号方使用：TLS 握手前的 identity 帧）
+    std::string plainTx_;
+    size_t plainOffset_ = 0;
+    bool plainIdentityQueued_ = false;
 };
 
 } // namespace kdeconnect

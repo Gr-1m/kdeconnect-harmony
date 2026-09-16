@@ -363,7 +363,16 @@ bool NetStack::sendPacket(const std::string &deviceId, const std::string &packet
     std::lock_guard<std::mutex> lk(connMutex_);
     for (auto &p : connections_) {
         TcpConnection &conn = *p.second;
-        if (conn.deviceId() != deviceId || conn.state() != ConnectionState::Encrypted) {
+        if (conn.deviceId() != deviceId) {
+            continue;
+        }
+        // P0-b（CodeArts MSG160 §3.1 批准）：TLS 握手中的连接也接受 —— 只入队，
+        // 由网络线程在 handshakeDone() 后自动 flush（flushTx 以 handshakeDone() 为前置，
+        // 因此不会有明文裸发/顺序问题）。修复前这里找不到连接就返回 false，而启动时
+        // 首批包（battery/connectivity_report/mpris.request）恰好落在握手窗口内，
+        // 「成功」全靠 sendPacket 被 connMutex_ 扣住 6 秒等到了握手完成——纯属巧合。
+        const ConnectionState st = conn.state();
+        if (st != ConnectionState::Encrypted && st != ConnectionState::TlsHandshake) {
             continue;
         }
         // 只入队，不做 I/O：本方法可从 ArkTS 主线程调用（CPP_GUIDE §4 硬约束）。
@@ -498,8 +507,30 @@ void NetStack::eventLoop()
         std::vector<std::string> linkedDevices;
         {
             std::lock_guard<std::mutex> lk(connMutex_);
-            for (auto it = connections_.begin(); it != connections_.end(); ) {
+            // 快照（fd → 对象指针）：本循环内调用的回调（pumpPlainIdentity/drainEncrypted →
+            // dispatchFrames → closeConnection）会把条目从 connections_ **摘除并析构**，
+            // 此后持有 TcpConnection& / 迭代器都会悬垂。已实测：旧写法在循环末段读
+            // `c.deviceId()` 时读到已释放 std::string 头 ⇒ std::bad_alloc（desktop latency 探针
+            // 稳定复现）。故先快照，每次使用前按 (fd, 指针) 双重确认仍是同一个连接。
+            std::vector<std::pair<int, TcpConnection *>> snapshot;
+            snapshot.reserve(connections_.size());
+            for (auto &kv : connections_) {
+                snapshot.emplace_back(kv.first, kv.second.get());
+            }
+            for (const auto &entry : snapshot) {
+                const int cfd = entry.first;
+                auto it = connections_.find(cfd);
+                if (it == connections_.end() || it->second.get() != entry.second) {
+                    continue;  // 已被回调销毁，或 fd 已被复用成新连接
+                }
                 TcpConnection &c = *it->second;
+                if (c.state() == ConnectionState::Closing) {
+                    // 硬错误（明文写失败/握手失败）由任一路径置位，本 tick 统一收尾
+                    epoll_ctl(epollFd_, EPOLL_CTL_DEL, cfd, nullptr);
+                    c.close();
+                    it = connections_.erase(it);
+                    continue;
+                }
                 if (c.state() == ConnectionState::TlsHandshake && c.handshakeExpired(now)) {
                     const int tfd = it->first;
                     const std::string thost = c.peerHost();
@@ -523,14 +554,57 @@ void NetStack::eventLoop()
                     c.close();
                     it = connections_.erase(it);
                 } else {
+                    // P0-d：identity 阶段读取兜底 —— 与下面的 Encrypted 兜底同理。EPOLLET 下若对端
+                    // 在本连接注册 epoll 之前就已写入（且此后单次 write 后沉默），边沿会丢失，
+                    // 明文 identity 帧会一直滞留。每 tick 兜底读一次即消除该依赖。
+                    if (c.state() == ConnectionState::Idle ||
+                        c.state() == ConnectionState::PlainIdentity) {
+                        pumpPlainIdentity(c);
+                        // 回调可能已 closeConnection 并摘除本连接：必须按 (fd, 指针) 重新确认，
+                        // 否则下面继续用 c 就是读已释放对象（实测 std::bad_alloc）。
+                        it = connections_.find(cfd);
+                        if (it == connections_.end() || it->second.get() != entry.second) {
+                            continue;
+                        }
+                    }
+                    // P0-b：明文队列续传（EPOLLOUT 边沿丢失时靠 tick 兜底）；
+                    // **排空后**才启动 TLS 握手（协议顺序不变量：明文帧不得与 TLS 记录交错）。
+                    if (c.state() == ConnectionState::Idle && c.plainPending()) {
+                        const bool drained = c.flushPlain();
+                        if (!drained && c.state() == ConnectionState::Closing) {
+                            const int pfd = it->first;
+                            LOGE("tick plain flush failed fd=%d, closing", pfd);
+                            epoll_ctl(epollFd_, EPOLL_CTL_DEL, pfd, nullptr);
+                            c.close();
+                            it = connections_.erase(it);
+                            continue;
+                        }
+                        if (drained && !c.isIncoming()) {
+                            if (!c.startTlsHandshake(config_.certPem, config_.keyPem)) {
+                                const int pfd = it->first;
+                                LOGE("tick tls init failed fd=%d, closing", pfd);
+                                epoll_ctl(epollFd_, EPOLL_CTL_DEL, pfd, nullptr);
+                                c.close();
+                                it = connections_.erase(it);
+                                continue;
+                            }
+                            c.setHandshakeDeadline(now + handshakeTimeoutMs());
+                            LOGI("TLS server handshake started (tick resume) on fd=%d", it->first);
+                            c.doTlsHandshake();
+                        }
+                    }
+                    // P0-c：caps 变更后重发 identity —— JS 线程只置标志（setCapabilities），
+                    // 实际的 TLS 写出由网络线程完成（CPP_GUIDE §4：JS 线程不做 socket I/O）。
+                    if (c.state() == ConnectionState::Encrypted && c.needsSendIdentity()) {
+                        sendIdentityOverTls(c);
+                    }
                     // 读取兜底：EPOLLET 下任何边沿丢失都会让已到达的帧滞留（对端 caps 协商失败），
                     // 故每 tick 对 Encrypted 连接兜底排空一次（fillTlsRx 无数据时开销为一次 recv）。
                     if (c.state() == ConnectionState::Encrypted) {
                         drainEncrypted(c);
-                        if (c.isClosed()) {
-                            const int cfd2 = it->first;
-                            epoll_ctl(epollFd_, EPOLL_CTL_DEL, cfd2, nullptr);
-                            it = connections_.erase(it);
+                        // dispatchFrames 可能关闭并摘除本连接 ⇒ 重新确认后再继续使用 c
+                        it = connections_.find(cfd);
+                        if (it == connections_.end() || it->second.get() != entry.second) {
                             continue;
                         }
                     }
@@ -546,7 +620,6 @@ void NetStack::eventLoop()
                     if (!c.deviceId().empty() && !c.isClosed()) {
                         linkedDevices.push_back(c.deviceId());
                     }
-                    ++it;
                 }
             }
         }
@@ -641,57 +714,65 @@ void NetStack::onUdpReadable()
 
 void NetStack::onTcpServerReadable()
 {
-    int fd = tcpServer_->accept();
-    if (fd < 0) return;
+    // EPOLLET 下监听套接字必须「accept 到 EAGAIN 为止」：只 accept 一个连接时，backlog 中
+    // 剩余连接会让监听套接字保持可读，而 ET 不会再补边沿 ⇒ 那些连接会一直卡在 backlog 里
+    // （真机形态：冷启动时两台对端几乎同时连入，结果只进来一台）。
+    // 注意：被限流/被拒的连接必须 `continue` 继续排空，不能 `return`（否则同样留下 pending）。
+    for (;;) {
+        int fd = tcpServer_->accept();
+        if (fd < 0) {
+            return;  // EAGAIN（无更多连接）或真错误：本轮结束
+        }
 
-    // WP-2：仅接受私网地址（公网/非法来源直接拒绝）
-    const std::string host = peerHostOf(fd);
-    if (!isPrivateIpv4(host)) {
-        LOGE("reject non-private peer %s fd=%d", host.c_str(), fd);
-        ::close(fd);
-        return;
-    }
-    // WP-2：同 IP 1000ms 连接限流（KDE/Android 同款语义）
-    {
-        std::lock_guard<std::mutex> lk(trustMutex_);
-        const int64_t now = nowMs();
-        auto it = lastAcceptByIp_.find(host);
-        if (it != lastAcceptByIp_.end() && now - it->second < CONN_RATE_LIMIT_MS) {
-            LOGE("rate limit: %s within %dms, rejecting fd=%d", host.c_str(),
-                 CONN_RATE_LIMIT_MS, fd);
+        // WP-2：仅接受私网地址（公网/非法来源直接拒绝）
+        const std::string host = peerHostOf(fd);
+        if (!isPrivateIpv4(host)) {
+            LOGE("reject non-private peer %s fd=%d", host.c_str(), fd);
             ::close(fd);
-            return;
+            continue;
         }
-        lastAcceptByIp_[host] = now;
-    }
-
-    // 未配对连接数上限（此前该常量只用作 listen backlog，非语义本意）
-    {
-        std::lock_guard<std::mutex> lk(connMutex_);
-        int unpaired = 0;
-        for (const auto &p : connections_) {
-            if (p.second->deviceId().empty()) ++unpaired;
+        // WP-2：同 IP 1000ms 连接限流（KDE/Android 同款语义）
+        {
+            std::lock_guard<std::mutex> lk(trustMutex_);
+            const int64_t now = nowMs();
+            auto it = lastAcceptByIp_.find(host);
+            if (it != lastAcceptByIp_.end() && now - it->second < CONN_RATE_LIMIT_MS) {
+                LOGE("rate limit: %s within %dms, rejecting fd=%d", host.c_str(),
+                     CONN_RATE_LIMIT_MS, fd);
+                ::close(fd);
+                continue;
+            }
+            lastAcceptByIp_[host] = now;
         }
-        if (unpaired >= MAX_UNPAIRED_CONNECTIONS) {
-            LOGE("too many unpaired connections (%d), rejecting fd=%d", unpaired, fd);
-            close(fd);
-            return;
+
+        // 未配对连接数上限（此前该常量只用作 listen backlog，非语义本意）
+        {
+            std::lock_guard<std::mutex> lk(connMutex_);
+            int unpaired = 0;
+            for (const auto &p : connections_) {
+                if (p.second->deviceId().empty()) ++unpaired;
+            }
+            if (unpaired >= MAX_UNPAIRED_CONNECTIONS) {
+                LOGE("too many unpaired connections (%d), rejecting fd=%d", unpaired, fd);
+                ::close(fd);
+                continue;
+            }
         }
+
+        auto conn = std::make_unique<TcpConnection>(fd, true);
+        conn->setPeerInfo(peerHostOf(fd), 0);
+        {
+            std::lock_guard<std::mutex> lk(connMutex_);
+            connections_[fd] = std::move(conn);
+        }
+
+        struct epoll_event ev {};
+        ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
+        ev.data.fd = fd;
+        epoll_ctl(epollFd_, EPOLL_CTL_ADD, fd, &ev);
+
+        LOGI("accepted connection fd=%d", fd);
     }
-
-    auto conn = std::make_unique<TcpConnection>(fd, true);
-    conn->setPeerInfo(peerHostOf(fd), 0);
-    {
-        std::lock_guard<std::mutex> lk(connMutex_);
-        connections_[fd] = std::move(conn);
-    }
-
-    struct epoll_event ev {};
-    ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
-    ev.data.fd = fd;
-    epoll_ctl(epollFd_, EPOLL_CTL_ADD, fd, &ev);
-
-    LOGI("accepted connection fd=%d", fd);
 }
 
 void NetStack::closeConnection(int fd, const char *reason)
@@ -950,6 +1031,35 @@ void NetStack::dispatchFrames(TcpConnection &conn)
     }
 }
 
+// 明文 identity 阶段的读取（**调用方必须已持有 connMutex_**）。
+// 独立成函数是为了让事件循环 tick 也能兜底驱动：EPOLLET 下若对端在我们注册 epoll
+// **之前**就已写入、且此后**单次 write 后沉默**（真实形态：拨号方发明文 identity 后就等
+// 我们的 TLS ClientHello），边沿会丢失，identity 帧将滞留到对端下一次写入为止。
+// 真机上随后到来的 TLS 记录会掩盖这个问题，所以长期未被发现（本用例首次暴露）。
+void NetStack::pumpPlainIdentity(TcpConnection &conn)
+{
+    const int fd = conn.fd();
+    std::string frame;
+    int plainErr = EIO;
+    ssize_t n = conn.readPlainFrame(frame, MAX_IDENTITY_PACKET_SIZE, &plainErr);
+    if (n < 0) {
+        if (conn.isIncoming()) {
+            dispatchError(conn.deviceId(), EIO, "plain identity read failed");
+        } else {
+            // 出向：这才是用户「点连接」失败的真实原因（拒绝/不可达/对端立刻关闭）
+            const int soErr = socketSoError(fd);
+            dispatchConnectError(conn.peerHost(), conn.peerPort(),
+                                 soErr != 0 ? soErr : plainErr, "connect failed");
+        }
+        closeConnection(fd, "plain identity failed");
+        return;
+    }
+    if (n == 0) {
+        return;  // 半包：等下次可读事件或 tick 兜底
+    }
+    handlePlainIdentity(conn, frame);
+}
+
 void NetStack::onConnectionReadable(int fd)
 {
     std::lock_guard<std::mutex> lk(connMutex_);
@@ -958,30 +1068,9 @@ void NetStack::onConnectionReadable(int fd)
     TcpConnection &conn = *it->second;
 
     if (conn.state() == ConnectionState::Idle || conn.state() == ConnectionState::PlainIdentity) {
-        std::string frame;
-        int plainErr = EIO;
-        ssize_t n = conn.readPlainFrame(frame, MAX_IDENTITY_PACKET_SIZE, &plainErr);
-        if (n < 0) {
-            if (conn.isIncoming()) {
-                dispatchError(conn.deviceId(), EIO, "plain identity read failed");
-            } else {
-                // 出向：这才是用户「点连接」失败的真实原因（拒绝/不可达/对端立刻关闭）
-                const int soErr = socketSoError(fd);
-                dispatchConnectError(conn.peerHost(), conn.peerPort(),
-                                     soErr != 0 ? soErr : plainErr, "connect failed");
-            }
-            closeConnection(fd, "plain identity failed");
-            return;
-        }
-        if (n == 0) {
-            return;  // 半包，等下次可读事件
-        }
-        if (!handlePlainIdentity(conn, frame)) {
-            if (conn.isClosed()) {
-                connections_.erase(fd);
-            }
-            return;
-        }
+        pumpPlainIdentity(conn);
+        // pumpPlainIdentity 内部可能 closeConnection()（已从 connections_ 摘除并析构本对象）
+        // ⇒ 此时 conn 引用已悬垂，绝不能再读其成员（旧写法读 conn.isClosed() 属 UB）。
         return;
     }
 
@@ -1068,21 +1157,29 @@ void NetStack::onConnectionWritable(int fd)
             return;
         }
         // TCP 已连上（EPOLLOUT 就绪）：发明文 identity，然后立刻起 TLS server 握手
-        std::vector<std::string> inC, outC;
-        {
-            std::lock_guard<std::mutex> lk(capsMutex_);
-            inC = capsIncoming_;
-            outC = capsOutgoing_;
+        if (!conn.plainIdentityQueued()) {
+            std::vector<std::string> inC, outC;
+            {
+                std::lock_guard<std::mutex> lk(capsMutex_);
+                inC = capsIncoming_;
+                outC = capsOutgoing_;
+            }
+            const std::string identity = PacketIO::buildIdentity(
+                config_.deviceId, config_.deviceName, config_.deviceType,
+                tcpServer_ ? tcpServer_->port() : 0, PROTOCOL_VERSION, inC, outC);
+            conn.queuePlainFrame(identity);
+            conn.markPlainIdentityQueued();
         }
-        std::string identity = PacketIO::buildIdentity(
-            config_.deviceId, config_.deviceName, config_.deviceType,
-            tcpServer_ ? tcpServer_->port() : 0, PROTOCOL_VERSION, inC, outC);
-        if (!conn.writePlainAll(reinterpret_cast<const uint8_t *>(identity.data()),
-                                identity.size())) {
-            const int wrErr = socketSoError(fd);
-            dispatchConnectError(conn.peerHost(), conn.peerPort(), wrErr != 0 ? wrErr : EIO,
-                                 "send identity failed");
-            closeConnection(fd, "plain identity write failed");
+        // P0-b：握手必须等明文队列排空后才启动（协议顺序不变量：明文帧不得与 TLS 记录交错）。
+        if (!conn.flushPlain()) {
+            if (conn.state() == ConnectionState::Closing) {
+                const int wrErr = socketSoError(fd);
+                dispatchConnectError(conn.peerHost(), conn.peerPort(), wrErr != 0 ? wrErr : EIO,
+                                     "send identity failed");
+                closeConnection(fd, "plain identity write failed");
+            }
+            // EAGAIN（对端读得慢）：余量留在队列里，等 EPOLLOUT 或 tick 续传后启动握手。
+            // 这里**不再**原地 poll 等待 —— 那会扣住 connMutex_ 数秒并冻结 JS 线程（本轮卡顿根因）。
             return;
         }
 
@@ -1315,14 +1412,25 @@ void NetStack::setCapabilities(const std::vector<std::string> &incomingCaps,
         forceBroadcast_.store(true);
         wakeLoop();
     }
-    // 向已建加密链路重发 identity（对端据此重算插件装载；d.ts v2 语义）
-    std::lock_guard<std::mutex> lk(connMutex_);
-    for (auto &p : connections_) {
-        TcpConnection &c = *p.second;
-        if (c.state() == ConnectionState::Encrypted && !c.deviceId().empty()) {
-            sendIdentityOverTls(c);
+    // 向已建加密链路重发 identity（对端据此重算插件装载；d.ts v2 语义）。
+    // P0-c：本函数由 **JS 线程** 调用 —— 只置标志 + 唤醒事件循环，真正的 TLS 写出交给
+    // 网络线程（此前在这里直接 sendIdentityOverTls ⇒ 在 JS 线程的 socket 上做 I/O，
+    // 高延迟链路上会连同 connMutex_ 一起冻结 UI；本改动是契约级修正，签名/语义不变）。
+    {
+        std::lock_guard<std::mutex> lk(connMutex_);
+        bool any = false;
+        for (auto &p : connections_) {
+            TcpConnection &c = *p.second;
+            if (c.state() == ConnectionState::Encrypted && !c.deviceId().empty()) {
+                c.requestSendIdentity();
+                any = true;
+            }
+        }
+        if (!any) {
+            return;  // 无加密链路：没有可重发的目标（等建链后加密前会自动发 identity）
         }
     }
+    wakeLoop();
 }
 
 
