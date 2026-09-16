@@ -205,6 +205,11 @@ export class PacketRouter {
 
   private sendFrame(deviceId: string, type: string, body: Object): boolean {
     const pkt: OutPacket = { id: Date.now(), type: type, body: body };
+    // 诊断（只打日志，不改逻辑）：配对帧的**发送**方向也进 hilog，便于与对端帧对时序。
+    // 用户报告「配对成功后不显示已连接」时，靠这条区分「谁先发 pair:false」。
+    if (type === 'kdeconnect.pair') {
+      console.info(`KDC pair OUT -> ${deviceId}: ${JSON.stringify(body)}`);
+    }
     const t0: number = Date.now();
     const ok: boolean = native.sendPacket(deviceId, JSON.stringify(pkt) + '\n');
     const dt: number = Date.now() - t0;

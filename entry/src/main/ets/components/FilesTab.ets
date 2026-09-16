@@ -19,6 +19,9 @@ export struct FilesTab {
   };
   onSendFile: () => void = () => {
   };
+  // 打开「已接收文件」弹窗（弹层由 Index 渲染，沿用项目现有弹层范式）
+  onOpenReceivedFiles: () => void = () => {
+  };
 
   private isActive(p: PayloadTransfer): boolean {
     return p.state === 'started' || p.state === 'progress';
@@ -62,15 +65,29 @@ export struct FilesTab {
               .fontSize(13)
               .fontWeight(FontWeight.Medium)
               .fontColor($r('app.color.text_primary'))
-            Button($r('app.string.files_action_send'))
-              .height(40)
-              .fontSize(13)
-              .backgroundColor($r('app.color.accent'))
-              .borderRadius(10)
-              .enabled(this.connectedCount > 0)
-              .onClick(() => {
-                this.onSendFile();
-              })
+            Row({ space: 8 }) {
+              Button($r('app.string.files_action_send'))
+                .layoutWeight(1)
+                .height(40)
+                .fontSize(13)
+                .backgroundColor($r('app.color.accent'))
+                .borderRadius(10)
+                .enabled(this.connectedCount > 0)
+                .onClick(() => {
+                  this.onSendFile();
+                })
+              Button($r('app.string.files_received_open'))
+                .layoutWeight(1)
+                .height(40)
+                .fontSize(13)
+                .backgroundColor($r('app.color.chip_bg'))
+                .fontColor($r('app.color.text_secondary'))
+                .borderRadius(10)
+                .onClick(() => {
+                  this.onOpenReceivedFiles();
+                })
+            }
+            .width('100%')
             if (this.connectedCount === 0) {
               Text($r('app.string.files_hint_no_device'))
                 .fontSize(11)
