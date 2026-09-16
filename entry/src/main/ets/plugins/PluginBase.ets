@@ -50,7 +50,16 @@ export abstract class PluginBase {
 
   protected send(packetType: string, body: Object): boolean {
     const frame: PluginFrame = { id: Date.now(), type: packetType, body: body };
-    return this.sendFn(this.deviceId, JSON.stringify(frame) + '\n');
+    // 探针（MSG151）：native 的 [KDC-JS-ENTRY] 抓到 JsSendPacket 阻塞 0.6~6.1 秒，而这 9 次
+    // 慢调用全走**插件侧**发送路径（PluginHost 的 sendFn 直调 native.sendPacket，不经 PacketRouter）。
+    // 这里补上插件链的计时，和 PacketRouter 里的 KDC slow send 合起来才是全量覆盖。
+    const t0: number = Date.now();
+    const ok: boolean = this.sendFn(this.deviceId, JSON.stringify(frame) + '\n');
+    const dt: number = Date.now() - t0;
+    if (dt > 100) {
+      console.warn(`KDC slow plugin send ${dt}ms -> ${packetType} (${this.deviceId})`);
+    }
+    return ok;
   }
 
   // 向 UI 层推送插件事件（由 Index 转成 @State 展示）

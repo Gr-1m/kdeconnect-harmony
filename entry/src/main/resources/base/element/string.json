@@ -540,6 +540,62 @@
     {
       "name": "toast_media_action_failed",
       "value": "Media command failed"
+    },
+    {
+      "name": "settings_about",
+      "value": "About"
+    },
+    {
+      "name": "settings_about_repo",
+      "value": "Source code"
+    },
+    {
+      "name": "settings_about_email",
+      "value": "E-mail"
+    },
+    {
+      "name": "settings_about_contributors",
+      "value": "Contributors"
+    },
+    {
+      "name": "settings_about_version",
+      "value": "Version"
+    },
+    {
+      "name": "settings_about_icp_query",
+      "value": "MIIT ICP lookup"
+    },
+    {
+      "name": "settings_about_icp_opened",
+      "value": "Opened · MIIT ICP lookup"
+    },
+    {
+      "name": "settings_about_email_pending",
+      "value": "Not public yet"
+    },
+    {
+      "name": "files_received_open",
+      "value": "Received files"
+    },
+    {
+      "name": "files_received_dialog_title",
+      "value": "Received files"
+    },
+    {
+      "name": "files_received_empty",
+      "value": "No files received yet"
+    },
+    {
+      "name": "action_close",
+      "value": "Close"
+    },
+    {
+      "name": "files_history_clear",
+      "value": "Clear history"
+    },
+    {
+      "name": "toast_history_cleared",
+      "value": "Received history cleared"
     }
   ]
 }

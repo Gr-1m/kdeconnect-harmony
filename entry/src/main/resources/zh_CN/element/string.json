@@ -528,6 +528,62 @@
     {
       "name": "toast_media_action_failed",
       "value": "媒体控制命令发送失败"
+    },
+    {
+      "name": "settings_about",
+      "value": "关于"
+    },
+    {
+      "name": "settings_about_repo",
+      "value": "开源仓库"
+    },
+    {
+      "name": "settings_about_email",
+      "value": "邮箱"
+    },
+    {
+      "name": "settings_about_contributors",
+      "value": "贡献者"
+    },
+    {
+      "name": "settings_about_version",
+      "value": "版本号"
+    },
+    {
+      "name": "settings_about_icp_query",
+      "value": "工信部备案查询"
+    },
+    {
+      "name": "settings_about_icp_opened",
+      "value": "已打开 · 工信部备案查询"
+    },
+    {
+      "name": "settings_about_email_pending",
+      "value": "暂未公开"
+    },
+    {
+      "name": "files_received_open",
+      "value": "已接收"
+    },
+    {
+      "name": "files_received_dialog_title",
+      "value": "已接收的文件"
+    },
+    {
+      "name": "files_received_empty",
+      "value": "还没有接收过文件"
+    },
+    {
+      "name": "action_close",
+      "value": "关闭"
+    },
+    {
+      "name": "files_history_clear",
+      "value": "清除历史"
+    },
+    {
+      "name": "toast_history_cleared",
+      "value": "已清除接收历史"
     }
   ]
 }
