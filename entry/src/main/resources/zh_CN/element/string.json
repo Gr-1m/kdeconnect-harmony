@@ -578,6 +578,10 @@
       "value": "关闭"
     },
     {
+      "name": "action_send_pick",
+      "value": "选择发送"
+    },
+    {
       "name": "files_history_clear",
       "value": "清除历史"
     },
