@@ -7,6 +7,7 @@
 #include "rust_shim.h"
 
 #include <utility>
+#include <memory>
 #include <vector>
 
 namespace kdeconnect {
@@ -19,14 +20,20 @@ bool PacketIO::extractFrame(std::string &buf, std::string &frame, size_t maxSize
     // 外加一份 work 拷贝；dispatchFrames 对**每一帧**都会调用本函数 ⇒ 收包突发时成为持 connMutex_
     // 的纯 CPU 大头（真机 json_dispatch 1.3~3.3s，cpu≈hold）。改为线程局部复用（本函数仅网络线程调用）。
     static thread_local std::vector<uint8_t> work;
-    static thread_local std::vector<uint8_t> out;
+    // out 用「不做零初始化」的分配：vector::resize/assign 会 memset 整块，而这里只需要容量。
+    // 真机实测：32MiB 缓冲的首次分配 + 清零 + 页故障，正是修后残余的那次 ~384ms 持锁尖峰
+    // （frames=1 bytes=2294 total=384ms ⇒ 每帧固定开销 ≫ 数据量）。new[] 对 POD 不初始化、
+    // 页按需触碰 ⇒ 只付出实际用到的那几页；Rust 侧仍需 out 容量 ≥ maxSize+2（逻辑长度语义不变）。
+    static thread_local std::unique_ptr<uint8_t[]> out;
+    static thread_local size_t outCap = 0;
     work.assign(buf.begin(), buf.end());
-    if (out.size() < maxSize + 2) {
-        out.assign(maxSize + 2, 0);   // 只在需要时扩容（摊还）
+    if (outCap < maxSize + 2) {
+        out.reset(new uint8_t[maxSize + 2]);
+        outCap = maxSize + 2;
     }
     size_t newLen = work.size();
     const int32_t rc =
-        kdc_extract_frame(work.data(), work.size(), maxSize, out.data(), out.size(), &newLen);
+        kdc_extract_frame(work.data(), work.size(), maxSize, out.get(), outCap, &newLen);
     if (rc == 0) {
         return false; // 半包：buf 原样，等下一批数据
     }
@@ -37,7 +44,7 @@ bool PacketIO::extractFrame(std::string &buf, std::string &frame, size_t maxSize
     if (rc < 0) {
         return false; // 参数错误（不应发生）
     }
-    frame.assign(reinterpret_cast<const char *>(out.data()), static_cast<size_t>(rc));
+    frame.assign(reinterpret_cast<const char *>(out.get()), static_cast<size_t>(rc));
     buf.assign(reinterpret_cast<const char *>(work.data()), newLen);
     return true;
 }
