@@ -52,6 +52,11 @@ public:
     // 推进握手。返回 true 表示完成；false 表示需要更多 socket 数据（EAGAIN）。
     bool doHandshake();
     bool handshakeDone() const { return handshakeDone_; }
+    // 引擎是否还有待写出的记录（BR_SSL_SENDREC）。
+    // 用途（P0-b2-c）：网络循环**按需**挂/摘 EPOLLOUT —— 只有真有可能写出东西时才注册可写兴趣。
+    // 否则 EPOLLET + EPOLLOUT 会在「无可写内容」时被 epoll_wait 每轮重复上报（真机实测连接事件
+    // ~1 万次/秒、烧掉约一个核，并把配对 ack 推迟到对端超时，见 DevEco MSG180）。
+    bool wantsWrite() const;
 
     // 对端 EE 证书原始 DER（握手后有效；空 = 未捕获）。
     // WP-2 证书钉扎 / payload 通道「CN == deviceId」校验的取数据口（REVIEW §8 D2）。

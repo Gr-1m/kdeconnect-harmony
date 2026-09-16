@@ -94,6 +94,18 @@ private:
     void onConnectionWritable(int fd);
     // 明文 identity 阶段读取（调用方持 connMutex_）；事件路径与 tick 兜底共用
     void pumpPlainIdentity(TcpConnection &conn);
+    // EPOLLOUT 兴趣按需维护（P0-b2-c）：只在「真有可能写出东西」时挂 EPOLLOUT，
+    // 且仅在状态变化时 epoll_ctl(MOD)（MOD 会重新武装 ET 并立即上报，必须避免每轮调用）。
+    void updateWriteInterest(int fd);         // 自取 connMutex_
+    void updateWriteInterestLocked(int fd);   // 调用方已持 connMutex_
+    // 作用域退出时刷新 EPOLLOUT 兴趣：覆盖处理函数内所有 return 路径；连接可能在过程中被关闭，
+    // updateWriteInterest 内部按 fd 重查，天然安全。
+    struct WriteInterestGuard {
+        NetStack *ns;
+        int fd;
+        WriteInterestGuard(NetStack *n, int f) : ns(n), fd(f) {}
+        ~WriteInterestGuard() { ns->updateWriteInterest(fd); }
+    };
     void closeConnection(int fd, const char *reason);
     // 排空读后按 '\n' 切分逐帧派发（接收缓冲在连接对象内，半包留待下次）
     void dispatchFrames(TcpConnection &conn);
@@ -148,6 +160,21 @@ private:
     std::atomic<uint64_t> epollWake_{0};      // epoll_wait 返回 >0 的次数
     std::atomic<uint64_t> eventsHandled_{0};  // 处理过的 epoll 事件总数
     int64_t lastStatsMs_ = 0;                 // 上次打印统计的时间（仅循环线程访问）
+    // ——— 真机阻塞根因定位（DevEco MSG178 §3）———
+    // 真机实测：循环被高频唤醒（~1000 次/秒），而「每连接 tick + payload onTick」原先每轮都跑
+    // ⇒ 每轮 ~0.78ms CPU 且每轮取一次 connMutex_（非公平锁）⇒ JS 线程 sendPacket 被饿死数秒。
+    // 这里既做时间门控，也把「唤醒来源 / 持锁峰值 / 等锁峰值 / 队列长度」打进 NETLOOP 行。
+    int64_t lastTickMs_ = 0;                  // 重活（payload onTick + 每连接 tick）的时间门
+    uint64_t wakeByWakeFd_ = 0;               // 以下均为累计值：相邻两行做差 = 该窗口分布
+    uint64_t wakeByUdp_ = 0;
+    uint64_t wakeBySrv_ = 0;
+    uint64_t wakeByConn_ = 0;
+    uint64_t wakeByPayload_ = 0;
+    uint64_t wakeByIdle_ = 0;                 // epoll_wait 超时（n == 0）
+    int64_t maxTickHoldMs_ = 0;               // 窗口内单次持 connMutex_ 的最长耗时（循环线程写）
+    std::atomic<int64_t> maxJsLockWaitMs_{0}; // 窗口内 JS 线程等 connMutex_ 的最长耗时
+    size_t statTxQueuedBytes_ = 0;            // 窗口内观测到的 TX 队列字节（含明文队列）
+    size_t statPlainQueuedBytes_ = 0;
 
     // caps 单一来源（REVIEW §3.3）：UDP 与 TLS 两条 identity 路径共用
     std::mutex capsMutex_;

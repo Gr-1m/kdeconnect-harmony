@@ -280,9 +280,19 @@ bool NetStack::connectToPeer(const std::string &host, uint16_t port)
     }
 
     struct epoll_event ev {};
+    // 拨号方立刻就要发明文 identity：初始即挂 EPOLLOUT，并在连接对象上登记「已挂」
+    // （后续 updateWriteInterest 只在状态变化时才 MOD）。EPOLLET 下 ADD 会对当前可写立即
+    // 上报一次，正好用来触发首帧写入。
     ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
     ev.data.fd = fd;
     epoll_ctl(epollFd_, EPOLL_CTL_ADD, fd, &ev);
+    {
+        std::lock_guard<std::mutex> lk(connMutex_);
+        auto rit = connections_.find(fd);
+        if (rit != connections_.end()) {
+            rit->second->setEpollWriteArmed(true);
+        }
+    }
 
     LOGI("connecting to %s:%u (fd=%d)", host.c_str(), port, fd);
     // 注意：这里**不**缓存 host→port —— 端口必须验证过（建链成功或对端 UDP identity 声明）才可信，
@@ -360,7 +370,18 @@ void NetStack::wakeLoop()
 
 bool NetStack::sendPacket(const std::string &deviceId, const std::string &packetJson)
 {
+    // 等锁计时（DevEco MSG178 §3 要求第一项）：真机实测本入口在 JS 线程被阻塞 1.3~16s，
+    // 必须区分「等 connMutex_」与「入口内部工作」。>50ms 打一行，峰值随 NETLOOP 行输出。
+    const int64_t lockT0 = nowMs();
     std::lock_guard<std::mutex> lk(connMutex_);
+    const int64_t lockWaitMs = nowMs() - lockT0;
+    if (lockWaitMs > maxJsLockWaitMs_.load()) {
+        maxJsLockWaitMs_.store(lockWaitMs);
+    }
+    if (lockWaitMs >= 50) {
+        LOGI("[KDC-LOCKWAIT] sendPacket 等 connMutex_ %{public}lldms（conns=%{public}llu）",
+             (long long) lockWaitMs, (unsigned long long) connections_.size());
+    }
     for (auto &p : connections_) {
         TcpConnection &conn = *p.second;
         if (conn.deviceId() != deviceId) {
@@ -382,6 +403,13 @@ bool NetStack::sendPacket(const std::string &deviceId, const std::string &packet
             dispatchError(deviceId, ENOBUFS, "sendPacket: tx queue full");
             return false;
         }
+        // 诊断（DevEco MSG181 §3.3 要求）：如实记录出向 pair 帧时序，便于与对端帧对齐。
+        // 注意：native 侧**不构造**任何 pair 帧（代码中无 pair 语义），这里只记录 App 下发的内容。
+        if (packetJson.find("kdeconnect.pair") != std::string::npos) {
+            LOGI("[KDC-PAIR-OUT] device=%s pkt=%{public}s", deviceId.c_str(), packetJson.c_str());
+        }
+        // 入队后按需挂 EPOLLOUT（否则要等 tick 的 200ms 兜底才发出去 —— 配对 ack 会被推迟）
+        updateWriteInterestLocked(conn.fd());
         // 唤醒网络线程尽快 flush（EPOLLET 下不能指望一定会再有 EPOLLOUT 边沿）
         wakeLoop();
         return true;
@@ -422,6 +450,8 @@ void NetStack::eventLoop()
         if (n > 0) {
             epollWake_.fetch_add(1, std::memory_order_relaxed);
             eventsHandled_.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
+        } else if (n == 0) {
+            ++wakeByIdle_;   // 纯超时唤醒（无 fd 就绪）：这是健康空闲态
         }
         if (n < 0) {
             if (errno == EINTR) continue;
@@ -436,14 +466,17 @@ void NetStack::eventLoop()
             if (fd == wakeFd_) {
                 uint64_t val;
                 read(wakeFd_, &val, sizeof(val));
+                ++wakeByWakeFd_;
                 continue;
             }
             if (udp_ && fd == udp_->fd()) {
                 onUdpReadable();
+                ++wakeByUdp_;
                 continue;
             }
             if (tcpServer_ && fd == tcpServer_->fd()) {
                 onTcpServerReadable();
+                ++wakeBySrv_;
                 continue;
             }
             if (payload_ && payload_->handlesFd(fd)) {
@@ -456,6 +489,7 @@ void NetStack::eventLoop()
                 if (ev & (EPOLLERR | EPOLLHUP)) {
                     payload_->onReadable(fd);
                 }
+                ++wakeByPayload_;
                 continue;
             }
 
@@ -466,6 +500,7 @@ void NetStack::eventLoop()
                 }
                 std::lock_guard<std::mutex> lk(connMutex_);
                 closeConnection(fd, "epoll err/hup");
+                ++wakeByConn_;
                 continue;
             }
             if (ev & EPOLLIN) {
@@ -474,6 +509,7 @@ void NetStack::eventLoop()
             if (ev & EPOLLOUT) {
                 onConnectionWritable(fd);
             }
+            ++wakeByConn_;
         }
 
         // 无端口的拨号请求：探测 + 拨号都在本线程做（≤500ms 阻塞，不能放在 JS 线程）
@@ -481,6 +517,15 @@ void NetStack::eventLoop()
 
         // 定时器 tick：identity 超时 + 发现超时（DeviceLost）+ TX 续传
         const int64_t now = nowMs();
+
+        // 重活时间门（DevEco MSG178 真机根因）：循环会被高频 fd 唤醒（真机实测 ~1000 次/秒），
+        // 而「每连接 tick + payload onTick」原先**每轮**都执行 —— 实测 0.78ms CPU/轮 ⇒ 空烧约一个核，
+        // 且每轮取一次 connMutex_（std::mutex 非公平）⇒ JS 线程 sendPacket 被饿死 1.3~16s（真机 ANR）。
+        // 事件类工作（拨号、广播）仍每轮处理；只有重活按 LOOP_TICK_MS 节流。
+        const bool dueTick = (now - lastTickMs_ >= LOOP_TICK_MS);
+        if (dueTick) {
+            lastTickMs_ = now;
+        }
 
         // 网络线程运行统计（MSG149 §3.1：区分「锁等待」与「CPU 饥饿/忙循环」）。
         // 全 cumulative：读相邻两行做差即得该窗口内的网络线程 CPU 与迭代/事件量。
@@ -493,18 +538,35 @@ void NetStack::eventLoop()
             if (::clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0) {
                 cpuMs = static_cast<long long>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
             }
+            const int64_t dtMs = now - lastStatsMs_;
             // 注意 hilog 隐私策略：数值参数必须 %{public}，否则真机上全被掩成 <private>（DevEco MSG151 §4 实测）
+            // dt= 本窗口实际墙钟毫秒 ⇒ 读者可直接算 iters/s、cpu 占比，不再依赖"窗口是 5s"的假设。
             LOGI("[KDC-NETLOOP] cpu=%{public}lldms iters=%{public}llu epollWake=%{public}llu "
-                 "events=%{public}llu tick=%{public}dms",
+                 "events=%{public}llu tick=%{public}dms dt=%{public}lldms "
+                 "wake[wakefd=%{public}llu udp=%{public}llu srv=%{public}llu conn=%{public}llu "
+                 "payload=%{public}llu idle=%{public}llu] "
+                 "maxHold=%{public}lldms maxJsLockWait=%{public}lldms "
+                 "txQueued=%{public}llu plainQueued=%{public}llu",
                  cpuMs, (unsigned long long) loopIters_.load(), (unsigned long long) epollWake_.load(),
-                 (unsigned long long) eventsHandled_.load(), LOOP_TICK_MS);
+                 (unsigned long long) eventsHandled_.load(), LOOP_TICK_MS, (long long) dtMs,
+                 (unsigned long long) wakeByWakeFd_, (unsigned long long) wakeByUdp_,
+                 (unsigned long long) wakeBySrv_, (unsigned long long) wakeByConn_,
+                 (unsigned long long) wakeByPayload_, (unsigned long long) wakeByIdle_,
+                 (long long) maxTickHoldMs_, (long long) maxJsLockWaitMs_.load(),
+                 (unsigned long long) statTxQueuedBytes_, (unsigned long long) statPlainQueuedBytes_);
+            maxTickHoldMs_ = 0;
+            maxJsLockWaitMs_.store(0);
             lastStatsMs_ = now;
         }
-        if (payload_) {
+        if (dueTick && payload_) {
             payload_->onTick(now);
         }
         // 活跃链路集合：DeviceLost 判定以连接状态为主（P1-2）
         std::vector<std::string> linkedDevices;
+        // ↓ 本块是「每连接重活」（握手推进 / 兜底读 / TX 续传），按 LOOP_TICK_MS 节流（见 dueTick 注释）。
+        //   内部内容未重排缩进，以保持 diff 最小、便于复核。
+        if (dueTick) {
+        const int64_t holdT0 = nowMs();
         {
             std::lock_guard<std::mutex> lk(connMutex_);
             // 快照（fd → 对象指针）：本循环内调用的回调（pumpPlainIdentity/drainEncrypted →
@@ -617,11 +679,26 @@ void NetStack::eventLoop()
                         it = connections_.erase(it);
                         continue;
                     }
+                    // 写兴趣随队列状态更新（P0-b2-c；此刻已持 connMutex_，用 Locked 版本）
+                    updateWriteInterestLocked(cfd);
                     if (!c.deviceId().empty() && !c.isClosed()) {
                         linkedDevices.push_back(c.deviceId());
                     }
                 }
             }
+            // 队列长度采样（DevEco MSG178 §3 要求）：随 NETLOOP 行输出，用于判断
+            // 「是否堆积 / 是否卡在明文队列 / 握手是否迟迟不推进」。
+            statTxQueuedBytes_ = 0;
+            statPlainQueuedBytes_ = 0;
+            for (const auto &kv : connections_) {
+                statTxQueuedBytes_ += kv.second->txQueuedBytes();
+                statPlainQueuedBytes_ += kv.second->plainQueuedBytes();
+            }
+        }
+        const int64_t holdMs = nowMs() - holdT0;
+        if (holdMs > maxTickHoldMs_) {
+            maxTickHoldMs_ = holdMs;   // 窗口内单次持 connMutex_ 的最长耗时（随 NETLOOP 行输出）
+        }
         }
         // 周期重播 UDP 发现广播（CodeArts MSG73_TO_OMP 修复 2）：
         // 对端只在启动/网络变化时广播 → 后启动的一方必须由我们补齐节奏。
@@ -767,12 +844,45 @@ void NetStack::onTcpServerReadable()
         }
 
         struct epoll_event ev {};
-        ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
+        // 入向连接不立刻写（本侧不发明文 identity）⇒ **不挂 EPOLLOUT**：等真有字节要写时
+        // 由 updateWriteInterest 挂上（P0-b2-c：避免 EPOLLET 下"无可写内容仍被反复上报"烧核）。
+        ev.events = EPOLLIN | EPOLLET;
         ev.data.fd = fd;
         epoll_ctl(epollFd_, EPOLL_CTL_ADD, fd, &ev);
 
         LOGI("accepted connection fd=%d", fd);
     }
+}
+
+// P0-b2-c：EPOLLET 下若连接 fd 挂着 EPOLLOUT 却**没有任何可写内容**，该 fd 会被 epoll_wait
+// 每轮重复上报（无法靠"写到 EAGAIN"消费）⇒ 空转烧核：真机实测连接事件 ~1 万次/秒、约一个核，
+// 并让配对 ack 等发送被推迟到对端超时（DevEco MSG180）。故改为**按需**挂/摘：
+// 只有明文队列 / 加密队列有字节、或 TLS 引擎有待发记录时才挂 EPOLLOUT。
+void NetStack::updateWriteInterestLocked(int fd)
+{
+    auto it = connections_.find(fd);
+    if (it == connections_.end()) {
+        return;
+    }
+    TcpConnection &conn = *it->second;
+    const bool want = conn.wantsWrite();
+    if (want == conn.epollWriteArmed()) {
+        return;   // 状态未变：绝不重复 MOD（MOD 会重新武装 ET 并立即上报）
+    }
+    struct epoll_event ev {};
+    ev.events = EPOLLIN | EPOLLET | (want ? EPOLLOUT : 0u);
+    ev.data.fd = fd;
+    if (epoll_ctl(epollFd_, EPOLL_CTL_MOD, fd, &ev) == 0) {
+        conn.setEpollWriteArmed(want);
+    } else {
+        LOGE("updateWriteInterest fd=%d: epoll_ctl MOD failed: %s", fd, strerror(errno));
+    }
+}
+
+void NetStack::updateWriteInterest(int fd)
+{
+    std::lock_guard<std::mutex> lk(connMutex_);
+    updateWriteInterestLocked(fd);
 }
 
 void NetStack::closeConnection(int fd, const char *reason)
@@ -786,10 +896,23 @@ void NetStack::closeConnection(int fd, const char *reason)
     LOGI("connection closed: %s (fd=%d, device=%s)", reason, fd,
          deviceId.empty() ? "?" : deviceId.c_str());
     if (!deviceId.empty()) {
-        NetEvent ev {};
-        ev.type = EventType::Disconnected;
-        ev.deviceId = deviceId;
-        dispatchEvent(ev);
+        // "新链路替换旧链路"场景：同设备仍有存活的另一条链路时**不报 Disconnected**，
+        // 否则 UI 会先收到新链路的 Connected、又被这条 Disconnected 抹掉（设备列表变空）。
+        bool sameDeviceAlive = false;
+        for (const auto &p : connections_) {
+            if (p.second->deviceId() == deviceId) {
+                sameDeviceAlive = true;
+                break;
+            }
+        }
+        if (!sameDeviceAlive) {
+            NetEvent ev {};
+            ev.type = EventType::Disconnected;
+            ev.deviceId = deviceId;
+            dispatchEvent(ev);
+        } else {
+            LOGI("link replaced: %s still has a live link, suppressing Disconnected", deviceId.c_str());
+        }
         if (payload_) {
             payload_->onDeviceDown(deviceId);
         }
@@ -928,19 +1051,29 @@ void NetStack::dispatchFrames(TcpConnection &conn)
                         if (it != trustedCertPem_.end()) {
                             trustedPem = it->second;
                         }
-                        // 同 deviceId 1000ms 连接限流（identity 阶段判定）
-                        auto lit = lastConnByDevice_.find(info.deviceId);
-                        if (lit != lastConnByDevice_.end() &&
-                            nowMs() - lit->second < CONN_RATE_LIMIT_MS) {
-                            LOGE("rate limit: device %s reconnect within %dms",
-                                 info.deviceId.c_str(), CONN_RATE_LIMIT_MS);
-                            dispatchError(info.deviceId, ECONNREFUSED,
-                                          "connection rate limited");
-                            dropConn = true;
-                            dropReason = "device rate limited";
-                            break;
-                        }
+                        // 同 deviceId 的**新**链路到达 ⇒ 按 KDE 语义「保留新链路、关掉旧链路」。
+                        // KDE 的 lanlinkprovider 在每次收到广播后都会新建链路并销毁同设备旧链路
+                        // （见 AGENTS.md 记载），因此**对端必然会在 ~0.6~0.7s 后重拨一次**。
+                        // 旧实现是「1000ms 内同设备重连 ⇒ 丢弃该连接」，于是新链路被我们自己掐断，
+                        // 而对端又已销毁它那条旧链路 ⇒ **两边同时死链**（真机现象：connected →
+                        // disconnected 间隔 0.6~0.7s、配对主链路走不通，见 DevEco MSG181）。
                         lastConnByDevice_[info.deviceId] = nowMs();
+                        // 关掉同 deviceId 的其他连接（新链路即 conn，不动它）。
+                        // 注意：这里的关闭是"替换"，closeConnection 会在仍有同设备存活连接时
+                        // 抑制 Disconnected 事件，避免 UI 误判离线。
+                        {
+                            std::vector<int> stale;
+                            for (const auto &p2 : connections_) {
+                                if (p2.first != conn.fd() && p2.second->deviceId() == info.deviceId) {
+                                    stale.push_back(p2.first);
+                                }
+                            }
+                            for (int sfd : stale) {
+                                LOGI("replacing stale link for device %s: closing fd=%d",
+                                     info.deviceId.c_str(), sfd);
+                                closeConnection(sfd, "replaced by newer link");
+                            }
+                        }
                     }
                     if (!trustedPem.empty() && conn.tlsEngine() != nullptr) {
                         std::vector<uint8_t> leaf = conn.tlsEngine()->peerLeafCertDer();
@@ -1062,6 +1195,8 @@ void NetStack::pumpPlainIdentity(TcpConnection &conn)
 
 void NetStack::onConnectionReadable(int fd)
 {
+    // 同 onConnectionWritable：guard 先构造、lock 后构造 ⇒ 析构时锁已释放，可在 guard 内取锁。
+    WriteInterestGuard _wig(this, fd);
     std::lock_guard<std::mutex> lk(connMutex_);
     auto it = connections_.find(fd);
     if (it == connections_.end()) return;
@@ -1139,6 +1274,9 @@ void NetStack::drainEncrypted(TcpConnection &conn)
 
 void NetStack::onConnectionWritable(int fd)
 {
+    // 注意声明顺序：guard 先构造、lock 后构造 ⇒ 析构顺序相反（lock 先释放），
+    // 因此 guard 在析构里取锁是安全的（不会自锁）。
+    WriteInterestGuard _wig(this, fd);
     std::lock_guard<std::mutex> lk(connMutex_);
     auto it = connections_.find(fd);
     if (it == connections_.end()) return;

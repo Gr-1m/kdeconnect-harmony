@@ -20,7 +20,10 @@ constexpr int PROTOCOL_VERSION = 8;
 constexpr int MAX_UNPAIRED_CONNECTIONS = 42;
 constexpr int IDENTITY_TIMEOUT_MS = 1000;
 constexpr int DISCOVERY_DEBOUNCE_MS = 500;
-constexpr int CONN_RATE_LIMIT_MS = 1000;   // 同 IP/deviceId 连接限流（WP-2）
+// 同 IP accept 限流（防连接风暴）。原为 1000ms：但 KDE 的「新链路替换旧链路」语义会让对端在
+// ~0.6~0.7s 后重拨一次，1000ms 会把这次**合法重拨**直接拒掉（真机配对失败成因之一，DevEco MSG181）。
+// 降到 300ms：仍能挡住真正风暴，又能容纳 KDE 的正常替换节奏。
+constexpr int CONN_RATE_LIMIT_MS = 300;
 // UDP 广播超时：无活跃链路且超过该时长未见广播 → 派发 DeviceLost（定时器 tick 驱动）。
 // 注意（P1-2）：KDE/Android 不周期广播，故判定以「连接状态」为主——有活跃链路时
 // 只刷新时间戳不派发（见 NetStack::eventLoop）。

@@ -47,6 +47,16 @@ public:
     void queuePlainFrame(std::string data);
     bool flushPlain();
     bool plainPending() const { return plainOffset_ < plainTx_.size(); }
+    size_t plainQueuedBytes() const { return plainTx_.size() - plainOffset_; }
+    // 是否值得注册 EPOLLOUT（P0-b2-c）：明文队列 / 加密队列有字节，或 TLS 引擎有待发记录。
+    // EPOLLET 下「注册了 EPOLLOUT 却无可写内容」的 fd 会被 epoll_wait 每轮重复上报 ⇒ 空转烧核。
+    bool wantsWrite() const
+    {
+        return plainPending() || txPending() || (tls_ && tls_->wantsWrite());
+    }
+    // EPOLLOUT 兴趣当前是否已挂（仅网络线程读写；用于只在状态变化时 epoll_ctl(MOD)）
+    bool epollWriteArmed() const { return epollWriteArmed_; }
+    void setEpollWriteArmed(bool v) { epollWriteArmed_ = v; }
     void markPlainIdentityQueued() { plainIdentityQueued_ = true; }
     bool plainIdentityQueued() const { return plainIdentityQueued_; }
 
@@ -120,6 +130,7 @@ private:
     std::string plainTx_;
     size_t plainOffset_ = 0;
     bool plainIdentityQueued_ = false;
+    bool epollWriteArmed_ = false;   // EPOLLOUT 兴趣是否已挂（仅网络线程读写）
 };
 
 } // namespace kdeconnect
