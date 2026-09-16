@@ -130,6 +130,15 @@ public:
 
     void epollDel(int fd) override { epoll_ctl(epfd_, EPOLL_CTL_DEL, fd, nullptr); }
 
+    // 兴趣位变更（payload EPOLLOUT 按需挂/摘）：与生产实现同语义（EPOLLET 恒定附加）
+    bool epollMod(int fd, uint32_t events) override
+    {
+        epoll_event ev {};
+        ev.events = events | EPOLLET;
+        ev.data.fd = fd;
+        return epoll_ctl(epfd_, EPOLL_CTL_MOD, fd, &ev) == 0;
+    }
+
     const std::string &certPem() override { return cert_.certPem; }
     const std::string &keyPem() override { return cert_.keyPem; }
 

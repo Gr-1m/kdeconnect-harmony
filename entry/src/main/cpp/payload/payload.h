@@ -20,6 +20,10 @@ constexpr const char *kPayloadSpoolDirDefault =
 constexpr int64_t PAYLOAD_ACCEPT_TIMEOUT_MS = 30000;  // 对齐 KDE compositeuploadjob
 constexpr size_t PAYLOAD_CHUNK = 16 * 1024;
 constexpr int64_t PAYLOAD_PROGRESS_INTERVAL_MS = 100; // 节流 ≤10Hz（WP1 设计 v0.2 §2）
+// 传输级无进展超时：握手完成后 deadlineMs 会被清零（原设计只在建连/握手阶段设限），
+// 若 FSM 因任何原因停摆（例如 EPOLLET 边沿耗尽），任务会永久停在「接收中」。
+// 这里以「lastProgressMs 超过阈值无进展」判失败（AtomCode 全量排查 域5 P2-2/P2-3）。
+constexpr int64_t PAYLOAD_STALL_TIMEOUT_MS = 30000;
 
 // NetStack 实现的宿主钩子。payload 模块只依赖本接口（host 可测，CPP_GUIDE §2）。
 //
@@ -34,6 +38,10 @@ public:
     virtual ~PayloadHost() = default;
     virtual bool epollAdd(int fd, uint32_t events) = 0;
     virtual void epollDel(int fd) = 0;
+    // 按需改兴趣位（实现方恒定附加 EPOLLET）。payload fd **不再常驻 EPOLLOUT**：
+    // EPOLLET 下「无待发内容却挂着 EPOLLOUT」会让 epoll_wait 反复上报（真机 wake[payload]=31,526），
+    // 更糟的是边沿耗尽后读事件滞留 ⇒ 接收 FSM 停摆 ⇒「永远接收中」。返回 true 表示已应用。
+    virtual bool epollMod(int fd, uint32_t events) = 0;
     virtual const std::string &certPem() = 0;
     virtual const std::string &keyPem() = 0;
     // 发送控制帧（含结尾 '\n' 由调用方负责拼接）。任意线程可调（内部有锁）。
@@ -71,6 +79,8 @@ struct PayloadJob {
     bool settling = false;
     // 最近一次对外派发的状态字面量（仅供埋点诊断，见 [KDC-PAYLOAD]）
     std::string lastState = "pending";
+    // EPOLLOUT 兴趣是否已挂（仅 mu_ 内读写）：只在状态变化时 epoll_ctl(MOD)
+    bool writeArmed = false;
 };
 
 class PayloadManager {
@@ -101,6 +111,8 @@ private:
     void finishJobLocked(PayloadJob &job, const char *state, int code, const char *msg);
     void closeSocketsLocked(PayloadJob &job);
     void emitLocked(PayloadJob &job, const char *state, int code, const char *msg);
+    // EPOLLOUT 兴趣按需刷新（仅 mu_ 内调用）
+    void updateWriteInterestLocked(PayloadJob &job);
     void startHandshakeLocked(PayloadJob &job);
     void pumpSendLocked(PayloadJob &job);
     void drainReceiveLocked(PayloadJob &job);

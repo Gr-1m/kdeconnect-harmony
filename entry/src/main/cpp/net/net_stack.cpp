@@ -64,6 +64,46 @@ void NetStack::setEventCallback(EventCallback cb)
 //  ① 按类型普查（[KDC-EVENTS] 随 NETLOOP 行输出）——用于判断"JS 线程被事件回调占住"的规模；
 //  ② 同一设备 2s 内重复的 DeviceDiscovered 去重：UDP 广播（onUdpReadable）与对端拨入
 //     （handlePlainIdentity）都会宣告同一设备，开屏期会成对放大 JS 侧处理量。
+namespace {
+// 本线程 CPU 时间（毫秒）。用途：区分「函数内真有活」与「线程未被调度/被阻塞」——
+// 这是 DevEco ARKTS_ANALYSIS 与 NATIVE_ANALYSIS §2.4 约定的决定性判据。
+int64_t threadCpuMs()
+{
+    struct timespec ts {};
+    if (::clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) {
+        return -1;
+    }
+    return static_cast<int64_t>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+}
+
+// 自包含的单调毫秒（不依赖文件内其它定义，避免插入点可见性问题）
+int64_t monoMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+// sendPacket 三段计时（RAII，覆盖所有 return 路径）：
+//   wall≫cpu ⇒ 线程在等（调度/阻塞，需继续查谁在占 CPU 或让线程入睡）
+//   wall≈cpu ⇒ 函数内确有耗时（按逐段微秒计时继续拆）
+struct SendPacketTimer {
+    int64_t t0;
+    int64_t cpu0;
+    int64_t lockWaitMs = 0;
+    SendPacketTimer() : t0(monoMs()), cpu0(threadCpuMs()) {}
+    ~SendPacketTimer()
+    {
+        const int64_t wall = monoMs() - t0;
+        if (wall > ENTRY_SPLIT_LOG_MS) {
+            LOGI("[KDC-ENTRY-SPLIT] sendPacket wall=%{public}lldms cpu=%{public}lldms "
+                 "lock=%{public}lldms",
+                 (long long) wall, (long long) (threadCpuMs() - cpu0), (long long) lockWaitMs);
+        }
+    }
+};
+}  // namespace
+
 void NetStack::dispatchEvent(const NetEvent &event)
 {
     const size_t ti = static_cast<size_t>(event.type);
@@ -389,9 +429,11 @@ bool NetStack::sendPacket(const std::string &deviceId, const std::string &packet
 {
     // 等锁计时（DevEco MSG178 §3 要求第一项）：真机实测本入口在 JS 线程被阻塞 1.3~16s，
     // 必须区分「等 connMutex_」与「入口内部工作」。>50ms 打一行，峰值随 NETLOOP 行输出。
+    SendPacketTimer _entryTimer;   // §2.4：wall/cpu/lock 三段（>50ms 才打）
     const int64_t lockT0 = nowMs();
     std::lock_guard<std::mutex> lk(connMutex_);
     const int64_t lockWaitMs = nowMs() - lockT0;
+    _entryTimer.lockWaitMs = lockWaitMs;
     if (lockWaitMs > maxJsLockWaitMs_.load()) {
         maxJsLockWaitMs_.store(lockWaitMs);
     }
@@ -518,13 +560,16 @@ void NetStack::eventLoop()
                 std::lock_guard<std::mutex> lk(connMutex_);
                 closeConnection(fd, "epoll err/hup");
                 ++wakeByConn_;
+                ++connHup_;
                 continue;
             }
             if (ev & EPOLLIN) {
                 onConnectionReadable(fd);
+                ++connIn_;
             }
             if (ev & EPOLLOUT) {
                 onConnectionWritable(fd);
+                ++connOut_;
             }
             ++wakeByConn_;
         }
@@ -565,7 +610,8 @@ void NetStack::eventLoop()
                  "maxHold=%{public}lldms maxJsLockWait=%{public}lldms "
                  "txQueued=%{public}llu plainQueued=%{public}llu "
                  "ev[disc=%{public}llu lost=%{public}llu conn=%{public}llu disc2=%{public}llu "
-                 "pkt=%{public}llu pair=%{public}llu err=%{public}llu xfer=%{public}llu]",
+                 "pkt=%{public}llu pair=%{public}llu err=%{public}llu xfer=%{public}llu] "
+                 "conn[in=%{public}llu out=%{public}llu hup=%{public}llu]",
                  cpuMs, (unsigned long long) loopIters_.load(), (unsigned long long) epollWake_.load(),
                  (unsigned long long) eventsHandled_.load(), LOOP_TICK_MS, (long long) dtMs,
                  (unsigned long long) wakeByWakeFd_, (unsigned long long) wakeByUdp_,
@@ -576,7 +622,9 @@ void NetStack::eventLoop()
                  (unsigned long long) evCounts_[0].load(), (unsigned long long) evCounts_[1].load(),
                  (unsigned long long) evCounts_[2].load(), (unsigned long long) evCounts_[3].load(),
                  (unsigned long long) evCounts_[4].load(), (unsigned long long) evCounts_[5].load(),
-                 (unsigned long long) evCounts_[6].load(), (unsigned long long) evCounts_[7].load());
+                 (unsigned long long) evCounts_[6].load(), (unsigned long long) evCounts_[7].load(),
+                 (unsigned long long) connIn_, (unsigned long long) connOut_,
+                 (unsigned long long) connHup_);
             maxTickHoldMs_ = 0;
             maxJsLockWaitMs_.store(0);
             lastStatsMs_ = now;
@@ -1436,6 +1484,17 @@ bool NetStack::epollAdd(int fd, uint32_t events)
     ev.events = events | EPOLLET;
     ev.data.fd = fd;
     return epoll_ctl(epollFd_, EPOLL_CTL_ADD, fd, &ev) == 0;
+}
+
+bool NetStack::epollMod(int fd, uint32_t events)
+{
+    // 兴趣位变更（EPOLLET 恒定附加）：仅供「按需挂/摘 EPOLLOUT」（连接侧与 payload 侧共用）。
+    // 调用方必须保证**仅在状态变化时**调用 —— EPOLL_CTL_MOD 会重新武装 ET 并立即上报，
+    // 每轮调用会变成新的空转源。
+    epoll_event ev {};
+    ev.events = events | EPOLLET;
+    ev.data.fd = fd;
+    return epoll_ctl(epollFd_, EPOLL_CTL_MOD, fd, &ev) == 0;
 }
 
 void NetStack::epollDel(int fd)

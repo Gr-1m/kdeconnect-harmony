@@ -373,7 +373,11 @@ uint64_t PayloadManager::startReceive(const std::string &deviceId, const std::st
             return 0;
         }
     }
+    // 注册时**带 EPOLLOUT**：epoll_ctl(ADD) 会对"当前可写"立即上报一次，这正是握手首飞
+    // （ServerHello/ClientHello）的触发点；随即登记 writeArmed，之后由 updateWriteInterestLocked
+    // 在状态变化时按需摘掉 —— 避免"无可写内容仍常驻 EPOLLOUT"的 ET 空转（真机 wake[payload]=31,526）。
     host_->epollAdd(job->sockFd, EPOLLIN | EPOLLOUT);
+    job->writeArmed = true;
     fdIndex_[job->sockFd] = job->id;
     job->deadlineMs = host_->nowMs() + PAYLOAD_ACCEPT_TIMEOUT_MS;
     job->started = true;
@@ -410,6 +414,27 @@ void PayloadManager::startHandshakeLocked(PayloadJob &job)
             return;
         }
         job.deadlineMs = 0;
+    }
+}
+
+// EPOLLOUT 按需挂/摘（与连接侧 P0-b2-c 同源）。
+// **关键教训**：刷新点必须与「推进 TLS 引擎」同址 —— 载荷两个方向都要写握手记录，
+// 首飞之前若没有任何一处刷新，EPOLLOUT 永不挂上 ⇒ 握手停摆（本机 harness 实测：接收侧 done=0 卡住）。
+// 因此刷新放在 onReadable/onWritable 的**函数退出**（RAII）+ onTick。
+void PayloadManager::updateWriteInterestLocked(PayloadJob &job)
+{
+    if (job.sockFd < 0) {
+        return;
+    }
+    // 需要可写：有待发应用字节，或引擎还有待写记录，或握手尚未完成（首飞要写）。
+    // 不纳入 SENDAPP：它几乎常真，会让 EPOLLOUT 变回常驻。
+    const bool want = !job.pending.empty() ||
+                      (job.tls != nullptr && (!job.tls->handshakeDone() || job.tls->wantsWrite()));
+    if (want == job.writeArmed) {
+        return;
+    }
+    if (host_->epollMod(job.sockFd, EPOLLIN | (want ? EPOLLOUT : 0u))) {
+        job.writeArmed = want;
     }
 }
 
@@ -499,6 +524,13 @@ void PayloadManager::onReadable(int fd)
         return;
     }
     PayloadJob &job = *j->second;
+    // 任意 return 路径都刷新写兴趣（RAII）：刷新点必须在**推进 TLS 引擎的入口**上，
+    // 否则握手首飞前 EPOLLOUT 永不挂上（见 updateWriteInterestLocked 注释）。
+    struct InterestGuard {
+        PayloadManager *m;
+        PayloadJob *j;
+        ~InterestGuard() { m->updateWriteInterestLocked(*j); }
+    } interestGuard{this, &job};
 
     if (job.send && job.listenFd == fd) {
         // 对端连入：只接受一个连接（KDE CompositeUploadJob 同语义）
@@ -514,10 +546,11 @@ void PayloadManager::onReadable(int fd)
         fdIndex_[cfd] = job.id;
         // P0-1：新 fd 必须注册进 epoll，否则 TCP 已建但握手永不推进
         // （EPOLLET + 未注册 → 只能等 onTick 30s 超时）。
-        if (!host_->epollAdd(cfd, EPOLLIN | EPOLLOUT)) {
+        if (!host_->epollAdd(cfd, EPOLLIN | EPOLLOUT)) {   // 同上：ADD 的上报即首飞触发点
             failJobLocked(job, EIO, "payload accept: epoll add failed");
             return;
         }
+        job.writeArmed = true;
         startHandshakeLocked(job);
         return;
     }
@@ -563,6 +596,13 @@ void PayloadManager::onWritable(int fd)
         return;
     }
     PayloadJob &job = *j->second;
+    // 任意 return 路径都刷新写兴趣（RAII）：刷新点必须在**推进 TLS 引擎的入口**上，
+    // 否则握手首飞前 EPOLLOUT 永不挂上（见 updateWriteInterestLocked 注释）。
+    struct InterestGuard {
+        PayloadManager *m;
+        PayloadJob *j;
+        ~InterestGuard() { m->updateWriteInterestLocked(*j); }
+    } interestGuard{this, &job};
 
     if (job.sockFd != fd) {
         return;
@@ -619,6 +659,18 @@ void PayloadManager::onTick(int64_t nowMs)
             !job.pending.empty()) {
             pumpSendLocked(job);
         }
+        // 传输级无进展超时：握手完成后 deadlineMs 已被清零，若 FSM 因任何原因停摆
+        // （例如 EPOLLET 边沿耗尽），任务会永久停在「接收中」（AtomCode 域5 P2-2/P2-3）。
+        if (job.lastProgressMs == 0) {
+            job.lastProgressMs = nowMs;   // 首次进入 tick 起算
+        }
+        if (job.tls != nullptr && job.tls->handshakeDone() &&
+            nowMs - job.lastProgressMs > PAYLOAD_STALL_TIMEOUT_MS) {
+            failJobLocked(job, ETIMEDOUT, "payload stalled (no progress)");
+            continue;
+        }
+        // 写兴趣兜底刷新（正常路径由 onReadable/onWritable 的 RAII 负责）
+        updateWriteInterestLocked(job);
     }
     // FSM 埋点（DevEco MSG179 §2「文件永远停在接收中」定位用；CodeArts MSG4 §3 授权）：
     // 每 5s 每任务一行 —— 直接区分「少收字节」与「终态没发」。
