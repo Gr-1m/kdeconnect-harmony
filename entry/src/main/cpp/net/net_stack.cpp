@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <algorithm>
 #include <chrono>
+#include <ctime>
 #include <cstring>
 
 namespace kdeconnect {
@@ -408,6 +409,11 @@ void NetStack::eventLoop()
     struct epoll_event events[64];
     while (running_.load()) {
         int n = epoll_wait(epollFd_, events, 64, LOOP_TICK_MS);
+        loopIters_.fetch_add(1, std::memory_order_relaxed);
+        if (n > 0) {
+            epollWake_.fetch_add(1, std::memory_order_relaxed);
+            eventsHandled_.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
+        }
         if (n < 0) {
             if (errno == EINTR) continue;
             LOGE("epoll_wait: %s", strerror(errno));
@@ -466,6 +472,25 @@ void NetStack::eventLoop()
 
         // 定时器 tick：identity 超时 + 发现超时（DeviceLost）+ TX 续传
         const int64_t now = nowMs();
+
+        // 网络线程运行统计（MSG149 §3.1：区分「锁等待」与「CPU 饥饿/忙循环」）。
+        // 全 cumulative：读相邻两行做差即得该窗口内的网络线程 CPU 与迭代/事件量。
+        if (lastStatsMs_ == 0) {
+            lastStatsMs_ = now;
+        }
+        if (now - lastStatsMs_ >= 5000) {
+            long long cpuMs = -1;
+            struct timespec ts {};
+            if (::clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0) {
+                cpuMs = static_cast<long long>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+            }
+            // 注意 hilog 隐私策略：数值参数必须 %{public}，否则真机上全被掩成 <private>（DevEco MSG151 §4 实测）
+            LOGI("[KDC-NETLOOP] cpu=%{public}lldms iters=%{public}llu epollWake=%{public}llu "
+                 "events=%{public}llu tick=%{public}dms",
+                 cpuMs, (unsigned long long) loopIters_.load(), (unsigned long long) epollWake_.load(),
+                 (unsigned long long) eventsHandled_.load(), LOOP_TICK_MS);
+            lastStatsMs_ = now;
+        }
         if (payload_) {
             payload_->onTick(now);
         }

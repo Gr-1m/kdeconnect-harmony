@@ -141,6 +141,12 @@ private:
 
     int wakeFd_ = -1;
 
+    // 网络线程运行统计（MSG149 §3.1：查 CPU 饥饿/忙循环）。JS 线程只读副本，全 atomic。
+    std::atomic<uint64_t> loopIters_{0};      // 事件循环迭代次数
+    std::atomic<uint64_t> epollWake_{0};      // epoll_wait 返回 >0 的次数
+    std::atomic<uint64_t> eventsHandled_{0};  // 处理过的 epoll 事件总数
+    int64_t lastStatsMs_ = 0;                 // 上次打印统计的时间（仅循环线程访问）
+
     // caps 单一来源（REVIEW §3.3）：UDP 与 TLS 两条 identity 路径共用
     std::mutex capsMutex_;
     std::vector<std::string> capsIncoming_{"kdeconnect.ping", "kdeconnect.identity",
