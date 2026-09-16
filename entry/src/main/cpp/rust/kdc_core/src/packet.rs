@@ -43,32 +43,52 @@ pub enum FrameOutcome {
 /// - 无 `'\n'` 且未超限 → `Half`（不动 `buf`）；
 /// - 帧长（`'\n'` 下标 + 1）`> max_size` → 丢弃该行 → `DroppedOversize`；
 /// - 否则返回含 `'\n'` 的完整帧并从 `buf` 移除。
-pub fn extract_frame(buf: &mut String, max_size: usize) -> FrameOutcome {
-    if buf.is_empty() {
-        return FrameOutcome::Half;
-    }
+/// 零拷贝扫描结果（R-OPT-1）：与 `FrameOutcome` 语义一一对应，但不分配中间 String。
+pub enum FrameScan {
+    /// 完整帧：`buf[..len]` 为帧字节（含结尾 `'\n'`）
+    Frame { len: usize },
+    /// 半包：缓冲保持原样
+    Half,
+    /// 超限行：`buf[..consumed]` 需移除（调用方跳过该帧）
+    DroppedOversize { consumed: usize },
+}
 
-    match buf.find('\n') {
+/// 只扫描、不分配、不改写（R-OPT-1）：语义与 `extract_frame` 完全一致 ——
+/// 供 FFI 侧直接对调用方缓冲做一次扫描，避免 `from_utf8(..).to_string()` + `to_owned()` 两次拷贝。
+pub fn scan_frame(buf: &[u8], max_size: usize) -> FrameScan {
+    if buf.is_empty() {
+        return FrameScan::Half;
+    }
+    match buf.iter().position(|&b| b == b'\n') {
         None => {
-            // 尚无完整行：超限则丢弃（防缓冲无限增长 / OOM），否则等后续数据
             if buf.len() > max_size {
-                buf.clear();
-                FrameOutcome::DroppedOversize
+                FrameScan::DroppedOversize { consumed: buf.len() }
             } else {
-                FrameOutcome::Half
+                FrameScan::Half
             }
         }
         Some(pos) => {
             let frame_len = pos + 1;
             if frame_len > max_size {
-                // 超限帧：按「非法行丢弃」语义跳过该行
-                buf.drain(..frame_len);
-                FrameOutcome::DroppedOversize
+                FrameScan::DroppedOversize { consumed: frame_len }
             } else {
-                let frame = buf[..frame_len].to_owned();
-                buf.drain(..frame_len);
-                FrameOutcome::Frame(frame)
+                FrameScan::Frame { len: frame_len }
             }
+        }
+    }
+}
+
+pub fn extract_frame(buf: &mut String, max_size: usize) -> FrameOutcome {
+    match scan_frame(buf.as_bytes(), max_size) {
+        FrameScan::Half => FrameOutcome::Half,
+        FrameScan::DroppedOversize { consumed } => {
+            buf.drain(..consumed);
+            FrameOutcome::DroppedOversize
+        }
+        FrameScan::Frame { len } => {
+            let frame = buf[..len].to_owned();
+            buf.drain(..len);
+            FrameOutcome::Frame(frame)
         }
     }
 }
