@@ -508,7 +508,7 @@ export struct DevicesTab {
     .padding({ left: 14, right: 14, top: 14, bottom: 14 })
     .borderRadius(16)
     .backgroundColor($r('app.color.card_bg'))
-    .backgroundBlurStyle(BlurStyle.BACKGROUND_THIN)
+    .backgroundBlurStyle(undefined)
     .border({ width: 1, color: $r('app.color.card_border') })
     .onClick(() => {
       this.onPlaceholderAction(key);
@@ -556,7 +556,7 @@ export struct DevicesTab {
     .padding({ left: 14, right: 14, top: 14, bottom: 14 })
     .borderRadius(16)
     .backgroundColor($r('app.color.card_bg'))
-    .backgroundBlurStyle(BlurStyle.BACKGROUND_THIN)
+    .backgroundBlurStyle(undefined)
     .border({ width: 1, color: $r('app.color.card_border') })
     .onClick(() => {
       this.onClipboardRequest();
