@@ -269,6 +269,14 @@ bool TlsEngine::init(const std::string &certPem, const std::string &keyPem,
     return true;
 }
 
+bool TlsEngine::wantsWrite() const
+{
+    if (engine_ == nullptr) {
+        return false;
+    }
+    return (br_ssl_engine_current_state(engine_) & BR_SSL_SENDREC) != 0;
+}
+
 int TlsEngine::runUntil(unsigned target)
 {
     // P0-a（根因）：本循环原先在「引擎无任何可推进状态」时会 flush→continue 空转
