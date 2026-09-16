@@ -94,9 +94,22 @@ payload fd 的 EPOLLOUT 按需挂载，我改了三次都让**载荷握手停摆
 
 ---
 
-## 5. 遗留（与本专项无关，另有排期）
+## 5. 遗留与跨模块语义变化
 
-- **P2-1**：`CN == deviceId` 校验（AtomCode 全量排查 域2）；
-- **R-OPT-1**：Rust 链路每帧 5 次拷贝 → 2 次（AtomCode 复审建议）；
-- 以上两项与「CN 校验」合为**一个独立 commit**（走 R 系列验收），不与本轮收口混提；
+### 5.1 已随 `612a5fd` 落地（AtomCode 复核通过）
+
+- **P2-1**：`CN == deviceId` 校验 —— `drainEncrypted` 内「握手完成且 deviceId 已知」后一次性校验，fail-closed；落点选 `drainEncrypted`（tick 兜底驱动）可保证 EPOLLET 边沿丢失时仍被校验；
+- **R-OPT-1**：`packet::scan_frame` 零拷贝扫描，FFI 每帧拷贝 5 → 2；**排序陷阱**：零拷贝下必须**先输出帧、再前移剩余**，否则前移会覆盖尚未输出的帧字节（旧实现因中间有 String 拷贝而天然安全）。
+
+### 5.2 跨模块语义变化（**必记**，AtomCode P3）
+
+- **`kdc_extract_frame` 不再做 UTF-8 预校验**：`scan_frame` 按**字节**找 `'\n'`（`buf.iter().position(|&b| b == b'\n')`），而旧 FFI 路径先 `str::from_utf8` —— 含非法 UTF-8 的行由「返回 -1（参数错误）」变为「按普通帧提取」。
+- **判定为可接受**：帧是 JSON 文本，非法字节会被下游 `cJSON_Parse` 拒绝，按既有「非法 JSON 丢弃该行、继续读」规则处理；同时省去每帧一次全量 UTF-8 校验。
+- **冻结头未动**（`packet_io.h` 契约不变），故此处 + `ffi.rs` 注释为唯一记录点；**将来若有人依赖 `-1` 做输入校验，须回看此条**。
+
+### 5.3 本专项结论（可关闭）
+
+`105ddff` + `d3cd02c` 复跑（MatePad Mini / 手机，DevEco MSG18）：`[KDC-FRAMESPLIT]`/`[KDC-DRAINSPLIT]`/`[KDC-LOCKHOLD]`/`[KDC-ENTRY-SPLIT]` **均 0 行**、慢 `JsSendPacket` **0 条**、`THREAD_BLOCK` **0/0**、`maxHold=13ms`、`maxJsLockWait=0ms`、CPU 743ms/5.1s（健康稳态）⇒ 上一轮残留的 326~384ms 单次成本即**缓冲首次分配 + memset + 冷页故障**，已随 `105ddff` 消除；`n=` 探针因无现象而无内容可打（保留为后续长派发的诊断钩子）。
+
+### 5.4 仍未决
 - **既有偶发**：`peerIdentityIsDispatchedAsPacket`（UDP 已发现对端但无 `PairingRequest`，约 1/3），已证实在改动前提交上同样出现 ⇒ 归测试归属方，需要我接手时再说。

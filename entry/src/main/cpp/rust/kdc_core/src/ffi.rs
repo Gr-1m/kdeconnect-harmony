@@ -183,6 +183,9 @@ pub extern "C" fn kdc_extract_frame(
         return -1;
     };
     // R-OPT-1：零拷贝扫描 —— 不再 `from_utf8(..).to_string()`（原实现每帧多两次分配/拷贝）。
+    // 语义变化（AtomCode P3，已记入 devdocs/EXP_LESSONS_20260916_splash_freeze.md §5.2）：
+    // 本路径**不再做 UTF-8 预校验**，含非法 UTF-8 的行由「返回 -1」变为「按普通帧提取」，
+    // 非法字节交由下游 cJSON 按「非法 JSON 丢弃该行」处理（帧本身是 JSON 文本）。
     // 注意顺序：**先**把帧写入 out，**再**把剩余字节前移；否则前移会覆盖尚未输出的帧字节。
     match packet::scan_frame(bytes, max_size) {
         packet::FrameScan::Half => {
