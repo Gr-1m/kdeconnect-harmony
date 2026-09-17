@@ -4,7 +4,12 @@
 
 A HarmonyOS (OpenHarmony API 26) port of [KDE Connect](https://kdeconnect.kde.org/) — the multi-platform tool that lets your devices communicate over the local network.
 
-> **Status**: Early development. Core networking (UDP discovery, TCP, TLS, pairing) and 10 plugins are functional. Real-device verified on MatePad Mini against KDE Desktop.
+> **Status**: Early development. Core networking (UDP discovery, TCP, TLS, pairing) and 10 plugins are functional. Real-device verified on MatePad Mini and Mate 80 Pro against KDE Desktop.
+
+## Screenshots
+
+<!-- Screenshots will be added here. See screenshots/ directory. -->
+<!-- Recommended shots: main screen, pairing dialog, media control, file received, settings -->
 
 ## Features
 
@@ -96,7 +101,7 @@ tools/sign-debug.sh
 ### Run Tests
 
 ```bash
-tests/run.sh   # 30 host-side unit/integration tests
+tests/run.sh   # 31 host-side unit/integration tests
 ```
 
 ## Project Structure
@@ -104,20 +109,28 @@ tests/run.sh   # 30 host-side unit/integration tests
 ```
 kdeconnect-harmony/
 ├── entry/src/main/
-│   ├── cpp/              # Native C++ (NAPI)
-│   │   ├── net/          # UDP discovery, TCP server, TLS engine, NAPI bridge (napi_exports.cpp)
-│   │   ├── payload/      # Payload transfer
-│   │   ├── napi_init.cpp # Module registration and NAPI export table
-│   │   └── rust/         # Rust staticlib integration (kdc_core: packet_io + cert_util)
-│   ├── ets/
-│   │   ├── plugins/      # 10 plugins (registry-driven)
-│   │   ├── net/          # PacketRouter
-│   │   ├── kdeconnect/   # NetworkPacket, protocol types
-│   │   └── pages/        # UI (Index.ets)
-│   └── module.json5      # Permissions, abilities
-├── tools/                # sign-debug.sh, check-encoding.py, sync-revision.sh
-├── devdocs/              # Developer guides (CPP_GUIDE, ARKTS_GUIDE, PROCESS)
-├── LICENSE               # GPL-3.0
+│   ├── cpp/                  # Native C++ (NAPI)
+│   │   ├── net/              # UDP discovery, TCP server, TLS engine, packet I/O
+│   │   │   ├── net_stack.cpp # Event loop, connection management, pairing
+│   │   │   ├── tcp_server.cpp# TCP listen + accept
+│   │   │   ├── tls_engine.cpp# BearSSL TLS handshake + I/O
+│   │   │   ├── cert_gen.cpp  # Self-signed certificate generation
+│   │   │   ├── packet_io.h   # Frame extraction (Rust FFI shim)
+│   │   │   ├── udp_discovery.cpp
+│   │   │   └── napi_*.cpp    # NAPI bridge (exports, events, init)
+│   │   ├── payload/          # Payload transfer (file sharing)
+│   │   └── rust/             # Rust staticlib (kdc_core: packet_io + cert_util)
+│  &nbsp;├── ets/
+│   │   ├── plugins/          # 10 plugins (registry-driven)
+│   │   ├── net/              # PacketRouter
+│   │   ├── common/           # PayloadHistory, shared types
+│   │   ├── components/       # DevicesTab, SettingsTab, FilesTab
+│   │   └── pages/            # UI (Index.ets)
+│   └── module.json5          # Permissions, abilities
+├── tools/                    # sign-debug.sh, check-encoding.py, sync-revision.sh
+├── devdocs/                  # Developer guides + bugfix analysis
+├── screenshots/              # App screenshots
+├── LICENSE                   # GPL-3.0
 ```
 
 ## Protocol Compatibility

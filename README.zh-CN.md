@@ -4,7 +4,12 @@
 
 [KDE Connect](https://kdeconnect.kde.org/) 的 HarmonyOS（OpenHarmony API 26）移植版——让你的设备通过局域网互相通信的多平台工具。
 
-> **状态**：早期开发阶段。核心网络（UDP 发现、TCP、TLS、配对）和 10 个插件已可用。已在 MatePad Mini 上与 KDE 桌面端真机验证。
+> **状态**：早期开发阶段。核心网络（UDP 发现、TCP、TLS、配对）和 10 个插件已可用。已在 MatePad Mini 和 Mate 80 Pro 上与 KDE 桌面端真机验证。
+
+## 截图
+
+<!-- 截图将在此处添加。见 screenshots/ 目录。 -->
+<!-- 建议截图：主界面、配对弹窗、媒体控制、文件接收、设置页 -->
 
 ## 功能
 
@@ -96,7 +101,7 @@ tools/sign-debug.sh
 ### 运行测试
 
 ```bash
-tests/run.sh   # 30 个 host 侧单元/集成测试
+tests/run.sh   # 31 个 host 侧单元/集成测试
 ```
 
 ## 项目结构
@@ -104,20 +109,28 @@ tests/run.sh   # 30 个 host 侧单元/集成测试
 ```
 kdeconnect-harmony/
 ├── entry/src/main/
-│   ├── cpp/              # Native C++（NAPI）
-│   │   ├── net/          # UDP 发现、TCP 服务端、TLS 引擎、NAPI 桥（napi_exports.cpp）
-│   │   ├── payload/      # Payload 传输
-│   │   ├── napi_init.cpp # 模块注册与 NAPI 导出表
-│   │   └── rust/         # Rust staticlib 集成（kdc_core：packet_io + cert_util）
+│   ├── cpp/                  # Native C++（NAPI）
+│   │   ├── net/              # UDP 发现、TCP 服务端、TLS 引擎、packet I/O
+│   │   │   ├── net_stack.cpp # 事件循环、连接管理、配对
+│   │   │   ├── tcp_server.cpp# TCP 监听 + accept
+│   │   │   ├── tls_engine.cpp# BearSSL TLS 握手 + I/O
+│   │   │   ├── cert_gen.cpp  # 自签证书生成
+│   │   │   ├── packet_io.h   # 帧提取（Rust FFI shim）
+│   │   │   ├── udp_discovery.cpp
+│   │   │   └── napi_*.cpp    # NAPI 桥（exports, events, init）
+│   │   ├── payload/          # Payload 传输（文件分享）
+│   │   └── rust/             # Rust staticlib（kdc_core：packet_io + cert_util）
 │   ├── ets/
-│   │   ├── plugins/      # 10 个插件（注册表驱动）
-│   │   ├── net/          # PacketRouter
-│   │   ├── kdeconnect/   # NetworkPacket、协议类型
-│   │   └── pages/        # UI（Index.ets）
-│   └── module.json5      # 权限、abilities
-├── tools/                # sign-debug.sh, check-encoding.py, sync-revision.sh
-├── devdocs/              # 开发者指南（CPP_GUIDE, ARKTS_GUIDE, PROCESS）
-├── LICENSE               # GPL-3.0
+│   │   ├── plugins/          # 10 个插件（注册表驱动）
+│   │   ├── net/              # PacketRouter
+│   │   ├── common/           # PayloadHistory、共享类型
+│   │   ├── components/       # DevicesTab, SettingsTab, FilesTab
+│   │   └── pages/            # UI（Index.ets）
+│   └── module.json5          # 权限、abilities
+├── tools/                    # sign-debug.sh, check-encoding.py, sync-revision.sh
+├── devdocs/                  # 开发者指南 + BUG 排查分析
+├── screenshots/              # 应用截图
+├── LICENSE                   # GPL-3.0
 ```
 
 ## 协议兼容性
