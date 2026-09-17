@@ -3,6 +3,9 @@
 // 但**注册表驱动**，不走 iOS 那种硬编码 switch（docs/12 的反面教材）。
 // 关键语义：① 每设备一份实例（避免多设备状态串扰）；② onDestroy 必达（即使 onCreate 部分失败）。
 
+// 批1：插件 → UI 的类型化事件（定义见 PluginEvent.ets）
+import { PluginEvent, textEvent } from './PluginEvent';
+
 export type SendFrameFn = (deviceId: string, packetJson: string) => boolean;
 
 export abstract class PluginBase {
@@ -18,13 +21,13 @@ export abstract class PluginBase {
   private logFn: (msg: string) => void = () => {
   };
   private sendFn: SendFrameFn = () => false;
-  // 插件 → UI 的事件出口（kind 由插件定义，如 'battery'；data 为 JSON 字符串）
-  private uiFn: (deviceId: string, kind: string, data: string) => void = () => {
+  // 插件 → UI 的事件出口（批1 根治：改传**类型化事件对象**，避免字符串 JSON 往返）
+  private uiFn: (deviceId: string, ev: PluginEvent) => void = () => {
   };
 
   // 绑定宿主能力（每设备实例化后由 PluginHost 调用）
   bind(deviceId: string, sendFn: SendFrameFn, logFn: (msg: string) => void,
-       uiFn: (deviceId: string, kind: string, data: string) => void): void {
+       uiFn: (deviceId: string, ev: PluginEvent) => void): void {
     this.deviceId = deviceId;
     this.sendFn = sendFn;
     this.logFn = logFn;
@@ -62,9 +65,15 @@ export abstract class PluginBase {
     return ok;
   }
 
-  // 向 UI 层推送插件事件（由 Index 转成 @State 展示）
+  // 向 UI 层推送**标量/短文本**事件（旧签名保持，调用点零改动）：
+  // 内部包成类型化事件对象，UI 侧不再需要 JSON.parse。
   protected notify(kind: string, data: string): void {
-    this.uiFn(this.deviceId, kind, data);
+    this.uiFn(this.deviceId, textEvent(kind, data));
+  }
+
+  // 向 UI 层推送**结构化**事件（避免 JSON.stringify：MPRIS 的 playerList / 快照等）
+  protected notifyEvent(ev: PluginEvent): void {
+    this.uiFn(this.deviceId, ev);
   }
 }
 

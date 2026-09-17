@@ -12,6 +12,7 @@ import uiMaterial from '@ohos.arkui.uiMaterial';
 import deviceInfo from '@ohos.deviceInfo';
 import { PacketRouter, RouterCallbacks } from '../net/PacketRouter';
 import { PluginBase } from '../plugins/PluginBase';
+import { PluginEvent } from '../plugins/PluginEvent';
 import { PluginRegistry } from '../plugins/PluginRegistry';
 import { PluginHost } from '../plugins/PluginHost';
 import { PingPlugin } from '../plugins/PingPlugin';
@@ -225,6 +226,24 @@ struct Index {
       deviceId = String(await pref.get('deviceId', ''));
       // 已接收文件历史：跨重启保留（与应用设置同一个 Preferences 库）
       this.receivedHistory = await PayloadHistory.load(ctx);
+      // 回灌到 payloads：文件页的「历史记录」分区直接读 payloads，不回灌则重启后历史为空
+      // （2026-09-17 用户实测「历史文件只有一条」——发送记录既没入库也没回灌）。
+      // 注意：历史条目一律置 settled=true —— 它们是**已结束**的旧记录，spool 早被清理，
+      // 否则会被归到「收到的文件（待处置）」并诱使用户点「保存」而必然失败。
+      this.payloads = this.receivedHistory.map((h: PayloadTransfer): PayloadTransfer => {
+        const settledHist: PayloadTransfer = {
+          transferId: h.transferId,
+          deviceId: h.deviceId,
+          direction: h.direction,
+          state: h.state,
+          fileName: h.fileName,
+          size: h.size,
+          bytesDone: h.bytesDone,
+          filePath: h.filePath,
+          settled: true
+        };
+        return settledHist;
+      });
       certPem = String(await pref.get('certPem', ''));
       keyPem = String(await pref.get('keyPem', ''));
       // 设备名称：用户改过就用用户的；没改过 → 读**系统设备名称**（设置→关于本机→设备名称，回退市场名/型号）
@@ -663,13 +682,17 @@ struct Index {
     }
     this.pluginHost.loadForDevice(deviceId, incoming, outgoing,
       (dev: string, json: string): boolean => native.sendPacket(dev, json),
-      (dev: string, kind: string, data: string): void => {
-        this.onPluginEvent(dev, kind, data);
+      (dev: string, ev: PluginEvent): void => {
+        this.onPluginEvent(dev, ev);
       });
   }
 
   // 插件 → UI 事件（电量 / 远程命令 / 剪贴板索取等）
-  private onPluginEvent(deviceId: string, kind: string, data: string): void {
+  // 批1 根治（CodeArts MSG16 授权）：插件事件改为**类型化对象**，不再 JSON.stringify/parse。
+  // 结构化数据（MPRIS 列表/快照）直接读字段；标量事件读 ev.text（语义与旧 data 字符串一致）。
+  private onPluginEvent(deviceId: string, ev: PluginEvent): void {
+    const kind: string = ev.kind;
+    const data: string = ev.text ?? '';
     if (kind === 'runcommand.list') {
       this.runCommandDeviceId = deviceId;
       this.runCommands = this.commandsOf(deviceId);
@@ -693,22 +716,15 @@ struct Index {
       this.log(`clipboard requested by ${deviceId}`);
       return;
     }
-    // 媒体控制（方向 1）：对端播放器列表 / 当前播放器状态（插件已做可见字段去重，这里不重复打日志）
+    // 媒体控制（方向 1）：类型化对象直读，省掉每事件一次 stringify+parse
     if (kind === 'mpris.playerList') {
-      try {
-        const list: string[] = JSON.parse(data) as string[];
-        this.setMprisList(deviceId, list);
-      } catch (e) {
-        this.log(`mpris player list parse failed <- ${deviceId}`);
-      }
+      this.setMprisList(deviceId, ev.mprisList ?? []);
       return;
     }
     if (kind === 'mpris.playerUpdate') {
-      try {
-        const snap: MprisSnapshot = JSON.parse(data) as MprisSnapshot;
+      const snap: MprisSnapshot | undefined = ev.mprisSnap;
+      if (snap !== undefined) {
         this.setMprisSnapshot(deviceId, snap);
-      } catch (e) {
-        this.log(`mpris player update parse failed <- ${deviceId}`);
       }
       return;
     }
@@ -1253,6 +1269,8 @@ struct Index {
       }
       case 'disconnected': {
         const did: string = event.deviceId ?? '';
+        // 终态兜底：断链后该设备「进行中」的接收传输不可能完成 ⇒ 立即落 failed（否则 UI 永久「接收中」）
+        this.failInflightReceives(did, 'disconnected');
         this.connectedDevices = this.connectedDevices.filter((d: DeviceItem) => d.id !== did);
         this.batteryItems = this.batteryItems.filter((b: BatteryItem) => b.deviceId !== did);
         // 断链即清「等待确认」态（否则行上会残留"等待确认"徽标）
@@ -1327,6 +1345,10 @@ struct Index {
       case 'error': {
         // WP-2 限流/钉扎失败给可读提示（errorCode/errorMessage 已对齐 d.ts）
         const em: string = event.errorMessage ?? '';
+        // 终态兜底（omp MSG23/24 契约）：native 的 payload FSM 已判 `failed`（如 code=104
+        // "control connection closed"），但 `payloadTransfer` 终态事件可能到不了 UI ⇒
+        // 这里按 Error 事件把该设备**进行中**的接收传输立即落为 failed，避免永久「接收中」。
+        this.failInflightReceives(event.deviceId ?? '', `error: ${em.length > 0 ? em : event.errorCode}`);
         if (em.includes('rate limited')) {
           this.log('连接过于频繁，请稍后重试（rate limited）');
         } else if (em.includes('certificate mismatch')) {
@@ -1850,9 +1872,51 @@ struct Index {
   }
 
   // AP-2：payloadTransfer 事件 → 传输列表 upsert（进度事件 ≤10Hz，不逐条写日志）
+  // 终态兜底（omp MSG23/24 契约）：控制连接断开 / Error 事件 ⇒ 该设备「进行中」的接收传输
+  // 不可能再完成，立即落为 failed，避免 UI 永久显示「接收中」（用户实测问题）。
+  // 说明：native 侧 `135547b` 起 payload FSM 会给出 `code=`/`msg=`，但 `payloadTransfer`
+  // 终态事件未必到达；本兜底只改 ArkTS 的展示状态，不动任何传输语义。
+  private failInflightReceives(deviceId: string, reason: string): void {
+    let changed: boolean = false;
+    const next: PayloadTransfer[] = this.payloads.map((p: PayloadTransfer): PayloadTransfer => {
+      const active: boolean = p.state === 'started' || p.state === 'progress';
+      if (p.direction !== 'receive' || !active) {
+        return p;
+      }
+      if (deviceId.length > 0 && p.deviceId !== deviceId) {
+        return p;
+      }
+      changed = true;
+      const failed: PayloadTransfer = {
+        transferId: p.transferId,
+        deviceId: p.deviceId,
+        direction: p.direction,
+        state: 'failed',
+        fileName: p.fileName,
+        size: p.size,
+        bytesDone: p.bytesDone,
+        filePath: p.filePath,
+        settled: p.settled
+      };
+      return failed;
+    });
+    if (changed) {
+      this.payloads = next;
+      console.info(`KDC payload inflight -> failed (${reason}) dev=${deviceId.substring(0, 8)}`);
+    }
+  }
+
   private handlePayloadTransfer(event: NetEvent): void {
     const tid: number = event.payloadTransferId ?? 0;
+    const size: number = event.payloadSize ?? 0;
+    // 层间契约（omp MSG23 §4）：`payloadSize > 0` 且 `payloadTransferId == 0` = 「**已宣告但未启动**」
+    // （native 侧启动门槛未通过：未信任 / port 缺失 / deviceId 未知 / 帧无 payload 信息）。
+    // ⇒ **不得**据 payloadSize 建「接收中」条目，否则会出现永久悬挂（用户实测的「一直接收中」）。
+    // native 侧 `135547b` 起会为这种情况派发 Error 事件（"payload not started (why)"），此处只留痕。
     if (tid <= 0) {
+      if (size > 0) {
+        console.info(`KDC payload declared but not started: size=${size} dev=${(event.deviceId ?? '').substring(0, 8)} (no entry created)`);
+      }
       return;
     }
     const state: PayloadState = this.toPayloadState(event.payloadState ?? 'failed');
@@ -1877,8 +1941,9 @@ struct Index {
     if (state !== 'progress') {
       this.log(`payload ${state} ${item.direction} #${tid} ${item.fileName}`);
     }
-    // 终态的接收记录写入历史（内存 + Preferences），供跨重启查看
-    if (item.direction === 'receive' && (state === 'finished' || state === 'failed' || state === 'cancelled')) {
+    // 终态记录写入历史（内存 + Preferences），**收发都存**，供跨重启在文件页/「已接收」弹窗查看
+    // （2026-09-17：原先只存 receive ⇒ 发送记录重启即丢，用户实测"历史里只剩一条"）
+    if (state === 'finished' || state === 'failed' || state === 'cancelled') {
       this.putReceivedHistory(item);
     }
     // 计划 A（用户/AtomCode 现象② 裁决）：接收完成**自动落盘 + 明确通知**，

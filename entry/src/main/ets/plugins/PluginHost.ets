@@ -1,5 +1,6 @@
 import { PluginBase, SendFrameFn } from './PluginBase';
 import { PluginRegistry } from './PluginRegistry';
+import { PluginEvent } from './PluginEvent';
 
 // 插件宿主（AP-4）：按设备装载/卸载插件实例，并按 packet type 分发。
 // 装载规则（能力交集，对齐 Android PluginFactory.pluginsForCapabilities）：
@@ -24,7 +25,7 @@ export class PluginHost {
 
   // 对端 identity 到达（或链路建立）时装载；peer caps 为空数组 → 视为全支持
   loadForDevice(deviceId: string, peerIncoming: string[], peerOutgoing: string[],
-                sendFn: SendFrameFn, uiFn: (deviceId: string, kind: string, data: string) => void): void {
+                sendFn: SendFrameFn, uiFn: (deviceId: string, ev: PluginEvent) => void): void {
     const sig: string = PluginHost.capsSignature(peerIncoming, peerOutgoing);
     if (this.loadedSig.get(deviceId) === sig) {
       return;

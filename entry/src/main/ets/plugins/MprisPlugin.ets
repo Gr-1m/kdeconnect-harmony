@@ -392,7 +392,8 @@ export class MprisPlugin extends PluginBase {
   }
 
   private emitList(): void {
-    this.notify('mpris.playerList', JSON.stringify(this.playerList));
+    // 批1 根治：传对象（不再 JSON.stringify），UI 侧不再 JSON.parse
+    this.notifyEvent({ kind: 'mpris.playerList', mprisList: this.playerList });
   }
 
   private emitUpdate(): void {
@@ -400,7 +401,7 @@ export class MprisPlugin extends PluginBase {
     if (snap === undefined) {
       return;
     }
-    this.notify('mpris.playerUpdate', JSON.stringify(snap));
+    this.notifyEvent({ kind: 'mpris.playerUpdate', mprisSnap: snap });
   }
 
   // 只在「看得见」的字段变化时打日志：对端会周期推 pos，逐包打会把日志刷屏
