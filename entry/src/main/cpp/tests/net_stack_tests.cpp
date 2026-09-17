@@ -380,7 +380,11 @@ int runMutePeerMode(uint16_t targetPort)
 }
 
 // 子进程入口：起一个对端栈并拨入父进程
-int runPeerMode(uint16_t targetPort)
+// runPeerMode 的父进程 deviceId（回调在 net 线程写、主流程读，故加锁）
+std::mutex g_peerDevMu;
+std::string g_peerSeenDevice;
+
+int runPeerMode(uint16_t targetPort, bool announcePayload = false)
 {
     const std::string devId = "hosttest22222222222222222222222222";
     CertPair cert = CertGen::generateSelfSignedEc(devId, 10);
@@ -403,6 +407,11 @@ int runPeerMode(uint16_t targetPort)
             std::fprintf(stderr, "[peer] type=%d device=%s role=%s\n", (int) e.type,
                          e.deviceId.c_str(), e.role == TlsRole::Server ? "server" : "client");
         }
+        if ((e.type == EventType::Connected || e.type == EventType::PairingRequest) &&
+            !e.deviceId.empty()) {
+            std::lock_guard<std::mutex> lk(g_peerDevMu);
+            g_peerSeenDevice = e.deviceId;
+        }
     });
     if (!ns.start(cfg)) {
         return 1;
@@ -412,12 +421,91 @@ int runPeerMode(uint16_t targetPort)
     const bool dialed = ns.connectToPeer("127.0.0.1", targetPort);
     std::fprintf(stderr, "[peer] connectToPeer(%s:%u) -> %d\n", "127.0.0.1",
                  (unsigned) targetPort, dialed ? 1 : 0);
+    if (announcePayload) {
+        // 等被测栈的 deviceId 到达（identity 交换完成）后再发，避免落到握手中
+        std::string peerDev;
+        for (int i = 0; i < 250 && peerDev.empty(); ++i) {
+            {
+                std::lock_guard<std::mutex> lk(g_peerDevMu);
+                peerDev = g_peerSeenDevice;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        // 关键形态：payloadSize 非 0、但**不带 payloadTransferInfo**（对端只宣告、不建通道）
+        const std::string frame =
+            "{\"id\":1,\"type\":\"kdeconnect.share.request\","
+            "\"body\":{\"filename\":\"probe.txt\"},\"payloadSize\":200,\"version\":8}\n";
+        const bool sent = !peerDev.empty() && ns.sendPacket(peerDev, frame);
+        std::fprintf(stderr, "[peer] announce-payload sent=%d dev=%s\n", sent ? 1 : 0,
+                     peerDev.c_str());
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(8000));
     ns.stop();
     return 0;
 }
 
+
+void announcedPayloadWithoutPortIsTerminal()
+{
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));   // 同 IP accept 限流
+    const pid_t child = ::fork();
+    CHECK_MSG(child >= 0, "fork 失败");
+    if (child < 0) {
+        return;
+    }
+    if (child == 0) {
+        ::execl("/proc/self/exe", "kdc_net_tests", "--peer-announce", "1745", nullptr);
+        ::_exit(127);
+    }
+
+    bool sawAnnounce = false;
+    bool sawError = false;
+    const int64_t deadline = nowMs() + 20000;
+    while (nowMs() < deadline && !(sawAnnounce && sawError)) {
+        {
+            std::lock_guard<std::mutex> lk(g_mu);
+            for (const NetEvent &e : g_events) {
+                if (e.type == EventType::PacketReceived &&
+                    e.packet.find("kdeconnect.share.request") != std::string::npos) {
+                    CHECK_MSG(e.payloadSize == 200,
+                              "宣告帧的 payloadSize 应原样带出（ArkTS 依赖它判定）");
+                    CHECK_MSG(e.payloadTransferId == 0,
+                              "未启动的载荷不得给出 transferId（否则 UI 会建出无终态的条目）");
+                    sawAnnounce = true;
+                } else if (e.type == EventType::Error &&
+                           e.errorMessage.find("payload not started") != std::string::npos) {
+                    sawError = true;
+                }
+            }
+        }
+        if (!(sawAnnounce && sawError)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    }
+
+    CHECK_MSG(sawAnnounce, "未派发带 payloadSize 的 packetReceived（ArkTS 无法感知宣告）");
+    CHECK_MSG(sawError, "未派发 Error(payload not started)：UI 将永久停留在「接收中」");
+    if (!(sawAnnounce && sawError)) {
+        std::lock_guard<std::mutex> lk(g_mu);
+        for (const NetEvent &e : g_events) {
+            std::fprintf(stderr, "  [dbg] type=%d size=%lld xfer=%llu err=%s pkt=%s\n", (int) e.type,
+                         (long long) e.payloadSize, (unsigned long long) e.payloadTransferId,
+                         e.errorMessage.c_str(), e.packet.substr(0, 100).c_str());
+        }
+    }
+
+    ::kill(child, SIGKILL);
+    int status = 0;
+    ::waitpid(child, &status, 0);
+}
+
 // —————— ④ 端口未知（0）的拨号：探测 + 缓存（DevEco 第五次报，2026-09-13）——————
+//
+// 载荷「已宣告但未启动」必须可收口（DevEco MSG22 回归，2026-09-17）：
+// 对端发来带 payloadSize 但**不带** payloadTransferInfo.port 的帧时，此前 native 既无任务、
+// 也无终态、也无日志 ⇒ ArkTS 据 payloadSize 建「接收中」条目后永久悬挂。
+// 契约：① 必须派发 Error（说明未启动原因）；② packetReceived 仍要派发，且
+// payloadSize>0 而 payloadTransferId==0 —— ArkTS 据此判定「已宣告未启动」，不得建待办条目。
 //
 // 场景：KDE 只在 UDP 广播的 identity 里带 tcpPort，**拨入连接的 identity 不带**
 // （kdeconnect-kde core/backends/lan/lanlinkprovider.cpp:254 vs DeviceInfo::toIdentityPacket()）⇒
@@ -542,6 +630,9 @@ int main(int argc, char **argv)
     if (argc >= 3 && std::strcmp(argv[1], "--peer") == 0) {
         return runPeerMode(static_cast<uint16_t>(std::atoi(argv[2])));
     }
+    if (argc >= 3 && std::strcmp(argv[1], "--peer-announce") == 0) {
+        return runPeerMode(static_cast<uint16_t>(std::atoi(argv[2])), true);
+    }
     if (argc >= 3 && std::strcmp(argv[1], "--mute-peer") == 0) {
         return runMutePeerMode(static_cast<uint16_t>(std::atoi(argv[2])));
     }
@@ -571,6 +662,7 @@ int main(int argc, char **argv)
     runCase("sendPacketQueuesDuringHandshake", sendPacketQueuesDuringHandshake);
     runCase("portProbeFindsListener", portProbeFindsListener);
     runCase("dialUnknownPortProbesAndConnects", dialUnknownPortProbesAndConnects);
+    runCase("announcedPayloadWithoutPortIsTerminal", announcedPayloadWithoutPortIsTerminal);
 
     ns.stop();
     std::printf("net stack tests: %d cases, %d failed\n", g_cases, g_failed);
