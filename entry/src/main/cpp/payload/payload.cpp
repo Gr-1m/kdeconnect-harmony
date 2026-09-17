@@ -213,6 +213,8 @@ void PayloadManager::emitLocked(PayloadJob &job, const char *state,
                                 int code, const char *msg)
 {
     job.lastState = state != nullptr ? state : "?";
+    job.lastCode = code;
+    job.lastMsg = msg != nullptr ? msg : "";
     NetEvent ev {};
     ev.type = EventType::PayloadTransfer;
     ev.deviceId = job.deviceId;
@@ -721,12 +723,13 @@ void PayloadManager::onTick(int64_t nowMs)
             PayloadJob &job = *p.second;
             LOGI("[KDC-PAYLOAD] id=%{public}llu send=%{public}d finished=%{public}d "
                  "total=%{public}lld done=%{public}lld pending=%{public}llu tlsDone=%{public}d "
-                 "spool=%{public}s state=%{public}s",
+                 "spool=%{public}s state=%{public}s code=%{public}d msg=%{public}s",
                  (unsigned long long) job.id, job.send ? 1 : 0, job.finished ? 1 : 0,
                  (long long) job.total, (long long) job.done,
                  (unsigned long long) job.pending.size(),
                  (job.tls != nullptr && job.tls->handshakeDone()) ? 1 : 0,
-                 job.spoolPath.c_str(), job.lastState.c_str());
+                 job.spoolPath.c_str(), job.lastState.c_str(), job.lastCode,
+                 job.lastMsg.c_str());
         }
     }
 }

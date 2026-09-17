@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <algorithm>
 #include <chrono>
+#include <cstdarg>
 #include <ctime>
 #include <cstring>
 
@@ -41,6 +42,39 @@ std::string peerHostOf(int fd)
     }
     return std::string(buf);
 }
+
+// —— S2（专项关闭条件）：锁内日志延迟打 ——
+// connMutex_ 临界区内不得直接调 hilog（I/O 与锁保护对象无关，标准化口径=「锁内零 I/O」）。
+// 本文件的网络线程是这些临界区的唯一写者，故用 thread_local 缓冲攒日志，
+// 由 DeferredLogFlush 的析构（锁已释放）统一打——沿用 WriteInterestGuard 的
+// 「先构造、晚析构」模式（声明顺序见 onConnectionReadable 注释）。
+thread_local std::string t_deferredLogs;
+
+void deferLogf(const char *level, const char *fmt, ...)
+{
+    char msg[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+    if (!t_deferredLogs.empty()) {
+        t_deferredLogs += '\n';
+    }
+    t_deferredLogs += level;
+    t_deferredLogs += msg;
+}
+
+// 构造点必须在 std::lock_guard 之前 ⇒ 析构时锁已释放，可安全打日志。
+struct DeferredLogFlush {
+    ~DeferredLogFlush()
+    {
+        if (!t_deferredLogs.empty()) {
+            OH_LOG_Print(LOG_APP, LOG_INFO, 0x0001, LOG_TAG, "%{public}s",
+                         t_deferredLogs.c_str());
+            t_deferredLogs.clear();
+        }
+    }
+};
 
 } // namespace
 
@@ -721,6 +755,7 @@ void NetStack::eventLoop()
         PhaseAccum _phases("eventLoop:tick");
         {
             HoldTimer _hold("eventLoop");
+            DeferredLogFlush _dlf;   // S2: tick 临界区内 deferLogf 的统一出口（析构时锁已释放）
             std::lock_guard<std::mutex> lk(connMutex_);
             // 快照（fd → 对象指针）：本循环内调用的回调（pumpPlainIdentity/drainEncrypted →
             // dispatchFrames → closeConnection）会把条目从 connections_ **摘除并析构**，
@@ -751,8 +786,8 @@ void NetStack::eventLoop()
                     const std::string thost = c.peerHost();
                     const uint16_t tport = c.peerPort();
                     const bool tincoming = c.isIncoming();
-                    LOGI("tls handshake timeout fd=%d host=%s:%u incoming=%d", tfd, thost.c_str(),
-                         tport, tincoming ? 1 : 0);
+                    deferLogf("I ", "tls handshake timeout fd=%d host=%s:%u incoming=%d", tfd, thost.c_str(),
+                              tport, tincoming ? 1 : 0);  // S2
                     epoll_ctl(epollFd_, EPOLL_CTL_DEL, tfd, nullptr);
                     c.close();
                     it = connections_.erase(it);
@@ -764,7 +799,7 @@ void NetStack::eventLoop()
                 }
                 if (c.state() == ConnectionState::PlainIdentity && c.plainExpired(now)) {
                     const int fd = it->first;
-                    LOGI("identity timeout fd=%d (host=%s)", fd, c.peerHost().c_str());
+                    deferLogf("I ", "identity timeout fd=%d (host=%s)", fd, c.peerHost().c_str());  // S2
                     epoll_ctl(epollFd_, EPOLL_CTL_DEL, fd, nullptr);
                     c.close();
                     it = connections_.erase(it);
@@ -1169,7 +1204,7 @@ bool NetStack::handlePlainIdentity(TcpConnection &conn, const std::string &frame
             conn.close();
             return false;
         }
-        LOGI("TLS client handshake started on fd=%d", conn.fd());
+        deferLogf("I ", "TLS client handshake started on fd=%d", conn.fd());  // S2: 临界区内→延迟打
         conn.doTlsHandshake();
     }
     return true;
@@ -1210,7 +1245,7 @@ void NetStack::dispatchFrames(TcpConnection &conn)
         int64_t payloadSize = 0;
         uint16_t payloadPort = 0;
         if (!PacketIO::parsePacket(json, type, body, &payloadSize, &payloadPort)) {
-            LOGE("invalid JSON frame dropped (fd=%d, %zu bytes)", conn.fd(), json.size());
+            deferLogf("E ", "invalid JSON frame dropped (fd=%d, %zu bytes)", conn.fd(), json.size());  // S2
             continue;
         }
 
@@ -1244,8 +1279,8 @@ void NetStack::dispatchFrames(TcpConnection &conn)
                                 }
                             }
                             for (int sfd : stale) {
-                                LOGI("replacing stale link for device %s: closing fd=%d",
-                                     info.deviceId.c_str(), sfd);
+                                deferLogf("I ", "replacing stale link for device %s: closing fd=%d",
+                                          info.deviceId.c_str(), sfd);  // S2
                                 closeConnection(sfd, "replaced by newer link");
                             }
                         }
@@ -1255,7 +1290,7 @@ void NetStack::dispatchFrames(TcpConnection &conn)
                         const std::string trustedDer = pemToDer(trustedPem, "CERTIFICATE");
                         const std::string leafStr(leaf.begin(), leaf.end());
                         if (leafStr.empty() || leafStr != trustedDer) {
-                            LOGE("certificate mismatch for %s, dropping", info.deviceId.c_str());
+                            deferLogf("E ", "certificate mismatch for %s, dropping", info.deviceId.c_str());  // S2
                             dispatchError(info.deviceId, EACCES,
                                           "certificate mismatch (device re-pair required)");
                             dropConn = true;
@@ -1274,7 +1309,7 @@ void NetStack::dispatchFrames(TcpConnection &conn)
                 pev.host = conn.peerHost();
                 pev.tcpPort = conn.peerPort();
                 dispatchEvent(pev);
-                LOGI("peer identity over TLS: %s (%s)", info.deviceId.c_str(), info.deviceName.c_str());
+                deferLogf("I ", "peer identity over TLS: %s (%s)", info.deviceId.c_str(), info.deviceName.c_str());  // S2
                 if (!conn.connectedNotified()) {
                     conn.markConnectedNotified();
                     NetEvent cev {};
@@ -1318,11 +1353,30 @@ void NetStack::dispatchFrames(TcpConnection &conn)
                 xferId = payload_->startReceive(conn.deviceId(), conn.peerHost(),
                                                 payloadPort, payloadSize, body);
             } else {
-                LOGE("payload push from untrusted device %s rejected (port=%u size=%lld)",
-                     conn.deviceId().c_str(), payloadPort, (long long) payloadSize);
+                deferLogf("E ", "[KDC-PAYLOAD] push rejected: device %s not trusted "
+                                "(port=%u size=%lld)",  // S2: 临界区内延迟打; 标签化便于按 KDC-PAYLOAD 抓取
+                          conn.deviceId().c_str(), payloadPort, (long long) payloadSize);
                 dispatchError(conn.deviceId(), EACCES,
                               "payload rejected: device not paired/trusted");
             }
+        }
+
+        // 载荷已宣告但未启动（xferId==0 而 payloadSize!=0）：ArkTS 若据 payloadSize 建「接收中」
+        // 条目将**永久悬挂**（FSM 每 5s/任务必打 ⇒ 无 KDC-PAYLOAD 行即从未入表，见 DevEco MSG22）。
+        // 这里给出可诊断日志 + 显式错误事件收口，避免「无任务、无终态」的静默失败。
+        if (payloadSize != 0 && xferId == 0) {
+            const char *why = payloadPort == 0       ? "port missing/0"
+                              : conn.deviceId().empty() ? "deviceId unknown"
+                                                        : "not trusted";
+            std::string head = frame.substr(0, 160);
+            for (char &ch : head) {
+                if (ch == '\n' || ch == '\r') ch = ' ';
+            }
+            deferLogf("W ", "[KDC-PAYLOAD] announced but NOT started: fd=%d type=%s size=%lld "
+                            "port=%u why=%s head=%s",
+                      conn.fd(), type.c_str(), (long long) payloadSize, payloadPort, why,
+                      head.c_str());
+            dispatchError(conn.deviceId(), EIO, std::string("payload not started (") + why + ")");
         }
 
         NetEvent ev {};
@@ -1381,6 +1435,7 @@ void NetStack::onConnectionReadable(int fd)
     // 同 onConnectionWritable：guard 先构造、lock 后构造 ⇒ 析构时锁已释放，可在 guard 内取锁。
     WriteInterestGuard _wig(this, fd);
     HoldTimer _hold("onConnectionReadable");
+    DeferredLogFlush _dlf;   // S2: 临界区内 deferLogf 的统一出口（析构时锁已释放）
     std::lock_guard<std::mutex> lk(connMutex_);
     auto it = connections_.find(fd);
     if (it == connections_.end()) return;
@@ -1480,8 +1535,8 @@ void NetStack::drainEncrypted(TcpConnection &conn)
     s_jsonMs = monoMs() - _tJson;
     // 只在这两段合计超阈值时打一行（与 PHASESPLIT 同口径）
     if (_ioMs + s_jsonMs > 100) {
-        LOGI("[KDC-DRAINSPLIT] tls_decrypt_recv=%{public}lldms json_dispatch=%{public}lldms",
-             (long long) _ioMs, (long long) s_jsonMs);
+        deferLogf("I ", "[KDC-DRAINSPLIT] tls_decrypt_recv=%{public}lldms json_dispatch=%{public}lldms",
+                  (long long) _ioMs, (long long) s_jsonMs);  // S2: 临界区内→延迟打
     }
 }
 
