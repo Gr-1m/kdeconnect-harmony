@@ -1111,11 +1111,16 @@ void NetStack::closeConnection(int fd, const char *reason)
             ev.type = EventType::Disconnected;
             ev.deviceId = deviceId;
             dispatchEvent(ev);
+            // 载荷随「设备级」失联而中止：与 Disconnected 同口径。
+            // 修复前此处**无条件**调用 onDeviceDown ⇒ 链路替换/重复连接关闭时（上面刚判定
+            // "仍有存活链路"）也会把所有在传载荷判 failed/ECONNRESET("control connection closed")
+            // ⇒ 真机现象：1.4MB 文件传到 39% 被中止（DevEco MSG24，code=104）。
+            // payload 任务自带 fd/TLS，独立于任何单条控制链路，故链路换代必须让它继续。
+            if (payload_) {
+                payload_->onDeviceDown(deviceId);
+            }
         } else {
             LOGI("link replaced: %s still has a live link, suppressing Disconnected", deviceId.c_str());
-        }
-        if (payload_) {
-            payload_->onDeviceDown(deviceId);
         }
     }
 }
