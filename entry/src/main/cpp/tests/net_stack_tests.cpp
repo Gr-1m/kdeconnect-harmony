@@ -380,6 +380,9 @@ int runMutePeerMode(uint16_t targetPort)
 }
 
 // 子进程入口：起一个对端栈并拨入父进程
+// 被测栈（父进程）的 deviceId 由父进程写文件、子进程读——避免依赖事件回调时序（负载下会偶发取不到）
+constexpr const char *kHarnessParentIdPath = "/tmp/kdc_harness_parent_id.txt";
+
 // runPeerMode 的父进程 deviceId（回调在 net 线程写、主流程读，故加锁）
 std::mutex g_peerDevMu;
 std::string g_peerSeenDevice;
@@ -425,17 +428,37 @@ int runPeerMode(uint16_t targetPort, bool announcePayload = false)
         // 等被测栈的 deviceId 到达（identity 交换完成）后再发，避免落到握手中
         std::string peerDev;
         for (int i = 0; i < 250 && peerDev.empty(); ++i) {
-            {
+            std::FILE *f = std::fopen(kHarnessParentIdPath, "r");   // 文件优先（与时序无关）
+            if (f != nullptr) {
+                char buf[256];
+                size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
+                buf[n] = '\0';
+                peerDev.assign(buf, n);
+                while (!peerDev.empty() && (peerDev.back() == '\n' || peerDev.back() == '\r')) {
+                    peerDev.pop_back();
+                }
+                std::fclose(f);
+            }
+            if (peerDev.empty()) {
                 std::lock_guard<std::mutex> lk(g_peerDevMu);
                 peerDev = g_peerSeenDevice;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            if (peerDev.empty()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
         }
         // 关键形态：payloadSize 非 0、但**不带 payloadTransferInfo**（对端只宣告、不建通道）
         const std::string frame =
             "{\"id\":1,\"type\":\"kdeconnect.share.request\","
             "\"body\":{\"filename\":\"probe.txt\"},\"payloadSize\":200,\"version\":8}\n";
-        const bool sent = !peerDev.empty() && ns.sendPacket(peerDev, frame);
+        // 链路可能尚未就绪（sendPacket 返回 false）⇒ 重试到成功（负载下会偶发）
+        bool sent = false;
+        for (int i = 0; i < 100 && !sent; ++i) {
+            sent = !peerDev.empty() && ns.sendPacket(peerDev, frame);
+            if (!sent) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        }
         std::fprintf(stderr, "[peer] announce-payload sent=%d dev=%s\n", sent ? 1 : 0,
                      peerDev.c_str());
     }
@@ -648,6 +671,14 @@ int main(int argc, char **argv)
     cfg.spoolDir = "/tmp/kdc_nettest_spool";
     cfg.connectHandshakeTimeoutMs = 1500;    // 短上限，保证 CI 快
     g_baseCfg = cfg;
+    {
+        // 父进程 deviceId 落盘：子进程据此发起操作，不依赖事件回调时序
+        std::FILE *f = std::fopen(kHarnessParentIdPath, "w");
+        if (f != nullptr) {
+            std::fputs(cfg.deviceId.c_str(), f);
+            std::fclose(f);
+        }
+    }
 
     NetStack &ns = netStack();
     ns.setEventCallback(onEvent);
