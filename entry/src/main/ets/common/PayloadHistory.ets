@@ -13,6 +13,8 @@ const MAX_ENTRIES: number = 100;
 interface HistoryEntry {
   transferId: number;
   deviceId: string;
+  // 方向（2026-09-17 扩展）：原先只存 receive，导致「发送记录」重启即丢（用户实测：历史里只剩 1 条）
+  direction: string;
   state: string;
   fileName: string;
   size: number;
@@ -35,7 +37,7 @@ export class PayloadHistory {
         out.push({
           transferId: e.transferId,
           deviceId: e.deviceId,
-          direction: 'receive',
+          direction: e.direction === 'send' ? 'send' : 'receive',
           state: PayloadHistory.toState(e.state),
           fileName: e.fileName,
           size: e.size,
@@ -59,7 +61,8 @@ export class PayloadHistory {
       const existing: PayloadTransfer[] = await PayloadHistory.load(ctx);
       const merged: PayloadTransfer[] = [];
       for (const p of items) {
-        if (p.direction !== 'receive') {
+        // 收发都入库（发送记录也要跨重启保留）
+        if (p.direction !== 'receive' && p.direction !== 'send') {
           continue;
         }
         if (merged.some((m: PayloadTransfer) => m.transferId === p.transferId)) {
@@ -75,10 +78,11 @@ export class PayloadHistory {
       }
       const entries: HistoryEntry[] = [];
       for (const p of merged) {
-        entries.push({
-          transferId: p.transferId,
-          deviceId: p.deviceId,
-          state: p.state,
+      entries.push({
+        transferId: p.transferId,
+        deviceId: p.deviceId,
+        direction: p.direction,
+        state: p.state,
           // P3-2：文件名来自对端 packet，落库前复验白名单（与 Index.sanitizeFileName 同规则）
           fileName: PayloadHistory.safeFileName(p.fileName, p.transferId),
           size: p.size,
