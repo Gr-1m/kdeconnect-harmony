@@ -159,6 +159,11 @@ void Emit(const NetEvent &event)
     auto data = new std::unique_ptr<NetEvent>(std::make_unique<NetEvent>(event));
     // nonblocking：队列满时丢弃而非阻塞网络线程（queue 设为 0 不会满，防御性处理）。
     if (napi_call_threadsafe_function(tsfn, data, napi_tsfn_nonblocking) != napi_ok) {
+        // 事件真的被丢了：此前是静默 delete，出问题时无从判断「未派发」还是「投递丢」。
+        // （tsfn 队列长度为 0 = 不限，正常不该走到这里；留痕以便 DevEco MSG24 §2 类问题定性。）
+        OH_LOG_Print(LOG_APP, LOG_WARN, 0x0001, "KDEConnect",
+                     "event dropped: tsfn call failed (type=%d device=%s)", (int) event.type,
+                     event.deviceId.c_str());
         delete data;
     }
 }
