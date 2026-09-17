@@ -77,8 +77,11 @@ struct PayloadJob {
     // 落盘进行中（settle 在锁外做文件 I/O 时置位）：阻止并发 settle，并让 finishJobLocked
     // 不再去动 spool（避免拷贝源在过程中被清理，见 PayloadManager::settle 注释）。
     bool settling = false;
-    // 最近一次对外派发的状态字面量（仅供埋点诊断，见 [KDC-PAYLOAD]）
+    // 最近一次对外派发的状态字面量 + 错误码/原因（仅供埋点诊断，见 [KDC-PAYLOAD]）。
+    // 原因入埋点：DevEco MSG22 只看到 state=failed 而无法判定失败环节，故补 code/msg。
     std::string lastState = "pending";
+    int lastCode = 0;
+    std::string lastMsg;
     // EPOLLOUT 兴趣是否已挂（仅 mu_ 内读写）：只在状态变化时 epoll_ctl(MOD)
     bool writeArmed = false;
 };
