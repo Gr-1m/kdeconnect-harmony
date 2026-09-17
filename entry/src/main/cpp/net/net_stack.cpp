@@ -541,6 +541,7 @@ bool NetStack::sendPacket(const std::string &deviceId, const std::string &packet
     // 等锁计时（DevEco MSG178 §3 要求第一项）：真机实测本入口在 JS 线程被阻塞 1.3~16s，
     // 必须区分「等 connMutex_」与「入口内部工作」。>50ms 打一行，峰值随 NETLOOP 行输出。
     SendPacketTimer _entryTimer;   // §2.4：wall/cpu/lock 三段（>50ms 才打）
+    DeferredLogFlush _dlf;         // S2：本函数持 connMutex_，临界区内日志经此在解锁后打出
     const int64_t lockT0 = nowMs();
     HoldTimer _hold("sendPacket");
     std::lock_guard<std::mutex> lk(connMutex_);
@@ -550,8 +551,8 @@ bool NetStack::sendPacket(const std::string &deviceId, const std::string &packet
         maxJsLockWaitMs_.store(lockWaitMs);
     }
     if (lockWaitMs >= 50) {
-        LOGI("[KDC-LOCKWAIT] sendPacket 等 connMutex_ %{public}lldms（conns=%{public}llu）",
-             (long long) lockWaitMs, (unsigned long long) connections_.size());
+        deferLogf("I ", "[KDC-LOCKWAIT] sendPacket 等 connMutex_ %lldms（conns=%llu）",  // S2
+                  (long long) lockWaitMs, (unsigned long long) connections_.size());
     }
     for (auto &p : connections_) {
         TcpConnection &conn = *p.second;
@@ -577,7 +578,8 @@ bool NetStack::sendPacket(const std::string &deviceId, const std::string &packet
         // 诊断（DevEco MSG181 §3.3 要求）：如实记录出向 pair 帧时序，便于与对端帧对齐。
         // 注意：native 侧**不构造**任何 pair 帧（代码中无 pair 语义），这里只记录 App 下发的内容。
         if (packetJson.find("kdeconnect.pair") != std::string::npos) {
-            LOGI("[KDC-PAIR-OUT] device=%s pkt=%{public}s", deviceId.c_str(), packetJson.c_str());
+            deferLogf("I ", "[KDC-PAIR-OUT] device=%s pkt=%s", deviceId.c_str(),  // S2
+                      packetJson.c_str());
         }
         // 入队后按需挂 EPOLLOUT（否则要等 tick 的 200ms 兜底才发出去 —— 配对 ack 会被推迟）
         updateWriteInterestLocked(conn.fd());
@@ -591,6 +593,7 @@ bool NetStack::sendPacket(const std::string &deviceId, const std::string &packet
 void NetStack::disconnectDevice(const std::string &deviceId)
 {
     HoldTimer _hold("disconnectDevice");
+    DeferredLogFlush _dlf;   // S2：临界区内日志在解锁后统一打
     std::lock_guard<std::mutex> lk(connMutex_);
     bool any = false;
     for (auto it = connections_.begin(); it != connections_.end(); ) {
@@ -600,7 +603,7 @@ void NetStack::disconnectDevice(const std::string &deviceId)
             it->second->close();
             it = connections_.erase(it);
             any = true;
-            LOGI("disconnected device %s (fd=%d)", deviceId.c_str(), fd);
+            deferLogf("I ", "disconnected device %s (fd=%d)", deviceId.c_str(), fd);  // S2
         } else {
             ++it;
         }
@@ -825,7 +828,7 @@ void NetStack::eventLoop()
                         const bool drained = c.flushPlain();
                         if (!drained && c.state() == ConnectionState::Closing) {
                             const int pfd = it->first;
-                            LOGE("tick plain flush failed fd=%d, closing", pfd);
+                            deferLogf("E ", "tick plain flush failed fd=%d, closing", pfd);  // S2
                             epoll_ctl(epollFd_, EPOLL_CTL_DEL, pfd, nullptr);
                             c.close();
                             it = connections_.erase(it);
@@ -834,14 +837,15 @@ void NetStack::eventLoop()
                         if (drained && !c.isIncoming()) {
                             if (!c.startTlsHandshake(config_.certPem, config_.keyPem)) {
                                 const int pfd = it->first;
-                                LOGE("tick tls init failed fd=%d, closing", pfd);
+                                deferLogf("E ", "tick tls init failed fd=%d, closing", pfd);  // S2
                                 epoll_ctl(epollFd_, EPOLL_CTL_DEL, pfd, nullptr);
                                 c.close();
                                 it = connections_.erase(it);
                                 continue;
                             }
                             c.setHandshakeDeadline(now + handshakeTimeoutMs());
-                            LOGI("TLS server handshake started (tick resume) on fd=%d", it->first);
+                            deferLogf("I ", "TLS server handshake started (tick resume) on fd=%d",  // S2
+                                      it->first);
                             c.doTlsHandshake();
                         }
                     }
@@ -867,7 +871,7 @@ void NetStack::eventLoop()
                     // TX 续传：对端恢复读取且无新 EPOLLOUT 边沿时，靠 tick 兜底写出
                     if (c.state() == ConnectionState::Encrypted && c.txPending() && !c.flushTx()) {
                         const int fd = it->first;
-                        LOGE("tick flush failed fd=%d, closing", fd);
+                        deferLogf("E ", "tick flush failed fd=%d, closing", fd);  // S2
                         epoll_ctl(epollFd_, EPOLL_CTL_DEL, fd, nullptr);
                         c.close();
                         it = connections_.erase(it);
@@ -926,8 +930,8 @@ void NetStack::eventLoop()
                 NetEvent ev {};
                 ev.type = EventType::DeviceLost;
                 ev.deviceId = it->first;
-                LOGI("device lost (no broadcast and no link for %d ms): %s",
-                     DISCOVERY_TIMEOUT_MS, it->first.c_str());
+                deferLogf("I ", "device lost (no broadcast and no link for %d ms): %s",  // S2
+                          DISCOVERY_TIMEOUT_MS, it->first.c_str());
                 dispatchEvent(ev);
                 it = lastSeenMs_.erase(it);
             } else {
@@ -1327,8 +1331,9 @@ void NetStack::dispatchFrames(TcpConnection &conn)
                     }
                     cev.role = conn.tlsRole();
                     dispatchEvent(cev);
-                    LOGI("connected device=%s fd=%d role=%s", conn.deviceId().c_str(),
-                         conn.fd(), conn.tlsRole() == TlsRole::Server ? "server" : "client");
+                    deferLogf("I ", "connected device=%s fd=%d role=%s",  // S2
+                              conn.deviceId().c_str(), conn.fd(),
+                              conn.tlsRole() == TlsRole::Server ? "server" : "client");
                 }
             }
             // 注意（P0，2026-09-13）：identity 帧**必须继续走下面的 PacketReceived 派发**，
