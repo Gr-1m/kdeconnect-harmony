@@ -80,11 +80,31 @@ export struct DevicesTab {
     return this.sideBySide ? 3 : 2;
   }
 
+  // §8-D：onAreaChange 计数 + 去抖（先量后改）。
+  // 开屏首帧 / 旋转 / 拖动改尺寸时该回调会连续触发，每次写 @State paneWidthVp 都会让
+  // cardColumns() 重算并重排卡片。原实现已有「变化 >1vp 才写」的同值保护，这里再叠加
+  // 150ms 去抖：拖动过程中不写，停稳后写一次；计数用于确认实际触发量级。
+  private areaChangeCount: number = 0;
+  private paneAreaTimer: number = -1;
+
   private onPaneArea(a: Area): void {
     const w: number = Number(a.width);
-    if (Number.isFinite(w) && w > 0 && Math.abs(w - this.paneWidthVp) > 1) {
-      this.paneWidthVp = w;
+    if (!Number.isFinite(w) || w <= 0) {
+      return;
     }
+    this.areaChangeCount++;
+    if (this.areaChangeCount <= 3 || this.areaChangeCount % 20 === 0) {
+      console.info(`KDC onAreaChange #${this.areaChangeCount} w=${Math.round(w)}vp`);
+    }
+    if (this.paneAreaTimer >= 0) {
+      clearTimeout(this.paneAreaTimer);
+    }
+    this.paneAreaTimer = setTimeout((): void => {
+      this.paneAreaTimer = -1;
+      if (Math.abs(w - this.paneWidthVp) > 1) {
+        this.paneWidthVp = w;
+      }
+    }, 150);
   }
 
   // 是否处于配对态：**必须看 paired 标记**（需求 3 后条目会永久保留，
@@ -743,7 +763,33 @@ export struct DevicesTab {
     if (this.selectedDeviceId.length === 0) {
       return false;
     }
-    return this.connectedDevices.some((d: DeviceItem) => d.id === this.selectedDeviceId);
+    if (this.connectedDevices.some((d: DeviceItem) => d.id === this.selectedDeviceId)) {
+      return true;
+    }
+    // 功能卡片规则（【根治】，CodeArts MSG6 §3 / MSG13 §3-2 裁决）：
+    // 设备**短暂离线**（抖动/重连/暂时断网）时仍保留其详情页，只有「被解除配对」
+    // 才收起（paired=false）。这样卡片不会再"闪一下就没"。
+    return this.isPaired(this.selectedDeviceId);
+  }
+
+  // 详情页要渲染的设备：在线取实时条目；离线但已配对 ⇒ 用已知设备表兜底（online=false）
+  private selectedDeviceList(): DeviceItem[] {
+    const live: DeviceItem[] = this.connectedDevices.filter((d: DeviceItem) => d.id === this.selectedDeviceId);
+    if (live.length > 0) {
+      return live;
+    }
+    const rem: RememberedDevice | undefined =
+      this.rememberedAll.find((r: RememberedDevice) => r.id === this.selectedDeviceId);
+    const name: string = rem === undefined ? this.selectedDeviceId : rem.name;
+    const item: DeviceItem = {
+      id: this.selectedDeviceId,
+      name: name,
+      host: '',
+      tcpPort: 0,
+      deviceType: '',
+      online: false
+    };
+    return [item];
   }
 
   @Builder
@@ -804,7 +850,7 @@ export struct DevicesTab {
       if (this.deviceSection === 0) {
         // 已连接设备只保留「详情/功能页」，默认直接用（自动选中第一台已连接设备）
         if (this.selectedDeviceVisible()) {
-          ForEach(this.connectedDevices.filter((d: DeviceItem) => d.id === this.selectedDeviceId),
+          ForEach(this.selectedDeviceList(),
             (d: DeviceItem) => {
               this.deviceDetail(d)
             }, (d: DeviceItem) => d.id)

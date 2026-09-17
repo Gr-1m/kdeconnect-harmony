@@ -2327,6 +2327,13 @@ struct Index {
   private syncSelectedDevice(): void {
     const live: DeviceItem[] = this.connectedShown();
     if (live.length === 0) {
+      // 功能卡片规则（【根治】，CodeArts MSG6 §3 裁决 / MSG13 §3-2）：
+      // 设备**短暂离线**（抖动/重连）时**保留**已配对设备的详情页 —— 只有两种情况才收起：
+      //   ① 用户主动切换/取消选中；② 该设备被解除配对（paired=false）。
+      // 这样连接的抖动不会再让"功能卡片闪一下就没"。
+      if (this.selectedDeviceId.length > 0 && this.isPairedId(this.selectedDeviceId)) {
+        return;
+      }
       this.selectedDeviceId = '';
       return;
     }
