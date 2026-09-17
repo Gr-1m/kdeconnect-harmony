@@ -49,6 +49,10 @@ std::string peerHostOf(int fd)
 // 由 DeferredLogFlush 的析构（锁已释放）统一打——沿用 WriteInterestGuard 的
 // 「先构造、晚析构」模式（声明顺序见 onConnectionReadable 注释）。
 thread_local std::string t_deferredLogs;
+// 仅当本线程存在 DeferredLogFlush 出口（网络线程的两个临界区入口）时才延迟；
+// 否则（如 JS 线程经 disconnect 等 API 持 connMutex_ 调 closeConnection）立即打——
+// 否则 JS 线程攒的日志永远等不到 flush，缓冲无限增长且日志丢失。
+thread_local bool t_flushArmed = false;
 
 void deferLogf(const char *level, const char *fmt, ...)
 {
@@ -57,6 +61,11 @@ void deferLogf(const char *level, const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
+    if (!t_flushArmed) {
+        OH_LOG_Print(LOG_APP, *level == 'E' ? LOG_ERROR : LOG_INFO, 0x0001, LOG_TAG,
+                     "%{public}s", msg);
+        return;
+    }
     if (!t_deferredLogs.empty()) {
         t_deferredLogs += '\n';
     }
@@ -66,8 +75,10 @@ void deferLogf(const char *level, const char *fmt, ...)
 
 // 构造点必须在 std::lock_guard 之前 ⇒ 析构时锁已释放，可安全打日志。
 struct DeferredLogFlush {
+    DeferredLogFlush() { t_flushArmed = true; }
     ~DeferredLogFlush()
     {
+        t_flushArmed = false;
         if (!t_deferredLogs.empty()) {
             OH_LOG_Print(LOG_APP, LOG_INFO, 0x0001, LOG_TAG, "%{public}s",
                          t_deferredLogs.c_str());
@@ -1012,8 +1023,8 @@ void NetStack::onTcpServerReadable()
             const int64_t now = nowMs();
             auto it = lastAcceptByIp_.find(host);
             if (it != lastAcceptByIp_.end() && now - it->second < CONN_RATE_LIMIT_MS) {
-                LOGE("rate limit: %s within %dms, rejecting fd=%d", host.c_str(),
-                     CONN_RATE_LIMIT_MS, fd);
+                deferLogf("E ", "rate limit: %s within %dms, rejecting fd=%d", host.c_str(),
+                     CONN_RATE_LIMIT_MS, fd);  // S2b: trustMutex_ 临界区内
                 ::close(fd);
                 continue;
             }
@@ -1029,7 +1040,7 @@ void NetStack::onTcpServerReadable()
                 if (p.second->deviceId().empty()) ++unpaired;
             }
             if (unpaired >= MAX_UNPAIRED_CONNECTIONS) {
-                LOGE("too many unpaired connections (%d), rejecting fd=%d", unpaired, fd);
+                deferLogf("E ", "too many unpaired connections (%d), rejecting fd=%d", unpaired, fd);  // S2b
                 ::close(fd);
                 continue;
             }
@@ -1075,7 +1086,7 @@ void NetStack::updateWriteInterestLocked(int fd)
     if (epoll_ctl(epollFd_, EPOLL_CTL_MOD, fd, &ev) == 0) {
         conn.setEpollWriteArmed(want);
     } else {
-        LOGE("updateWriteInterest fd=%d: epoll_ctl MOD failed: %s", fd, strerror(errno));
+        deferLogf("E ", "updateWriteInterest fd=%d: epoll_ctl MOD failed: %s", fd, strerror(errno));  // S2b: 锁内/锁外双路径调用
     }
 }
 
@@ -1094,8 +1105,8 @@ void NetStack::closeConnection(int fd, const char *reason)
     epoll_ctl(epollFd_, EPOLL_CTL_DEL, fd, nullptr);
     it->second->close();
     connections_.erase(it);
-    LOGI("connection closed: %s (fd=%d, device=%s)", reason, fd,
-         deviceId.empty() ? "?" : deviceId.c_str());
+    deferLogf("I ", "connection closed: %s (fd=%d, device=%s)", reason, fd,
+             deviceId.empty() ? "?" : deviceId.c_str());  // S2b: closeConnection 恒持锁被调（网络/JS 两线程）
     if (!deviceId.empty()) {
         // "新链路替换旧链路"场景：同设备仍有存活的另一条链路时**不报 Disconnected**，
         // 否则 UI 会先收到新链路的 Connected、又被这条 Disconnected 抹掉（设备列表变空）。
@@ -1120,7 +1131,7 @@ void NetStack::closeConnection(int fd, const char *reason)
                 payload_->onDeviceDown(deviceId);
             }
         } else {
-            LOGI("link replaced: %s still has a live link, suppressing Disconnected", deviceId.c_str());
+            deferLogf("I ", "link replaced: %s still has a live link, suppressing Disconnected", deviceId.c_str());  // S2b
         }
     }
 }
@@ -1145,7 +1156,7 @@ void NetStack::sendIdentityOverTls(TcpConnection &conn)
     if (!conn.flushTx()) {
         dispatchError(conn.deviceId(), EIO, "identity: tls flush failed");
     } else {
-        LOGI("identity queued over TLS on fd=%d (%zu bytes)", conn.fd(), identity.size());
+        deferLogf("I ", "identity queued over TLS on fd=%d (%zu bytes)", conn.fd(), identity.size());  // S2b
     }
 }
 
@@ -1164,12 +1175,12 @@ bool NetStack::handlePlainIdentity(TcpConnection &conn, const std::string &frame
 {
     DeviceInfo info;
     if (!PacketIO::parseIdentity(frame, info)) {
-        LOGE("invalid plain identity frame (%zu bytes) fd=%d", frame.size(), conn.fd());
+        deferLogf("E ", "invalid plain identity frame (%zu bytes) fd=%d", frame.size(), conn.fd());  // S2b
         return false;
     }
 
     if (info.deviceId == config_.deviceId) {
-        LOGE("plain identity from self, closing fd=%d", conn.fd());
+        deferLogf("E ", "plain identity from self, closing fd=%d", conn.fd());  // S2b
         epoll_ctl(epollFd_, EPOLL_CTL_DEL, conn.fd(), nullptr);
         conn.close();
         return false;
@@ -1400,11 +1411,11 @@ void NetStack::dispatchFrames(TcpConnection &conn)
     }
     const int64_t _censusMs = monoMs() - _censusT0;
     if (_censusMs > 100) {
-        LOGI("[KDC-FRAMESPLIT] n=%{public}llu frames=%{public}lld bytes=%{public}lld "
+        deferLogf("I ", "[KDC-FRAMESPLIT] n=%{public}llu frames=%{public}lld bytes=%{public}lld "
              "maxFrame=%{public}llu total=%{public}lldms",
              (unsigned long long) _dispatchSeq, (long long) _censusFrames,
              (long long) _censusBytes, (unsigned long long) _censusMaxFrame,
-             (long long) _censusMs);
+             (long long) _censusMs);  // S2b
     }
     if (dropConn) {
         closeConnection(conn.fd(), dropReason);
@@ -1474,7 +1485,7 @@ void NetStack::onConnectionReadable(int fd)
                 }
                 ev.role = conn.tlsRole();
                 dispatchEvent(ev);
-                LOGI("connected device=%s fd=%d role=%s", conn.deviceId().c_str(),
+                deferLogf("I ", "connected device=%s fd=%d role=%s", conn.deviceId().c_str(),
                      fd, conn.tlsRole() == TlsRole::Server ? "server" : "client");
             }
             if (conn.needsSendIdentity()) {
@@ -1517,7 +1528,7 @@ void NetStack::drainEncrypted(TcpConnection &conn)
         const std::string cn =
             conn.tlsEngine() != nullptr ? conn.tlsEngine()->peerCommonName() : std::string();
         if (cn.empty() || cn != conn.deviceId()) {
-            LOGE("control link cert CN mismatch: cn='%s' deviceId='%s' fd=%d", cn.c_str(),
+            deferLogf("E ", "control link cert CN mismatch: cn='%s' deviceId='%s' fd=%d", cn.c_str(),
                  conn.deviceId().c_str(), conn.fd());
             dispatchError(conn.deviceId(), EACCES, "peer cert CN != deviceId");
             closeConnection(conn.fd(), "cert CN mismatch");
@@ -1607,7 +1618,7 @@ void NetStack::onConnectionWritable(int fd)
         }
         // 握手上限：对端不应答（黑洞/非 KDE Connect/半死）时必须有界失败
         conn.setHandshakeDeadline(nowMs() + handshakeTimeoutMs());
-        LOGI("TLS server handshake started on fd=%d", fd);
+        deferLogf("I ", "TLS server handshake started on fd=%d", fd);  // S2b
         conn.doTlsHandshake();
         return;
     }
