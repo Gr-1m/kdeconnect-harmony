@@ -19,6 +19,9 @@ export struct PayloadRow {
   };
   onCancel: (p: PayloadTransfer) => void = () => {
   };
+  // 点击行 → 打开「文件详情」弹窗（属性 + 另存为/丢弃/取消），由 Index 渲染
+  onOpen: (transferId: number) => void = () => {
+  };
 
   private isActive(): boolean {
     return this.payloadState === 'started' || this.payloadState === 'progress';
@@ -130,8 +133,13 @@ export struct PayloadRow {
       }
     }
     .width('100%')
-    .padding({ top: 8, bottom: 8 })
+    // 行高加高（用户 2026-09-17 要求"行的高度加"）：上下内边距 8→14vp，行距更舒展
+    .padding({ top: 14, bottom: 14 })
     .alignItems(HorizontalAlign.Start)
+    // 点击整行 → 打开「文件详情」弹窗（属性 + 另存为/丢弃/取消）
+    .onClick(() => {
+      this.onOpen(this.transferId);
+    })
   }
 }
 

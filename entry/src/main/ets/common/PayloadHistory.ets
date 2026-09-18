@@ -21,6 +21,7 @@ interface HistoryEntry {
   bytesDone: number;
   filePath: string;
   settled: boolean;
+  timeMs?: number;
 }
 
 export class PayloadHistory {
@@ -43,7 +44,8 @@ export class PayloadHistory {
           size: e.size,
           bytesDone: e.bytesDone,
           filePath: e.filePath,
-          settled: e.settled
+          settled: e.settled,
+          timeMs: e.timeMs ?? 0
         });
       }
       return out;
@@ -85,11 +87,12 @@ export class PayloadHistory {
         state: p.state,
           // P3-2：文件名来自对端 packet，落库前复验白名单（与 Index.sanitizeFileName 同规则）
           fileName: PayloadHistory.safeFileName(p.fileName, p.transferId),
-          size: p.size,
-          bytesDone: p.bytesDone,
-          filePath: p.filePath,
-          settled: p.settled
-        });
+        size: p.size,
+        bytesDone: p.bytesDone,
+        filePath: p.filePath,
+        settled: p.settled,
+        timeMs: p.timeMs ?? 0
+      });
         if (entries.length >= MAX_ENTRIES) {
           break;
         }

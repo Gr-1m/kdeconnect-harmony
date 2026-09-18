@@ -22,6 +22,7 @@ import { ClipboardPlugin } from '../plugins/ClipboardPlugin';
 import { FindMyPhonePlugin } from '../plugins/FindMyPhonePlugin';
 import { RunCommandPlugin, RunCommandEntry } from '../plugins/RunCommandPlugin';
 import { ConnectivityReportPlugin } from '../plugins/ConnectivityReportPlugin';
+import { SystemVolumePlugin } from '../plugins/SystemVolumePlugin';
 import { MprisPlugin } from '../plugins/MprisPlugin';
 import { RemoteInputPlugin } from '../plugins/RemoteInputPlugin';
 import { NotificationPlugin } from '../plugins/NotificationPlugin';
@@ -33,6 +34,7 @@ import { TrustStore } from '../common/TrustStore';
 import { PayloadHistory } from '../common/PayloadHistory';
 import { colorModeOf, languageOf, LANG_SYSTEM, THEME_FOLLOW_SYSTEM, systemDeviceName } from '../common/AppSettings';
 import { DevicesTab } from '../components/DevicesTab';
+import { MprisProgress } from '../components/MprisProgress';
 import { FilesTab } from '../components/FilesTab';
 import { SettingsTab } from '../components/SettingsTab';
 import { LogsTab } from '../components/LogsTab';
@@ -170,6 +172,13 @@ struct Index {
   @State receivedDialogOpen: boolean = false;
   // 已接收文件历史（跨重启保留；只存终态记录，见 common/PayloadHistory.ets）
   @State receivedHistory: PayloadTransfer[] = [];
+  // 「文件详情」弹窗（点击文件行打开）：显示属性 + 另存为/丢弃/取消
+  @State payloadDetailOpen: boolean = false;
+  @State payloadDetailId: number = 0;
+  // 系统音量（kdeconnect.systemvolume）读数：与 MPRIS 播放器音量分开显示
+  @State sysVolume: number = -1;        // -1 = 未知/不可用
+  @State sysMuted: boolean = false;
+  @State sysVolumeDeviceId: string = '';
   // 媒体控制面板（方向 1：手机控电脑端播放器）：按设备镜像对端播放器状态
   @State mprisItems: MprisItem[] = [];
   @State mprisDeviceId: string = '';
@@ -325,6 +334,8 @@ struct Index {
     // P1（MSG112）：远程命令 + 网络状态上报已实现；MPRIS/远程输入/通知仅声明能力（UI 属 P2）
     this.pluginRegistry.register('runcommand', (): RunCommandPlugin => new RunCommandPlugin());
     this.pluginRegistry.register('connectivityreport', (): ConnectivityReportPlugin => new ConnectivityReportPlugin());
+    // 系统音量（与 MPRIS 播放器音量分开，用户 2026-09-18 要求）
+    this.pluginRegistry.register('systemvolume', (): SystemVolumePlugin => new SystemVolumePlugin());
     this.pluginRegistry.register('mpris', (): MprisPlugin => new MprisPlugin());
     this.pluginRegistry.register('remoteinput', (): RemoteInputPlugin => new RemoteInputPlugin());
     this.pluginRegistry.register('notification', (): NotificationPlugin => new NotificationPlugin());
@@ -728,6 +739,15 @@ struct Index {
       }
       return;
     }
+    // 系统音量（kdeconnect.systemvolume）：<volume 0-100 或 ?>|<muted 1|0>
+    if (kind === 'sysvolume') {
+      const sp: string[] = data.split('|');
+      const v: number = sp.length > 0 && sp[0] !== '?' ? Number.parseInt(sp[0], 10) : -1;
+      this.sysVolume = Number.isFinite(v) ? v : -1;
+      this.sysMuted = sp.length > 1 && sp[1] === '1';
+      this.sysVolumeDeviceId = deviceId;
+      return;
+    }
     if (kind !== 'battery') {
       this.log(`plugin event ${kind} from ${deviceId}`);
       return;
@@ -825,6 +845,34 @@ struct Index {
     return undefined;
   }
 
+  // 系统音量插件取用（与 MPRIS 分开：播放器不提供音量/无播放器时仍可调对端系统音量）
+  private sysVolumePluginOf(deviceId: string): SystemVolumePlugin | undefined {
+    const list: PluginBase[] = this.pluginHost === undefined ? [] : this.pluginHost.pluginsFor(deviceId);
+    for (const p of list) {
+      if (p instanceof SystemVolumePlugin) {
+        return p;
+      }
+    }
+    return undefined;
+  }
+
+  private sysVolumeSet(v: number): void {
+    if (!this.actionGate(`sysvol:${this.mprisDeviceId}:vol`, 200)) {
+      return;
+    }
+    const p: SystemVolumePlugin | undefined = this.sysVolumePluginOf(this.mprisDeviceId);
+    if (p === undefined || !p.setVolume(v)) {
+      this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+    }
+  }
+
+  private sysVolumeToggleMute(): void {
+    const p: SystemVolumePlugin | undefined = this.sysVolumePluginOf(this.mprisDeviceId);
+    if (p === undefined || !p.toggleMute()) {
+      this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+    }
+  }
+
   // 面板读数（build() 里直接调，靠 @State 触发刷新；**不要**用 @Builder 传值，值参数不变会跳过重建）
   private mprisSnap(): MprisSnapshot {
     return this.mprisItemOf(this.mprisDeviceId).snapshot;
@@ -899,15 +947,9 @@ struct Index {
   }
 
   private startMprisTicker(): void {
-    this.stopMprisTicker();
-    this.mprisNowMs = Date.now();
-    this.mprisTickerId = setInterval((): void => {
-      // 暂停时进度不前进 ⇒ 不必每秒写页面级 @State（omp MSG174 §2-3：ticker 写 @State 会带动整页重建）
-      if (!this.mprisSnap().isPlaying) {
-        return;
-      }
-      this.mprisNowMs = Date.now();
-    }, 1000);
+    // 批2 根治：插值时钟已下沉到 MprisProgress 组件（组件局部 @State + 自己的 1s ticker），
+    // 这里**不再**写页面级 mprisNowMs —— 否则面板打开期间每秒整页重建。
+    // 保留方法体为空以兼容既有调用点（onPageShow / openMprisDialog）。
   }
 
   private stopMprisTicker(): void {
@@ -1877,6 +1919,11 @@ struct Index {
   // 说明：native 侧 `135547b` 起 payload FSM 会给出 `code=`/`msg=`，但 `payloadTransfer`
   // 终态事件未必到达；本兜底只改 ArkTS 的展示状态，不动任何传输语义。
   private failInflightReceives(deviceId: string, reason: string): void {
+    // P3-1（AtomCode 评审 / CodeArts MSG18）：deviceId 为空时**直接跳过** ——
+    // 否则会把所有设备的进行中接收无条件落 failed（Error 事件可能不带 deviceId）。
+    if (deviceId.length === 0) {
+      return;
+    }
     let changed: boolean = false;
     const next: PayloadTransfer[] = this.payloads.map((p: PayloadTransfer): PayloadTransfer => {
       const active: boolean = p.state === 'started' || p.state === 'progress';
@@ -1944,6 +1991,8 @@ struct Index {
     // 终态记录写入历史（内存 + Preferences），**收发都存**，供跨重启在文件页/「已接收」弹窗查看
     // （2026-09-17：原先只存 receive ⇒ 发送记录重启即丢，用户实测"历史里只剩一条"）
     if (state === 'finished' || state === 'failed' || state === 'cancelled') {
+      // 终态记时间（详情弹窗展示"什么时间传过来的"）
+      item.timeMs = Date.now();
       this.putReceivedHistory(item);
     }
     // 计划 A（用户/AtomCode 现象② 裁决）：接收完成**自动落盘 + 明确通知**，
@@ -2079,6 +2128,114 @@ struct Index {
 
   // 保存接收到的文件。用户反馈「APP 从不请求权限」⇒ 这里按文件类型**运行时申请**对应媒体写权限
   // （user_grant，会弹系统权限框），拿到后再调 native.keepPayload（真实沙箱路径，非 URI）。
+  // 详情弹窗用：时间显示（无时间戳给 —）
+  private timeTextOf(p: PayloadTransfer): string {
+    const t: number = p.timeMs ?? 0;
+    if (t <= 0) {
+      return '—';
+    }
+    try {
+      return new Date(t).toLocaleString();
+    } catch (e) {
+      return '—';
+    }
+  }
+
+  // 「文件详情」弹窗用：按 transferId 取当前条目（找不到给一个只读占位，避免 undefined）
+  private payloadDetail(): PayloadTransfer {
+    for (const p of this.payloads) {
+      if (p.transferId === this.payloadDetailId) {
+        return p;
+      }
+    }
+    const placeholder: PayloadTransfer = {
+      transferId: this.payloadDetailId,
+      deviceId: '',
+      direction: 'receive',
+      state: 'failed',
+      fileName: '',
+      size: 0,
+      bytesDone: 0,
+      filePath: '',
+      settled: true
+    };
+    return placeholder;
+  }
+
+  // 「文件详情」弹窗里的属性行（标签 + 值）
+  @Builder
+  infoLine(label: ResourceStr, value: string) {
+    Row({ space: 10 }) {
+      Text(label)
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+        .width(84)
+      Text(value)
+        .fontSize(12)
+        .fontColor($r('app.color.text_primary'))
+        .layoutWeight(1)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+    }
+    .width('100%')
+  }
+
+  // 「另存为」：走系统保存面板（用户自选目录，如「下载」）⇒ 保存后在文件管理里可见。
+  // 源文件优先用 spool（filePath），否则用沙箱里已保存的副本。
+  private async saveAsPayload(p: PayloadTransfer): Promise<void> {
+    const hostCtx: Context | undefined = this.getUIContext().getHostContext();
+    if (hostCtx === undefined) {
+      return;
+    }
+    const name: string = this.sanitizeFileName(p.fileName, p.transferId);
+    let destUri: string = '';
+    try {
+      const pk: picker.DocumentViewPicker = new picker.DocumentViewPicker(hostCtx);
+      const uris: string[] = await pk.save({ newFileNames: [name] });
+      destUri = uris.length > 0 ? uris[0] : '';
+    } catch (e) {
+      this.log('save as: picker failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      return;
+    }
+    if (destUri.length === 0) {
+      return;
+    }
+    // 源：优先沙箱副本（本地已有，可靠性最高），其次 spool
+    const sandboxCopy: string = `${this.ensureKdcDir()}/${name}`;
+    let src: string = sandboxCopy;
+    if (p.filePath.length > 0 && !fileIo.accessSync(sandboxCopy)) {
+      src = p.filePath;
+    }
+    let srcFd: fileIo.File | undefined = undefined;
+    let dstFd: fileIo.File | undefined = undefined;
+    try {
+      srcFd = fileIo.openSync(src, fileIo.OpenMode.READ_ONLY);
+      dstFd = fileIo.openSync(destUri, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
+      fileIo.copyFileSync(srcFd.fd, dstFd.fd);
+      this.log(`save as -> ${destUri}`);
+      this.toastText(`${this.resText($r('app.string.files_auto_saved').id)}: ${name}`);
+      this.payloadDetailOpen = false;
+    } catch (e) {
+      this.log('save as: copy failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.toastText(this.resText($r('app.string.files_save_failed').id));
+    } finally {
+      if (srcFd !== undefined) {
+        try {
+          fileIo.closeSync(srcFd);
+        } catch (e2) {
+          // ignore
+        }
+      }
+      if (dstFd !== undefined) {
+        try {
+          fileIo.closeSync(dstFd);
+        } catch (e3) {
+          // ignore
+        }
+      }
+    }
+  }
+
   private async savePayload(p: PayloadTransfer): Promise<void> {
     const dir: string = this.ensureKdcDir();
     if (dir === '') {
@@ -2088,24 +2245,99 @@ struct Index {
     }
     const name: string = this.sanitizeFileName(p.fileName, p.transferId);
     const dest: string = `${dir}/${name}`;
+    // 保留写权限申请（用户 2026-09-17 裁决：另存为/导出到公共目录时仍需要它）
     const granted: boolean = await this.ensureWritePermission(name);
     if (!granted) {
       this.log(`save aborted: write permission denied for ${name}`);
       this.toastText(this.resText($r('app.string.files_need_permission').id));
       return;
     }
+    // 先在沙箱落一份（本地副本）：① 保证文件不丢；② 它是「另存为」的来源（spool 会被消费掉）
+    let sandboxOk: boolean = false;
     try {
-      const ok: boolean = native.keepPayload(p.transferId, dest);
-      this.log(ok ? `saved -> ${dest}` : 'keepPayload failed');
-      if (ok) {
-        this.markPayloadSettled(p.transferId);
-        this.toastText(`${this.resText($r('app.string.files_auto_saved').id)}: ${name}`);
-      } else {
-        this.toastText(this.resText($r('app.string.files_save_failed').id));
-      }
+      sandboxOk = native.keepPayload(p.transferId, dest);
+      this.log(sandboxOk ? `saved(sandbox) -> ${dest}` : 'keepPayload failed');
     } catch (e) {
       this.log('keepPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
-      this.toastText(this.resText($r('app.string.files_save_failed').id));
+    }
+    // 再尝试导出到**文件管理可见**的公共下载目录（官方 DOWNLOAD 模式）
+    const exported: string = await this.exportToDownloads(p, name, dest);
+    if (exported.length > 0) {
+      this.log(`exported to public dir -> ${exported}`);
+      this.markPayloadSettled(p.transferId);
+      this.toastText(`${this.resText($r('app.string.files_auto_saved').id)}: ${name}`);
+      return;
+    }
+    if (sandboxOk) {
+      this.markPayloadSettled(p.transferId);
+      this.toastText(`${this.resText($r('app.string.files_auto_saved').id)}: ${name}`);
+      return;
+    }
+    this.toastText(this.resText($r('app.string.files_save_failed').id));
+  }
+
+  // 把接收文件导出到公共下载目录（文件管理可见），成功返回目标 URI；失败返回空串。
+  // srcPath 是**沙箱内的副本**（keepPayload 之后 spool 已被消费，不能再当源）。
+  private async exportToDownloads(p: PayloadTransfer, name: string, srcPath: string): Promise<string> {
+    // 源优先用沙箱副本（keepPayload 之后 spool 已被消费），不存在时退回 spool
+    let src: string = srcPath;
+    if (src.length === 0) {
+      src = p.filePath;
+    }
+    if (src.length === 0) {
+      return '';
+    }
+    const hostCtx: Context | undefined = this.getUIContext().getHostContext();
+    if (hostCtx === undefined) {
+      return '';
+    }
+    let destUri: string = '';
+    try {
+      const picker0: picker.DocumentViewPicker = new picker.DocumentViewPicker(hostCtx);
+      const opts: picker.DocumentSaveOptions = {
+        newFileNames: [name],
+        pickerMode: picker.DocumentPickerMode.DOWNLOAD
+      };
+      const uris: string[] = await picker0.save(opts);
+      destUri = uris.length > 0 ? uris[0] : '';
+    } catch (e) {
+      this.log('export: save picker(DOWNLOAD) failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      return '';
+    }
+    if (destUri.length === 0) {
+      return '';
+    }
+    let srcFd: fileIo.File | undefined = undefined;
+    let dstFd: fileIo.File | undefined = undefined;
+    try {
+      srcFd = fileIo.openSync(src, fileIo.OpenMode.READ_ONLY);
+      dstFd = fileIo.openSync(destUri, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
+      fileIo.copyFileSync(srcFd.fd, dstFd.fd);
+      fileIo.closeSync(srcFd);
+      srcFd = undefined;
+      fileIo.closeSync(dstFd);
+      dstFd = undefined;
+      // 保留沙箱副本（供「另存为」再次导出），不丢弃 spool
+      this.markPayloadSettled(p.transferId);
+      return destUri;
+    } catch (e) {
+      this.log('export: copy failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      return '';
+    } finally {
+      if (srcFd !== undefined) {
+        try {
+          fileIo.closeSync(srcFd);
+        } catch (e3) {
+          // ignore
+        }
+      }
+      if (dstFd !== undefined) {
+        try {
+          fileIo.closeSync(dstFd);
+        } catch (e4) {
+          // ignore
+        }
+      }
     }
   }
 
@@ -2154,12 +2386,33 @@ struct Index {
   }
 
   private discardPayload(p: PayloadTransfer): void {
+    // 排查埋点（用户实测"丢弃没反应"）：hilog 可见每一步走到哪
+    console.info(`KDC discard start #${p.transferId} name=${p.fileName} before=${this.payloads.length}/${this.receivedHistory.length}`);
     try {
       const ok: boolean = native.discardPayload(p.transferId);
       this.log(ok ? `discarded #${p.transferId}` : 'discardPayload failed');
-      this.markPayloadSettled(p.transferId);
     } catch (e) {
       this.log('discardPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
+    }
+    // 用户要求（2026-09-17）：丢弃 = 从沙箱删除 + 同时从**历史记录列表**里移除（并持久化）
+    const name: string = this.sanitizeFileName(p.fileName, p.transferId);
+    const sandboxCopy: string = `${this.ensureKdcDir()}/${name}`;
+    try {
+      if (fileIo.accessSync(sandboxCopy)) {
+        fileIo.unlinkSync(sandboxCopy);
+        this.log(`unlink sandbox copy -> ${sandboxCopy}`);
+      }
+    } catch (e2) {
+      this.log('unlink sandbox copy failed: ' + (e2 instanceof Error ? e2.message : 'unknown'));
+    }
+    this.payloads = this.payloads.filter((x: PayloadTransfer) => x.transferId !== p.transferId);
+    this.receivedHistory = this.receivedHistory.filter((h: PayloadTransfer) => h.transferId !== p.transferId);
+    console.info(`KDC discard done #${p.transferId} after=${this.payloads.length}/${this.receivedHistory.length}`);
+    const hostCtx: Context | undefined = this.getUIContext().getHostContext();
+    if (hostCtx !== undefined) {
+      PayloadHistory.save(hostCtx, this.receivedHistory).catch((e3: Error): void => {
+        this.log('history save after discard failed: ' + e3.message);
+      });
     }
   }
 
@@ -2662,7 +2915,7 @@ struct Index {
       }
     }
     .width('100%')
-    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+                    .padding({ left: 12, right: 12, top: 15, bottom: 15 })
     .borderRadius(12)
     .backgroundColor(this.deviceSection === index ? $r('app.color.accent_soft') : Color.Transparent)
     .onClick(() => {
@@ -2951,6 +3204,10 @@ struct Index {
                     },
                     onOpenReceivedFiles: (): void => {
                       this.receivedDialogOpen = true;
+                    },
+                    onOpenPayload: (tid: number): void => {
+                      this.payloadDetailId = tid;
+                      this.payloadDetailOpen = true;
                     }
                   })
             }
@@ -3246,31 +3503,18 @@ struct Index {
               }
               .width('100%')
 
-              // 进度：拖动只在松手（End/Click）时发 SetPosition，避免拖动中刷包；
-              // 位置用「收包 pos + 本地经过时间」插值（mprisNowMs 由 1s ticker 驱动）
-              Row({ space: 8 }) {
-                Slider({ value: this.mprisPosPermille(), min: 0, max: this.mprisMaxPos(), step: 1 })
-                  .layoutWeight(1)
-                  .enabled(this.mprisSnap().canSeek && this.mprisSnap().length > 0)
-                  .onChange((value: number, mode: SliderChangeMode) => {
-                    if (mode === SliderChangeMode.Begin) {
-                      this.mprisSeekDragging = true;
-                      return;
-                    }
-                    if (mode === SliderChangeMode.Moving) {
-                      return;
-                    }
-                    if (!this.mprisSeekDragging) {
-                      return;
-                    }
-                    this.mprisSeekDragging = false;
-                    this.mediaSetPosition(this.mprisPermilleToMs(value));
-                  })
-                Text(`${mprisTimeText(this.mprisPos())} / ${mprisTimeText(this.mprisSnap().length)}`)
-                  .fontSize(10)
-                  .fontColor($r('app.color.text_muted'))
-              }
-              .width('100%')
+              // 进度：批2 根治 —— 抽成 MprisProgress 组件，**插值时钟（1s）落在组件局部 @State**，
+              // 面板打开期间不再每秒整页重建（原来 ticker 写页面级 mprisNowMs）。
+              MprisProgress({
+                lengthMs: this.mprisSnap().length,
+                posMs: this.mprisSnap().pos,
+                posAtMs: this.mprisSnap().posAt,
+                isPlaying: this.mprisSnap().isPlaying,
+                canSeek: this.mprisSnap().canSeek,
+                onSeek: (ms: number): void => {
+                  this.mediaSetPosition(ms);
+                }
+              })
 
               // 控制键（按 can* 置灰；播放/暂停统一发 PlayPause，由对端决定方向）
               Row({ space: 20 }) {
@@ -3412,6 +3656,44 @@ struct Index {
                 })
             }
             .width('100%')
+
+            // ★ 系统音量（用户 2026-09-18 要求）：**常显**，与上面的「播放器音量」分成两块。
+            // 播放器不提供音量属性（Firefox 的 MPRIS 就没有）或根本没有播放器时，这里仍可调对端系统音量。
+            Row({ space: 8 }) {
+              Text($r('app.string.sys_volume'))
+                .fontSize(12)
+                .fontColor($r('app.color.text_secondary'))
+                .width(64)
+              Slider({
+                value: this.sysVolumeDeviceId === this.mprisDeviceId && this.sysVolume >= 0 ? this.sysVolume : 0,
+                min: 0,
+                max: 100,
+                step: 1
+              })
+                .layoutWeight(1)
+                .enabled(this.sysVolumeDeviceId === this.mprisDeviceId && this.sysVolume >= 0)
+                .onChange((value: number, mode: SliderChangeMode) => {
+                  // 只认松手（End/Click）：拖动过程不打点，Begin/Moving 一律跳过
+                  if (mode === SliderChangeMode.Begin || mode === SliderChangeMode.Moving) {
+                    return;
+                  }
+                  this.sysVolumeSet(value);
+                })
+              Text(this.sysVolumeDeviceId === this.mprisDeviceId && this.sysVolume >= 0 ? `${this.sysVolume}` : '—')
+                .fontSize(10)
+                .fontColor($r('app.color.text_muted'))
+                .width(28)
+              Button(this.sysMuted ? $r('app.string.sys_unmute') : $r('app.string.sys_mute'))
+                .fontSize(11)
+                .height(30)
+                .backgroundColor($r('app.color.chip_bg'))
+                .fontColor(this.sysMuted ? $r('app.color.danger_text') : $r('app.color.text_secondary'))
+                .borderRadius(8)
+                .onClick(() => {
+                  this.sysVolumeToggleMute();
+                })
+            }
+            .width('100%')
           }
           .width('86%')
           .padding(20)
@@ -3478,7 +3760,7 @@ struct Index {
                     }
                     .width('100%')
                     .alignItems(HorizontalAlign.Start)
-                    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+                    .padding({ left: 12, right: 12, top: 15, bottom: 15 })
                     .borderRadius(12)
                     .backgroundColor($r('app.color.chip_bg'))
                     .onClick(() => {
@@ -3557,7 +3839,7 @@ struct Index {
                         .fontColor($r('app.color.accent_text'))
                     }
                     .width('100%')
-                    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+                    .padding({ left: 12, right: 12, top: 15, bottom: 15 })
                     .borderRadius(12)
                     .backgroundColor($r('app.color.chip_bg'))
                   }, (p: PayloadTransfer) => `recv_${p.transferId}`)
@@ -3609,6 +3891,75 @@ struct Index {
         .backgroundColor('#99000000')
         .onClick(() => {
           this.receivedDialogOpen = false;
+        })
+      }
+
+      // 「文件详情」弹窗（点击文件行触发）：属性 + 另存为 / 丢弃 / 取消。
+      // 另存为走系统保存面板（用户自选目录 ⇒ 文件管理里可见）；丢弃走 native discardPayload。
+      if (this.payloadDetailOpen) {
+        Column() {
+          Column({ space: 12 }) {
+            Text(this.payloadDetail().fileName.length > 0
+              ? this.payloadDetail().fileName : `#${this.payloadDetailId}`)
+              .fontSize(16)
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.text_primary'))
+              .maxLines(2)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+            this.infoLine($r('app.string.file_attr_size'), this.fmtBytes(this.payloadDetail().size))
+            this.infoLine($r('app.string.file_attr_time'), this.timeTextOf(this.payloadDetail()))
+            this.infoLine($r('app.string.file_attr_state'), this.payloadStateText(this.payloadDetail()))
+            this.infoLine($r('app.string.file_attr_dir'), this.resText(this.payloadDetail().direction === 'receive'
+              ? $r('app.string.file_dir_receive').id : $r('app.string.file_dir_send').id))
+            Row({ space: 10 }) {
+              Button($r('app.string.file_action_save_as'))
+                .layoutWeight(1)
+                .height(42)
+                .fontSize(14)
+                .backgroundColor($r('app.color.accent'))
+                .borderRadius(12)
+                .onClick(() => {
+                  this.saveAsPayload(this.payloadDetail());
+                })
+              Button($r('app.string.files_action_discard'))
+                .layoutWeight(1)
+                .height(42)
+                .fontSize(14)
+                .backgroundColor($r('app.color.danger_bg'))
+                .fontColor($r('app.color.danger_text'))
+                .borderRadius(12)
+                .onClick(() => {
+                  this.discardPayload(this.payloadDetail());
+                  this.payloadDetailOpen = false;
+                })
+              Button($r('app.string.action_cancel'))
+                .layoutWeight(1)
+                .height(42)
+                .fontSize(14)
+                .backgroundColor($r('app.color.chip_bg'))
+                .fontColor($r('app.color.text_secondary'))
+                .borderRadius(12)
+                .onClick(() => {
+                  this.payloadDetailOpen = false;
+                })
+            }
+            .width('100%')
+          }
+          .width('80%')
+          .padding(20)
+          .borderRadius(20)
+          .backgroundColor('#F2111A36')
+          .border({ width: 1, color: $r('app.color.card_border') })
+          .alignItems(HorizontalAlign.Center)
+          .onClick(() => {})
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .backgroundColor('#99000000')
+        .onClick(() => {
+          this.payloadDetailOpen = false;
         })
       }
 
