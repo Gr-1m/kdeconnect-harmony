@@ -162,13 +162,15 @@ struct PhaseAccum {
     ~PhaseAccum()
     {
         const int64_t total = monoMs() - t0;
-        if (total > 100) {
-            LOGI("[KDC-PHASESPLIT] what=%{public}s total=%{public}lldms conns=%{public}d "
-                 "plain=%{public}lldms tls=%{public}lldms ident=%{public}lldms "
-                 "drain=%{public}lldms json=%{public}lldms flush=%{public}lldms",
-                 what, (long long) total, conns, (long long) plain, (long long) tls,
-                 (long long) ident, (long long) drain, (long long) json, (long long) flush);
-        }
+        #if KDC_TELEMETRY   // S4：排查级埋点（release 关；累计量不受影响）
+    if (total > 100) {
+                LOGI("[KDC-PHASESPLIT] what=%{public}s total=%{public}lldms conns=%{public}d "
+                     "plain=%{public}lldms tls=%{public}lldms ident=%{public}lldms "
+                     "drain=%{public}lldms json=%{public}lldms flush=%{public}lldms",
+                     what, (long long) total, conns, (long long) plain, (long long) tls,
+                     (long long) ident, (long long) drain, (long long) json, (long long) flush);
+            }
+#endif
     }
 };
 
@@ -180,10 +182,12 @@ struct HoldTimer {
     ~HoldTimer()
     {
         const int64_t hold = lockMonoMs() - t0;
-        if (hold > LOCK_HOLD_LOG_MS) {
-            LOGI("[KDC-LOCKHOLD] label=%{public}s hold=%{public}lldms cpu=%{public}lldms",
-                 label, (long long) hold, (long long) (lockCpuMs() - cpu0));
-        }
+        #if KDC_TELEMETRY   // S4：排查级埋点（release 关；累计量不受影响）
+    if (hold > LOCK_HOLD_LOG_MS) {
+                LOGI("[KDC-LOCKHOLD] label=%{public}s hold=%{public}lldms cpu=%{public}lldms",
+                     label, (long long) hold, (long long) (lockCpuMs() - cpu0));
+            }
+#endif
     }
 };
 
@@ -217,11 +221,13 @@ struct SendPacketTimer {
     ~SendPacketTimer()
     {
         const int64_t wall = monoMs() - t0;
-        if (wall > ENTRY_SPLIT_LOG_MS) {
-            LOGI("[KDC-ENTRY-SPLIT] sendPacket wall=%{public}lldms cpu=%{public}lldms "
-                 "lock=%{public}lldms",
-                 (long long) wall, (long long) (threadCpuMs() - cpu0), (long long) lockWaitMs);
-        }
+        #if KDC_TELEMETRY   // S4：排查级埋点（release 关；累计量不受影响）
+    if (wall > ENTRY_SPLIT_LOG_MS) {
+                LOGI("[KDC-ENTRY-SPLIT] sendPacket wall=%{public}lldms cpu=%{public}lldms "
+                     "lock=%{public}lldms",
+                     (long long) wall, (long long) (threadCpuMs() - cpu0), (long long) lockWaitMs);
+            }
+#endif
     }
 };
 

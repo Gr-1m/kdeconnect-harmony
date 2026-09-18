@@ -478,12 +478,14 @@ void NetStack::dispatchFrames(std::unique_lock<std::mutex> &lk, TcpConnection &c
 
     const int64_t _censusMs = monoMs() - _censusT0;
     lk.lock();   // 恢复调用方的不变式（返回时 connMutex_ 必须已持有）
+#if KDC_TELEMETRY   // S4：排查级埋点（release 关；帧普查累计不受影响）
     if (_censusMs > 100) {
         deferLogf("I ", "[KDC-FRAMESPLIT] n=%llu frames=%lld bytes=%lld maxFrame=%llu total=%lldms",
                   (unsigned long long) _dispatchSeq, (long long) _censusFrames,
                   (long long) _censusBytes, (unsigned long long) _censusMaxFrame,
                   (long long) _censusMs);
     }
+#endif
     if (dropConn) {
         closeConnection(fd, dropReason.c_str());
     }
@@ -613,10 +615,12 @@ void NetStack::drainEncrypted(std::unique_lock<std::mutex> &lk, TcpConnection &c
     dispatchFrames(lk, conn);
     s_jsonMs = monoMs() - _tJson;
     // 只在这两段合计超阈值时打一行（与 PHASESPLIT 同口径）
+#if KDC_TELEMETRY   // S4：排查级埋点（release 关）
     if (_ioMs + s_jsonMs > 100) {
         deferLogf("I ", "[KDC-DRAINSPLIT] tls_decrypt_recv=%{public}lldms json_dispatch=%{public}lldms",
                   (long long) _ioMs, (long long) s_jsonMs);  // S2: 临界区内→延迟打
     }
+#endif
 }
 
 void NetStack::onConnectionWritable(int fd)
