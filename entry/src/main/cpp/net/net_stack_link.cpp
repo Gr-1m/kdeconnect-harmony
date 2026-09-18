@@ -45,19 +45,10 @@ void NetStack::onTcpServerReadable()
             ::close(fd);
             continue;
         }
-        // WP-2：同 IP 1000ms 连接限流（KDE/Android 同款语义）
-        {
-            std::lock_guard<std::mutex> lk(trustMutex_);
-            const int64_t now = nowMs();
-            auto it = lastAcceptByIp_.find(host);
-            if (it != lastAcceptByIp_.end() && now - it->second < CONN_RATE_LIMIT_MS) {
-                deferLogf("E ", "rate limit: %s within %dms, rejecting fd=%d", host.c_str(),
-                     CONN_RATE_LIMIT_MS, fd);  // S2b: trustMutex_ 临界区内
-                ::close(fd);
-                continue;
-            }
-            lastAcceptByIp_[host] = now;
-        }
+        // 连接限流（P-4 方案 A，CodeArts MSG23 §2）：**按 (IP, deviceId) 计数，判定移到 identity 之后**。
+        // 原实现在 accept 阶段按 IP 即时拒绝 ⇒ 同 NAT 双设备互相牵连（AtomCode 参考实现评审 P-4），
+        // 且可能在 identity 之前就掐断 KDE 的合法重拨。现在：accept 阶段只做私网校验（硬性），
+        // 限流由 handlePlainIdentity 在**已知 deviceId** 后按 (host, deviceId) 判定，且同设备已有存活链路时一律放行。
 
         // 未配对连接数上限（此前该常量只用作 listen backlog，非语义本意）
         {
@@ -200,6 +191,31 @@ bool NetStack::handlePlainIdentity(TcpConnection &conn, const std::string &frame
         return false;
     }
 
+    // P-4 方案 A：按 (host, deviceId) 限流 —— 异设备共用同一 IP 不再互相牵连。
+    {
+        const std::string host = conn.peerHost().empty() ? peerHostOf(conn.fd()) : conn.peerHost();
+        bool sameDeviceAlive = false;
+        for (const auto &p2 : connections_) {
+            if (p2.first != conn.fd() && p2.second->deviceId() == info.deviceId) {
+                sameDeviceAlive = true;
+                break;
+            }
+        }
+        const std::string key = host + "|" + info.deviceId;
+        std::lock_guard<std::mutex> lk(trustMutex_);
+        const int64_t now = nowMs();
+        auto it = lastAcceptByIp_.find(key);
+        if (!sameDeviceAlive && it != lastAcceptByIp_.end() &&
+            now - it->second < CONN_RATE_LIMIT_MS) {
+            deferLogf("E ", "rate limit (ip,device)=(%s,%s) within %dms, rejecting fd=%d",  // S2b
+                      host.c_str(), info.deviceId.c_str(), CONN_RATE_LIMIT_MS, conn.fd());
+            dispatchError(info.deviceId, EAGAIN, "connection rate limited (retry later)");
+            epoll_ctl(epollFd_, EPOLL_CTL_DEL, conn.fd(), nullptr);
+            conn.close();
+            return false;
+        }
+        lastAcceptByIp_[key] = now;   // 同设备存活链路 ⇒ 合法替换，直接放行并刷新计数
+    }
     conn.setDeviceId(info.deviceId);
     conn.setPeerInfo(conn.peerHost().empty() ? peerHostOf(conn.fd()) : conn.peerHost(),
                      info.tcpPort, info.deviceName, info.deviceType);
