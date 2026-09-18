@@ -342,6 +342,15 @@ void NetStack::dispatchFrames(std::unique_lock<std::mutex> &lk, TcpConnection &c
                         continue;
                     }
                     TcpConnection &c2 = *it2->second;
+                    // ⚠️ 顺序至关重要（2026-09-18 真机+回归双双定位）：
+                    // **先**把本连接登记到该 deviceId，**再**关闭同设备旧链路。
+                    // 否则 closeConnection 的 sameDeviceAlive 判定（按 deviceId 比较）看不到"新链路"，
+                    // 必然判为「本设备已无存活链路」⇒ 每次链路替换都会派发 Disconnected
+                    // 并调用 payload_->onDeviceDown ⇒ **误杀在传载荷**（真机形态：1.4MB 传到 39% 断，
+                    // code=104 "control connection closed"；发送侧伴生 code=5 "payload tls write failed"）。
+                    c2.setDeviceId(info.deviceId);
+                    c2.setPeerInfo(peerHost, peerPort, info.deviceName, info.deviceType);
+                    deviceId = info.deviceId;
                     std::vector<int> stale;
                     for (const auto &p2 : connections_) {
                         if (p2.first != fd && p2.second->deviceId() == info.deviceId) {
@@ -353,9 +362,6 @@ void NetStack::dispatchFrames(std::unique_lock<std::mutex> &lk, TcpConnection &c
                                   info.deviceId.c_str(), sfd);
                         closeConnection(sfd, "replaced by newer link");   // 同设备仍有本连接 ⇒ 不报 Disconnected
                     }
-                    c2.setDeviceId(info.deviceId);
-                    c2.setPeerInfo(peerHost, peerPort, info.deviceName, info.deviceType);
-                    deviceId = info.deviceId;
                     lk.unlock();
                 } else {
                     // 身份已知（或本批前帧刚写入）：仅刷新 peer 信息
