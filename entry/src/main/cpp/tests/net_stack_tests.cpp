@@ -39,6 +39,14 @@ namespace {
 int g_failed = 0;
 int g_cases = 0;
 const char *g_case = "?";
+// —— harness 隔离（CodeArts MSG22 §2）——
+// 根因：全部 net 用例原先共享**同一个 netStack() 单例**，且都从 127.0.0.1 拨入 ⇒ 既受上一个
+// 用例的残留状态影响，又受「同 IP accept 限流（300ms）」影响；负载下表现为握手偶发不成（sent=0）。
+// 对策：run.sh 用 --list/--case 让**每个用例在独立进程**里跑（栈与进程状态全新）。
+const char *g_onlyCase = nullptr;
+// 发送侧进度（harness 判定"传输进行中"用）
+std::atomic<int64_t> g_peerSendDone{0};
+std::atomic<int64_t> g_peerSendTotal{0};
 // P0 回归用的假对端 deviceId（必须在被测栈与子进程之间保持一致）
 constexpr const char *kMutePeerId = "hosttest33333333333333333333333333";
 // main() 里启动用的基础配置：需要改配置重启 net stack 的用例（端口探测）用完要还原
@@ -128,6 +136,9 @@ const NetEvent *waitError(const std::string &host, uint16_t port, int timeoutMs)
 
 void runCase(const char *name, void (*fn)())
 {
+    if (g_onlyCase != nullptr && std::strcmp(g_onlyCase, name) != 0) {
+        return;   // 进程隔离模式：未被选中则跳过（由 run.sh 逐个拉起独立进程）
+    }
     g_case = name;
     ++g_cases;
     {
@@ -387,6 +398,85 @@ constexpr const char *kHarnessParentIdPath = "/tmp/kdc_harness_parent_id.txt";
 std::mutex g_peerDevMu;
 std::string g_peerSeenDevice;
 
+// 回归 harness（CodeArts MSG22 §2）：模拟 KDE「收广播后新建链路并销毁同设备旧链路」，
+// 用于验证 31d9f49（链路替换不得中止在传载荷）。
+constexpr const char *kHarnessPeerPemPath = "/tmp/kdc_harness_peer.pem";
+constexpr const char *kHarnessSrcPath = "/tmp/kdc_harness_src.bin";
+const char *kPeerLinksDeviceId = "hosttest33333333333333333333333333";
+
+int runPeerLinksMode(uint16_t targetPort)
+{
+    const std::string devId = kPeerLinksDeviceId;
+    CertPair cert = CertGen::generateSelfSignedEc(devId, 10);
+    {
+        std::FILE *f = std::fopen(kHarnessPeerPemPath, "w");   // 供被测栈建立信任
+        if (f == nullptr) return 1;
+        std::fputs(cert.certPem.c_str(), f);
+        std::fclose(f);
+    }
+    {
+        std::FILE *f = std::fopen(kHarnessSrcPath, "wb");      // 256MB：保证"传中"窗口足够宽
+        if (f == nullptr) return 1;
+        std::vector<char> blk(1024 * 1024, 'k');
+        for (int i = 0; i < 1024; ++i) {   // 1GB：保证"传中"窗口足以覆盖多次建链（256MB 在大吞吐下会先传完 ⇒ 假阴性）
+            if (std::fwrite(blk.data(), 1, blk.size(), f) != blk.size()) break;
+        }
+        std::fclose(f);
+    }
+    NetConfig cfg;
+    cfg.deviceId = devId;
+    cfg.deviceName = "kdc-nettest-links";
+    cfg.deviceType = "desktop";
+    cfg.certPem = cert.certPem;
+    cfg.keyPem = cert.keyPem;
+    cfg.tcpPort = 1747;
+    cfg.udpPort = 17160;
+    cfg.spoolDir = "/tmp/kdc_nettest_spool";
+    NetStack &ns = netStack();
+    ns.setEventCallback([](const NetEvent &e) {
+        if (e.type == EventType::PayloadTransfer && e.payloadDirectionSend) {
+            if (e.payloadState == "progress") {
+                g_peerSendDone.store(e.payloadBytesDone);
+                g_peerSendTotal.store(e.payloadSize);
+            } else {
+                g_peerSendDone.store(e.payloadSize);   // 终态：视作不再有"传中"
+                g_peerSendTotal.store(e.payloadSize);
+            }
+            std::fprintf(stderr, "[peer-links] local id=%llu state=%s done=%lld/%lld code=%d msg=%s\n",
+                         (unsigned long long) e.payloadTransferId, e.payloadState.c_str(),
+                         (long long) e.payloadBytesDone, (long long) e.payloadSize, e.errorCode,
+                         e.errorMessage.c_str());
+        }
+    });
+    if (!ns.start(cfg)) return 1;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));   // 等被测栈读到证书并建立信任
+    ns.connectToPeer("127.0.0.1", targetPort);
+    std::string peerDev;
+    for (int i = 0; i < 250 && peerDev.empty(); ++i) {
+        std::FILE *f = std::fopen(kHarnessParentIdPath, "r");
+        if (f != nullptr) {
+            char buf[256];
+            size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
+            buf[n] = '\0';
+            peerDev.assign(buf, n);
+            while (!peerDev.empty() && (peerDev.back() == '\n' || peerDev.back() == '\r')) peerDev.pop_back();
+            std::fclose(f);
+        }
+        if (peerDev.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    uint64_t xid = 0;
+    for (int i = 0; i < 100 && xid == 0; ++i) {   // 链路可能未就绪 ⇒ 重试
+        xid = ns.sendPayload(peerDev, "kdeconnect.share.request",
+                             "{\"filename\":\"harness.bin\"}", kHarnessSrcPath);
+        if (xid == 0) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    std::fprintf(stderr, "[peer-links] sendPayload -> %llu\n", (unsigned long long) xid);
+    // 建链由父进程在"接收进度过半"时确定性触发（本侧只负责把载荷发出去）
+    std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+    ns.stop();
+    return 0;
+}
+
 int runPeerMode(uint16_t targetPort, bool announcePayload = false)
 {
     const std::string devId = "hosttest22222222222222222222222222";
@@ -517,6 +607,78 @@ void announcedPayloadWithoutPortIsTerminal()
         }
     }
 
+    ::kill(child, SIGKILL);
+    int status = 0;
+    ::waitpid(child, &status, 0);
+}
+
+// 31d9f49 专属回归：链路替换不得中止在传载荷。
+// 修复前 closeConnection 会**无条件**调用 payload_->onDeviceDown ⇒ 在传载荷被误判 failed/ECONNRESET。
+void payloadSurvivesLinkReplacement()
+{
+    ::unlink(kHarnessPeerPemPath);
+    const pid_t child = ::fork();
+    CHECK_MSG(child >= 0, "fork 失败");
+    if (child < 0) return;
+    if (child == 0) {
+        ::execl("/proc/self/exe", "kdc_net_tests", "--peer-links", "1745", nullptr);
+        ::_exit(127);
+    }
+    std::string pem;
+    for (int i = 0; i < 250 && pem.empty(); ++i) {   // 等对端证书 → 建立信任（否则载荷被门禁拒绝）
+        std::FILE *f = std::fopen(kHarnessPeerPemPath, "r");
+        if (f != nullptr) {
+            char buf[8192];
+            size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
+            buf[n] = '\0';
+            pem.assign(buf, n);
+            std::fclose(f);
+        }
+        if (pem.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    CHECK_MSG(!pem.empty(), "harness 前置失败：未取到对端证书");
+    if (!pem.empty()) netStack().setTrustedCertificate(kPeerLinksDeviceId, pem);
+
+    // 确定性触发：等**自身接收进度过半**（必然"传中"）后，向对端 control 端口再拨一条链路 ⇒
+    // 对端会替换其同设备旧链路（真实形态），修复前该替换会误杀在传载荷。
+    int64_t seenDone = 0;
+    int64_t seenTotal = 0;
+    const int64_t waitProgress = nowMs() + 60000;
+    while (nowMs() < waitProgress && (seenTotal == 0 || seenDone * 4 < seenTotal)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::lock_guard<std::mutex> lk(g_mu);
+        for (const NetEvent &e : g_events) {
+            if (e.type == EventType::PayloadTransfer && !e.payloadDirectionSend &&
+                e.payloadBytesDone > 0) {
+                seenDone = e.payloadBytesDone;
+                seenTotal = e.payloadSize;
+            }
+        }
+    }
+    CHECK_MSG(seenTotal > 0 && seenDone > 0, "harness 前置失败：未见接收进度（载荷根本没起来）");
+    netStack().connectToPeer("127.0.0.1", 1747);   // 对端 control 端口（runPeerLinksMode 固定 1747）
+    std::fprintf(stderr, "  [dbg] dialed peer at progress %lld/%lld\n", (long long) seenDone,
+                 (long long) seenTotal);
+
+    bool finished = false;
+    bool failed = false;
+    const int64_t deadline = nowMs() + 90000;
+    while (nowMs() < deadline && !finished && !failed) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::lock_guard<std::mutex> lk(g_mu);
+        for (const NetEvent &e : g_events) {
+            if (e.type != EventType::PayloadTransfer || e.payloadDirectionSend) continue;
+            if (e.payloadState == "finished") finished = true;
+            if (e.payloadState == "failed" && !failed) {
+                failed = true;
+                std::fprintf(stderr, "  [dbg] payload failed id=%llu code=%d msg=%s\n",
+                             (unsigned long long) e.payloadTransferId, e.errorCode,
+                             e.errorMessage.c_str());
+            }
+        }
+    }
+    CHECK_MSG(finished, "链路替换后在传载荷未能完成（回归：onDeviceDown 误杀在传载荷）");
+    CHECK_MSG(!failed, "在传载荷被误判 failed（链路替换不应中止载荷）");
     ::kill(child, SIGKILL);
     int status = 0;
     ::waitpid(child, &status, 0);
@@ -653,12 +815,32 @@ int main(int argc, char **argv)
     if (argc >= 3 && std::strcmp(argv[1], "--peer") == 0) {
         return runPeerMode(static_cast<uint16_t>(std::atoi(argv[2])));
     }
+    if (argc >= 3 && std::strcmp(argv[1], "--peer-links") == 0) {
+        return runPeerLinksMode(static_cast<uint16_t>(std::atoi(argv[2])));
+    }
     if (argc >= 3 && std::strcmp(argv[1], "--peer-announce") == 0) {
         return runPeerMode(static_cast<uint16_t>(std::atoi(argv[2])), true);
     }
     if (argc >= 3 && std::strcmp(argv[1], "--mute-peer") == 0) {
         return runMutePeerMode(static_cast<uint16_t>(std::atoi(argv[2])));
     }
+    struct ListDef { const char *name; };
+    static const ListDef kNames[] = {
+        {"connectToClosedPortReportsReason"}, {"muteePeerTimesOutBounded"},
+        {"peerIdentityIsDispatchedAsPacket"},  {"sendPacketQueuesDuringHandshake"},
+        {"portProbeFindsListener"},            {"dialUnknownPortProbesAndConnects"},
+        {"announcedPayloadWithoutPortIsTerminal"}, {"payloadSurvivesLinkReplacement"},
+    };
+    if (argc >= 2 && std::strcmp(argv[1], "--list") == 0) {
+        for (const ListDef &n : kNames) {
+            std::printf("%s\n", n.name);
+        }
+        return 0;
+    }
+    if (argc >= 3 && std::strcmp(argv[1], "--case") == 0) {
+        g_onlyCase = argv[2];
+    }
+
     CertPair cert = CertGen::generateSelfSignedEc("hosttest11111111111111111111111111", 10);
     NetConfig cfg;
     cfg.deviceId = "hosttest11111111111111111111111111";
@@ -687,13 +869,20 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    runCase("connectToClosedPortReportsReason", connectToClosedPortReportsReason);
-    runCase("muteePeerTimesOutBounded", muteePeerTimesOutBounded);
-    runCase("peerIdentityIsDispatchedAsPacket", peerIdentityIsDispatchedAsPacket);
-    runCase("sendPacketQueuesDuringHandshake", sendPacketQueuesDuringHandshake);
-    runCase("portProbeFindsListener", portProbeFindsListener);
-    runCase("dialUnknownPortProbesAndConnects", dialUnknownPortProbesAndConnects);
-    runCase("announcedPayloadWithoutPortIsTerminal", announcedPayloadWithoutPortIsTerminal);
+    struct CaseDef { const char *name; void (*fn)(); };
+    static const CaseDef kCases[] = {
+        {"connectToClosedPortReportsReason", connectToClosedPortReportsReason},
+        {"muteePeerTimesOutBounded", muteePeerTimesOutBounded},
+        {"peerIdentityIsDispatchedAsPacket", peerIdentityIsDispatchedAsPacket},
+        {"sendPacketQueuesDuringHandshake", sendPacketQueuesDuringHandshake},
+        {"portProbeFindsListener", portProbeFindsListener},
+        {"dialUnknownPortProbesAndConnects", dialUnknownPortProbesAndConnects},
+        {"announcedPayloadWithoutPortIsTerminal", announcedPayloadWithoutPortIsTerminal},
+        {"payloadSurvivesLinkReplacement", payloadSurvivesLinkReplacement},
+    };
+    for (const CaseDef &c : kCases) {
+        runCase(c.name, c.fn);
+    }
 
     ns.stop();
     std::printf("net stack tests: %d cases, %d failed\n", g_cases, g_failed);
