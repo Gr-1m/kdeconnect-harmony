@@ -34,6 +34,19 @@ namespace kdeconnect {
 
 
 // 事件循环 tick：定时器检查周期（REVIEW §4 P1-7 最小定时器基建）
+// 出向连接失败时取真实原因：非阻塞 connect 的失败通过 SO_ERROR 暴露，
+// 不看它就只能报出「写 identity 失败」这类对用户无意义的错误（实测：连不上时报
+// code=5 "plain identity read failed"，App 无法提示「找不到对应 IP / 连接失败」）。
+inline int socketSoError(int fd)
+{
+    int err = 0;
+    socklen_t len = sizeof(err);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) != 0) {
+        return errno;
+    }
+    return err;
+}
+
 inline constexpr int LOOP_TICK_MS = 200;
 
 // 仅接受私网地址直连（WP-2；公网/非法来源直接拒绝）—— 判定实现在 net_util.cpp

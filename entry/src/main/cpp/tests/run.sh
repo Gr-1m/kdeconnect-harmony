@@ -54,6 +54,8 @@ g++ -std=c++17 -Wall -Wextra -O1 \
     -I. -I.. -Istub -I../bearssl/inc \
     net_stack_tests.cpp \
     ../net/net_stack.cpp \
+    ../net/net_stack_link.cpp \
+    ../net/net_stack_discovery.cpp \
     ../net/tcp_connection.cpp \
     ../net/tcp_server.cpp \
     ../net/udp_discovery.cpp \
