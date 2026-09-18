@@ -30,6 +30,8 @@
 
 #include "net_stack.h"
 
+namespace kdeconnect {
+
 
 // 事件循环 tick：定时器检查周期（REVIEW §4 P1-7 最小定时器基建）
 inline constexpr int LOOP_TICK_MS = 200;
@@ -95,23 +97,6 @@ struct DeferredLogFlush {
         }
     }
 };
-
-
-NetStack::NetStack()
-{
-    payload_ = std::make_unique<PayloadManager>(this, std::string(kPayloadSpoolDirDefault));
-}
-
-NetStack::~NetStack()
-{
-    stop();
-}
-
-void NetStack::setEventCallback(EventCallback cb)
-{
-    std::lock_guard<std::mutex> lk(callbackMutex_);
-    eventCallback_ = std::move(cb);
-}
 
 // 事件派发唯一收口。除转发外做两件事：
 //  ① 按类型普查（[KDC-EVENTS] 随 NETLOOP 行输出）——用于判断"JS 线程被事件回调占住"的规模；
@@ -226,5 +211,7 @@ struct SendPacketTimer {
         }
     }
 };
+
+} // namespace kdeconnect
 
 #endif

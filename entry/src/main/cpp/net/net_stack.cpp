@@ -18,10 +18,11 @@
 #include <ctime>
 #include <cstring>
 
+// 内部共享件（延迟日志 / 计时守卫 / 地址助手）——见 net_internal.h（S5 交付）
+#include "net_internal.h"
+
 namespace kdeconnect {
 
-// 内部共享件（延迟日志 / 计时守卫 / 地址助手）见 net_internal.h（S5 拆 TU 前置）
-#include "net_internal.h"
 
 void NetStack::dispatchEvent(const NetEvent &event)
 {
@@ -1718,5 +1719,22 @@ void NetStack::setCapabilities(const std::vector<std::string> &incomingCaps,
     wakeLoop();
 }
 
+
+// —— 由 net_internal.h 迁回：头文件不得定义成员函数（多 TU 定义冲突，S5-a）——
+void NetStack::setEventCallback(EventCallback cb)
+{
+    std::lock_guard<std::mutex> lk(callbackMutex_);
+    eventCallback_ = std::move(cb);
+}
+
+NetStack::NetStack()
+{
+    payload_ = std::make_unique<PayloadManager>(this, std::string(kPayloadSpoolDirDefault));
+}
+
+NetStack::~NetStack()
+{
+    stop();
+}
 
 } // namespace kdeconnect
