@@ -4,6 +4,7 @@
 #include "../net/net_types.h"
 #include "../net/packet_io.h"
 #include "../net/tls_engine.h"
+#include "../net/write_interest.h"
 
 #include <map>
 #include <memory>
@@ -82,8 +83,8 @@ struct PayloadJob {
     std::string lastState = "pending";
     int lastCode = 0;
     std::string lastMsg;
-    // EPOLLOUT 兴趣是否已挂（仅 mu_ 内读写）：只在状态变化时 epoll_ctl(MOD)
-    bool writeArmed = false;
+    // EPOLLOUT 兴趣（S3：与连接侧共用 applyWriteInterest；仅 mu_ 内读写）
+    WriteInterestState writeInterest;
 };
 
 class PayloadManager {

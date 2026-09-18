@@ -100,18 +100,19 @@ void NetStack::updateWriteInterestLocked(int fd)
         return;
     }
     TcpConnection &conn = *it->second;
-    const bool want = conn.wantsWrite();
-    if (want == conn.epollWriteArmed()) {
-        return;   // 状态未变：绝不重复 MOD（MOD 会重新武装 ET 并立即上报）
-    }
-    struct epoll_event ev {};
-    ev.events = EPOLLIN | EPOLLET | (want ? EPOLLOUT : 0u);
-    ev.data.fd = fd;
-    if (epoll_ctl(epollFd_, EPOLL_CTL_MOD, fd, &ev) == 0) {
-        conn.setEpollWriteArmed(want);
-    } else {
-        deferLogf("E ", "updateWriteInterest fd=%d: epoll_ctl MOD failed: %s", fd, strerror(errno));  // S2b: 锁内/锁外双路径调用
-    }
+    // S3：EPOLLOUT 按需挂/摘统一走 applyWriteInterest（连接侧与 payload 侧共用同一实现）
+    applyWriteInterest(conn.writeInterest(), fd, conn.wantsWrite(), EPOLLIN | EPOLLET,
+                       [&](int f, uint32_t events) {
+                           struct epoll_event ev {};
+                           ev.events = events;
+                           ev.data.fd = f;
+                           if (epoll_ctl(epollFd_, EPOLL_CTL_MOD, f, &ev) == 0) {
+                               return true;
+                           }
+                           deferLogf("E ", "updateWriteInterest fd=%d: epoll_ctl MOD failed: %s", f,
+                                     strerror(errno));   // S2b: 锁内/锁外双路径调用
+                           return false;
+                       });
 }
 
 void NetStack::updateWriteInterest(int fd)

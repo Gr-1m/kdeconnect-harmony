@@ -413,10 +413,10 @@ uint64_t PayloadManager::startReceive(const std::string &deviceId, const std::st
         }
     }
     // 注册时**带 EPOLLOUT**：epoll_ctl(ADD) 会对"当前可写"立即上报一次，这正是握手首飞
-    // （ServerHello/ClientHello）的触发点；随即登记 writeArmed，之后由 updateWriteInterestLocked
+    // （ServerHello/ClientHello）的触发点；随即登记 writeInterest.armed，之后由 updateWriteInterestLocked
     // 在状态变化时按需摘掉 —— 避免"无可写内容仍常驻 EPOLLOUT"的 ET 空转（真机 wake[payload]=31,526）。
     host_->epollAdd(job->sockFd, EPOLLIN | EPOLLOUT);
-    job->writeArmed = true;
+    job->writeInterest.armed = true;   // S3：注册时已带 EPOLLOUT
     fdIndex_[job->sockFd] = job->id;
     job->deadlineMs = host_->nowMs() + PAYLOAD_ACCEPT_TIMEOUT_MS;
     job->started = true;
@@ -469,12 +469,9 @@ void PayloadManager::updateWriteInterestLocked(PayloadJob &job)
     // 不纳入 SENDAPP：它几乎常真，会让 EPOLLOUT 变回常驻。
     const bool want = !job.pending.empty() ||
                       (job.tls != nullptr && (!job.tls->handshakeDone() || job.tls->wantsWrite()));
-    if (want == job.writeArmed) {
-        return;
-    }
-    if (host_->epollMod(job.sockFd, EPOLLIN | (want ? EPOLLOUT : 0u))) {
-        job.writeArmed = want;
-    }
+    // S3：与连接侧共用同一设施（宿主经 PayloadHost::epollMod 下发，恒定附加 EPOLLET）
+    applyWriteInterest(job.writeInterest, job.sockFd, want, EPOLLIN,
+                       [&](int f, uint32_t events) { return host_->epollMod(f, events); });
 }
 
 void PayloadManager::pumpSendLocked(PayloadJob &job)
@@ -591,7 +588,7 @@ void PayloadManager::onReadable(int fd)
             failJobLocked(job, EIO, "payload accept: epoll add failed");
             return;
         }
-        job.writeArmed = true;
+        job.writeInterest.armed = true;   // S3：注册时已带 EPOLLOUT
         startHandshakeLocked(job);
         return;
     }

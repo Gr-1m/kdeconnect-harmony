@@ -260,7 +260,7 @@ bool NetStack::connectToPeer(const std::string &host, uint16_t port)
         std::lock_guard<std::mutex> lk(connMutex_);
         auto rit = connections_.find(fd);
         if (rit != connections_.end()) {
-            rit->second->setEpollWriteArmed(true);
+            rit->second->writeInterest().armed = true;   // S3：注册时已带 EPOLLOUT
         }
     }
 

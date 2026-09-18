@@ -3,6 +3,7 @@
 
 #include "net_types.h"
 #include "tls_engine.h"
+#include "write_interest.h"
 #include <string>
 #include <vector>
 #include <memory>
@@ -58,8 +59,10 @@ public:
     bool cnVerified() const { return cnVerified_; }
     void markCnVerified() { cnVerified_ = true; }
     // EPOLLOUT 兴趣当前是否已挂（仅网络线程读写；用于只在状态变化时 epoll_ctl(MOD)）
-    bool epollWriteArmed() const { return epollWriteArmed_; }
-    void setEpollWriteArmed(bool v) { epollWriteArmed_ = v; }
+    bool epollWriteArmed() const { return writeInterest_.armed; }
+    // S3：EPOLLOUT 兴趣状态（供 applyWriteInterest 读写；"首飞"注册后可直接置位）
+    WriteInterestState &writeInterest() { return writeInterest_; }
+
     void markPlainIdentityQueued() { plainIdentityQueued_ = true; }
     bool plainIdentityQueued() const { return plainIdentityQueued_; }
 
@@ -134,7 +137,7 @@ private:
     size_t plainOffset_ = 0;
     bool plainIdentityQueued_ = false;
     bool cnVerified_ = false;
-    bool epollWriteArmed_ = false;   // EPOLLOUT 兴趣是否已挂（**须持 connMutex_ 读写**：
+    WriteInterestState writeInterest_;   // S3：EPOLLOUT 按需挂/摘状态   // EPOLLOUT 兴趣是否已挂（**须持 connMutex_ 读写**：
                                      // 网络线程与 sendPacket(JS 线程) 都会改它）
 };
 
