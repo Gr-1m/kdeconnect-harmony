@@ -770,7 +770,7 @@ void NetStack::eventLoop()
         {
             HoldTimer _hold("eventLoop");
             DeferredLogFlush _dlf;   // S2: tick 临界区内 deferLogf 的统一出口（析构时锁已释放）
-            std::lock_guard<std::mutex> lk(connMutex_);
+            std::unique_lock<std::mutex> lk(connMutex_);
             // 快照（fd → 对象指针）：本循环内调用的回调（pumpPlainIdentity/drainEncrypted →
             // dispatchFrames → closeConnection）会把条目从 connections_ **摘除并析构**，
             // 此后持有 TcpConnection& / 迭代器都会悬垂。已实测：旧写法在循环末段读
@@ -871,7 +871,7 @@ void NetStack::eventLoop()
                     // 故每 tick 对 Encrypted 连接兜底排空一次（fillTlsRx 无数据时开销为一次 recv）。
                     if (c.state() == ConnectionState::Encrypted) {
                         const int64_t _td = _phases.mark();
-                        drainEncrypted(c);
+                        drainEncrypted(lk, c);
                         _phases.done(_phases.drain, _td);
                         // dispatchFrames 可能关闭并摘除本连接 ⇒ 重新确认后再继续使用 c
                         it = connections_.find(cfd);
@@ -1232,29 +1232,62 @@ bool NetStack::handlePlainIdentity(TcpConnection &conn, const std::string &frame
 
 // 排空读后按 '\n' 切分：每个完整帧派发一次 packetReceived（帧尾 '\n' 保留，
 // ArkTS 侧 PacketRouter 仍按 '\n' 切分即可正确工作）
-void NetStack::dispatchFrames(TcpConnection &conn)
+// 两阶段管线（S1，AtomCode REVIEW_HOLISTIC_BUGFIX S1）：
+//   阶段 1（持锁）：**只做帧提取入队** + 快照（连接身份/地址/叶证书）。
+//   阶段 2（放锁）：解析（Rust serde）、身份/信任决策、事件派发全部在锁外；
+//                  需要变更连接或设备状态时，以 fd 短临界区回写（连接可能已被回收 ⇒ 重定位）。
+// 目的：任何解析回归都不得再让 UI 冻结——f872b99 把 CPU 压到毫秒级但结构未变，
+// 下一次解析变慢仍会变成全 UI 卡顿。行为与旧实现逐帧等价（顺序不变）。
+void NetStack::dispatchFrames(std::unique_lock<std::mutex> &lk, TcpConnection &conn)
 {
-    std::string frame;
-    // 帧循环内不得销毁 conn（引用悬垂）：标记后出循环统一关闭
-    bool dropConn = false;
-    const char *dropReason = nullptr;
+    // ————————— 阶段 1（持锁）：搬运 —————————
+    const int fd = conn.fd();
+    const std::string peerHost = conn.peerHost();
+    const uint16_t peerPort = conn.peerPort();
+    const bool isIncoming = conn.isIncoming();
+    const TlsRole tlsRole = conn.tlsRole();
+    std::string deviceId = conn.deviceId();
+    bool connectedNotified = conn.connectedNotified();
     // 帧普查（CodeArts MSG9 P0 收尾用）：一次 drain 里有多少帧、多少字节、最大帧多大。
-    // 目的：区分「大量小帧（每帧固定开销）」与「少量超大帧（解析成本）」——两者修法不同。
-    // 第 N 次进入 dispatchFrames（进程内累计）：用于区分"首次/惰性初始化"与"稳态每帧开销"
-    // ——真机两台机型都出现"整轮唯一一次 ~330ms、frames=1 bytes=2294"，形态更像前者（DevEco MSG16 §2）。
+    // 第 N 次进入（进程内累计）：区分"首次/惰性初始化"与"稳态每帧开销"（DevEco MSG16 §2）。
     static std::atomic<uint64_t> s_dispatchSeq{1};
     const uint64_t _dispatchSeq = s_dispatchSeq.fetch_add(1, std::memory_order_relaxed);
+    std::vector<std::string> frames;
+    std::string leafCert;   // 本批含 identity 帧时，钉扎比较需要本连接的叶证书（在锁内取一次）
+    {
+        std::string frame;
+        while (PacketIO::extractFrame(conn.rxBuf(), frame)) {
+            if (frame.empty()) {
+                continue;   // 超限帧已丢弃
+            }
+            if (leafCert.empty() && conn.tlsEngine() != nullptr &&
+                frame.find("kdeconnect.identity") != std::string::npos) {
+                const std::vector<uint8_t> leaf = conn.tlsEngine()->peerLeafCertDer();
+                leafCert.assign(leaf.begin(), leaf.end());
+            }
+            frames.push_back(std::move(frame));
+        }
+    }
+    if (frames.empty()) {
+        return;   // 无完整帧（锁保持由调用方继续持有）
+    }
+
+    // ————————— 阶段 2（放锁）：解析 + 决策 + 派发 —————————
+    lk.unlock();
     int64_t _censusFrames = 0;
     int64_t _censusBytes = 0;
     size_t _censusMaxFrame = 0;
     const int64_t _censusT0 = monoMs();
-    while (PacketIO::extractFrame(conn.rxBuf(), frame)) {
-        if (frame.empty()) {
-            continue;  // 超限帧已丢弃
+    bool dropConn = false;
+    std::string dropReason;
+    bool abortBatch = false;
+
+    for (const std::string &raw : frames) {
+        if (abortBatch) {
+            break;   // 连接已消失/已判死：本批剩余帧作废（与旧实现的 break/return 语义一致）
         }
-        // 去掉帧尾 '\n' 供 cJSON 解析/事件载荷（JSON 本身不含它）
-        std::string json = frame;
-        if (!json.empty() && json.back() == '\n') json.pop_back();
+        std::string json = raw;
+        if (!json.empty() && json.back() == '\n') json.pop_back();   // JSON 本身不含帧尾 '\n'
         if (json.empty()) continue;
         ++_censusFrames;
         _censusBytes += static_cast<int64_t>(json.size());
@@ -1264,161 +1297,167 @@ void NetStack::dispatchFrames(TcpConnection &conn)
         std::string body;
         int64_t payloadSize = 0;
         uint16_t payloadPort = 0;
-        if (!PacketIO::parsePacket(json, type, body, &payloadSize, &payloadPort)) {
-            deferLogf("E ", "invalid JSON frame dropped (fd=%d, %zu bytes)", conn.fd(), json.size());  // S2
+        if (!PacketIO::parsePacket(json, type, body, &payloadSize, &payloadPort)) {   // 锁外解析
+            deferLogf("E ", "invalid JSON frame dropped (fd=%d, %zu bytes)", fd, json.size());
             continue;
         }
 
         if (type == "kdeconnect.identity") {
             DeviceInfo info;
             if (PacketIO::parseIdentity(json, info) && !info.deviceId.empty()) {
-                if (conn.deviceId().empty()) {
-                    // WP-2：证书钉扎——已登记设备出现证书变更立即断链（TOFU + 钉扎）
+                if (deviceId.empty()) {   // 本连接首见身份：钉扎比较 + 替换同设备旧链路
                     std::string trustedPem;
                     {
-                        std::lock_guard<std::mutex> lk(trustMutex_);
+                        std::lock_guard<std::mutex> tlk(trustMutex_);
                         auto it = trustedCertPem_.find(info.deviceId);
                         if (it != trustedCertPem_.end()) {
                             trustedPem = it->second;
                         }
-                        // 同 deviceId 的**新**链路到达 ⇒ 按 KDE 语义「保留新链路、关掉旧链路」。
-                        // KDE 的 lanlinkprovider 在每次收到广播后都会新建链路并销毁同设备旧链路
-                        // （见 AGENTS.md 记载），因此**对端必然会在 ~0.6~0.7s 后重拨一次**。
-                        // 旧实现是「1000ms 内同设备重连 ⇒ 丢弃该连接」，于是新链路被我们自己掐断，
-                        // 而对端又已销毁它那条旧链路 ⇒ **两边同时死链**（真机现象：connected →
-                        // disconnected 间隔 0.6~0.7s、配对主链路走不通，见 DevEco MSG181）。
                         lastConnByDevice_[info.deviceId] = nowMs();
-                        // 关掉同 deviceId 的其他连接（新链路即 conn，不动它）。
-                        // 注意：这里的关闭是"替换"，closeConnection 会在仍有同设备存活连接时
-                        // 抑制 Disconnected 事件，避免 UI 误判离线。
-                        {
-                            std::vector<int> stale;
-                            for (const auto &p2 : connections_) {
-                                if (p2.first != conn.fd() && p2.second->deviceId() == info.deviceId) {
-                                    stale.push_back(p2.first);
-                                }
-                            }
-                            for (int sfd : stale) {
-                                deferLogf("I ", "replacing stale link for device %s: closing fd=%d",
-                                          info.deviceId.c_str(), sfd);  // S2
-                                closeConnection(sfd, "replaced by newer link");
-                            }
-                        }
                     }
-                    if (!trustedPem.empty() && conn.tlsEngine() != nullptr) {
-                        std::vector<uint8_t> leaf = conn.tlsEngine()->peerLeafCertDer();
+                    // 钉扎比较：证书不一致 ⇒ 断链（TOFU + 钉扎），且本批不再继续
+                    if (!trustedPem.empty() && !leafCert.empty()) {
                         const std::string trustedDer = pemToDer(trustedPem, "CERTIFICATE");
-                        const std::string leafStr(leaf.begin(), leaf.end());
-                        if (leafStr.empty() || leafStr != trustedDer) {
-                            deferLogf("E ", "certificate mismatch for %s, dropping", info.deviceId.c_str());  // S2
+                        if (leafCert != trustedDer) {
+                            deferLogf("E ", "certificate mismatch for %s, dropping", info.deviceId.c_str());
                             dispatchError(info.deviceId, EACCES,
                                           "certificate mismatch (device re-pair required)");
                             dropConn = true;
                             dropReason = "certificate mismatch";
-                            break;
+                            abortBatch = true;
+                            continue;
                         }
                     }
-                    conn.setDeviceId(info.deviceId);
+                    // 短临界区回写：替换同设备旧链路 + 写入身份
+                    lk.lock();
+                    auto it2 = connections_.find(fd);
+                    if (it2 == connections_.end()) {
+                        lk.unlock();
+                        abortBatch = true;   // 连接已被回收：本批作废
+                        continue;
+                    }
+                    TcpConnection &c2 = *it2->second;
+                    std::vector<int> stale;
+                    for (const auto &p2 : connections_) {
+                        if (p2.first != fd && p2.second->deviceId() == info.deviceId) {
+                            stale.push_back(p2.first);
+                        }
+                    }
+                    for (int sfd : stale) {
+                        deferLogf("I ", "replacing stale link for device %s: closing fd=%d",
+                                  info.deviceId.c_str(), sfd);
+                        closeConnection(sfd, "replaced by newer link");   // 同设备仍有本连接 ⇒ 不报 Disconnected
+                    }
+                    c2.setDeviceId(info.deviceId);
+                    c2.setPeerInfo(peerHost, peerPort, info.deviceName, info.deviceType);
+                    deviceId = info.deviceId;
+                    lk.unlock();
+                } else {
+                    // 身份已知（或本批前帧刚写入）：仅刷新 peer 信息
+                    lk.lock();
+                    auto it2 = connections_.find(fd);
+                    if (it2 != connections_.end()) {
+                        it2->second->setPeerInfo(peerHost, peerPort, info.deviceName, info.deviceType);
+                    }
+                    lk.unlock();
                 }
-                conn.setPeerInfo(conn.peerHost(), conn.peerPort(), info.deviceName, info.deviceType);
+
                 NetEvent pev {};
                 pev.type = EventType::PairingRequest;
                 pev.deviceId = info.deviceId;
                 pev.deviceName = info.deviceName;
                 pev.deviceType = info.deviceType;
-                pev.host = conn.peerHost();
-                pev.tcpPort = conn.peerPort();
+                pev.host = peerHost;
+                pev.tcpPort = peerPort;
                 dispatchEvent(pev);
-                deferLogf("I ", "peer identity over TLS: %s (%s)", info.deviceId.c_str(), info.deviceName.c_str());  // S2
-                if (!conn.connectedNotified()) {
-                    conn.markConnectedNotified();
+                deferLogf("I ", "peer identity over TLS: %s (%s)", info.deviceId.c_str(),
+                          info.deviceName.c_str());
+                if (!connectedNotified) {
+                    connectedNotified = true;
+                    lk.lock();
+                    auto it3 = connections_.find(fd);
+                    if (it3 != connections_.end()) {
+                        it3->second->markConnectedNotified();
+                    }
+                    lk.unlock();
                     NetEvent cev {};
                     cev.type = EventType::Connected;
-                    cev.deviceId = conn.deviceId();
-                    cev.deviceName = conn.peerName();
-                    cev.deviceType = conn.peerType();
-                    cev.host = conn.peerHost();
-                    // 出向连接：peerPort 即拨号目标端口（对端真实监听端口），供 App 显示真实地址；
-                    // 入向连接的对端端口是临时端口，报了反而误导，故保持 0。
-                    if (!conn.isIncoming()) {
-                        cev.tcpPort = conn.peerPort();
-                        // 建链成功才缓存：这是「验证过的端口」，供后续端口未知的拨号直接复用
-                        rememberPeerPort(conn.peerHost(), conn.peerPort());
+                    cev.deviceId = deviceId;
+                    cev.deviceName = info.deviceName;
+                    cev.deviceType = info.deviceType;
+                    cev.host = peerHost;
+                    // 出向连接：peerPort 即拨号目标端口（对端真实监听端口）；入向连接的对端端口是
+                    // 临时端口，报了反而误导，故保持 0。
+                    if (!isIncoming) {
+                        cev.tcpPort = peerPort;
+                        rememberPeerPort(peerHost, peerPort);   // 仅出向：缓存"验证过的端口"
                     }
-                    cev.role = conn.tlsRole();
+                    cev.role = tlsRole;
                     dispatchEvent(cev);
-                    deferLogf("I ", "connected device=%s fd=%d role=%s",  // S2
-                              conn.deviceId().c_str(), conn.fd(),
-                              conn.tlsRole() == TlsRole::Server ? "server" : "client");
+                    deferLogf("I ", "connected device=%s fd=%d role=%s", deviceId.c_str(), fd,
+                              tlsRole == TlsRole::Server ? "server" : "client");
                 }
             }
             // 注意（P0，2026-09-13）：identity 帧**必须继续走下面的 PacketReceived 派发**，
             // 不能 `continue` 跳过——ArkTS 的 PacketRouter.handleIdentity/onPeerCapabilities
             // 依赖它做能力协商（caps），跳过会导致 PluginHost 永不装载插件，
             // 现象是「配对成功、连上了，但对端发来的 packet 全部 unhandled」。
-            // 这与函数头注释「每个完整帧派发一次 packetReceived」一致。
         }
 
         uint64_t xferId = 0;
-        if (payloadSize != 0 && payloadPort != 0 && !conn.deviceId().empty()) {
-            // P1-3（A10）：只对已配对/已钉扎的设备自动拉取 payload。
-            // 未配对设备推送带 payload 的帧 → 不建拉取任务（spool 不落文件）+ error 事件；
-            // 帧本身仍派发（ArkTS PacketRouter 自行判定策略）。
+        if (payloadSize != 0 && payloadPort != 0 && !deviceId.empty()) {
+            // P1-3（A10）：只对已配对/已钉扎的设备自动拉取 payload；未信任 ⇒ 不建任务（spool 不落文件）
             bool trusted = false;
             {
-                std::lock_guard<std::mutex> lk(trustMutex_);
-                trusted = trustedCertPem_.count(conn.deviceId()) != 0;
+                std::lock_guard<std::mutex> tlk(trustMutex_);
+                trusted = trustedCertPem_.count(deviceId) != 0;
             }
             if (trusted) {
-                // 收到带 payload 的帧：自动建 payload 拉取任务（spool 落盘，设计 v0.2 §2）
-                xferId = payload_->startReceive(conn.deviceId(), conn.peerHost(),
-                                                payloadPort, payloadSize, body);
+                // 锁外调用：PayloadManager 自带 mu_，锁序 connMutex_ → mu_ 允许（此处未持 connMutex_）
+                xferId = payload_->startReceive(deviceId, peerHost, payloadPort, payloadSize, body);
             } else {
                 deferLogf("E ", "[KDC-PAYLOAD] push rejected: device %s not trusted "
-                                "(port=%u size=%lld)",  // S2: 临界区内延迟打; 标签化便于按 KDC-PAYLOAD 抓取
-                          conn.deviceId().c_str(), payloadPort, (long long) payloadSize);
-                dispatchError(conn.deviceId(), EACCES,
-                              "payload rejected: device not paired/trusted");
+                                "(port=%u size=%lld)", deviceId.c_str(), payloadPort,
+                          (long long) payloadSize);
+                dispatchError(deviceId, EACCES, "payload rejected: device not paired/trusted");
             }
         }
 
-        // 载荷已宣告但未启动（xferId==0 而 payloadSize!=0）：ArkTS 若据 payloadSize 建「接收中」
-        // 条目将**永久悬挂**（FSM 每 5s/任务必打 ⇒ 无 KDC-PAYLOAD 行即从未入表，见 DevEco MSG22）。
-        // 这里给出可诊断日志 + 显式错误事件收口，避免「无任务、无终态」的静默失败。
+        // 载荷已宣告但未启动：ArkTS 若据 payloadSize 建「接收中」条目会永久悬挂（DevEco MSG22）
         if (payloadSize != 0 && xferId == 0) {
-            const char *why = payloadPort == 0       ? "port missing/0"
-                              : conn.deviceId().empty() ? "deviceId unknown"
-                                                        : "not trusted";
-            std::string head = frame.substr(0, 160);
+            const char *why = payloadPort == 0    ? "port missing/0"
+                              : deviceId.empty()  ? "deviceId unknown"
+                                                  : "not trusted";
+            std::string head = raw.substr(0, 160);
             for (char &ch : head) {
                 if (ch == '\n' || ch == '\r') ch = ' ';
             }
             deferLogf("W ", "[KDC-PAYLOAD] announced but NOT started: fd=%d type=%s size=%lld "
                             "port=%u why=%s head=%s",
-                      conn.fd(), type.c_str(), (long long) payloadSize, payloadPort, why,
-                      head.c_str());
-            dispatchError(conn.deviceId(), EIO, std::string("payload not started (") + why + ")");
+                      fd, type.c_str(), (long long) payloadSize, payloadPort, why, head.c_str());
+            dispatchError(deviceId, EIO, std::string("payload not started (") + why + ")");
         }
 
         NetEvent ev {};
         ev.type = EventType::PacketReceived;
         ev.payloadTransferId = xferId;
-        ev.deviceId = conn.deviceId();
-        ev.packet = frame;  // 保留帧尾 '\n'（ArkTS 现有切分逻辑依赖它）
+        ev.deviceId = deviceId;
+        ev.packet = raw;   // 保留帧尾 '\n'（ArkTS 现有切分逻辑依赖它）
         ev.payloadSize = payloadSize;
         ev.payloadTransferPort = payloadPort;
         dispatchEvent(ev);
     }
+
     const int64_t _censusMs = monoMs() - _censusT0;
+    lk.lock();   // 恢复调用方的不变式（返回时 connMutex_ 必须已持有）
     if (_censusMs > 100) {
-        deferLogf("I ", "[KDC-FRAMESPLIT] n=%{public}llu frames=%{public}lld bytes=%{public}lld "
-             "maxFrame=%{public}llu total=%{public}lldms",
-             (unsigned long long) _dispatchSeq, (long long) _censusFrames,
-             (long long) _censusBytes, (unsigned long long) _censusMaxFrame,
-             (long long) _censusMs);  // S2b
+        deferLogf("I ", "[KDC-FRAMESPLIT] n=%llu frames=%lld bytes=%lld maxFrame=%llu total=%lldms",
+                  (unsigned long long) _dispatchSeq, (long long) _censusFrames,
+                  (long long) _censusBytes, (unsigned long long) _censusMaxFrame,
+                  (long long) _censusMs);
     }
     if (dropConn) {
-        closeConnection(conn.fd(), dropReason);
+        closeConnection(fd, dropReason.c_str());
     }
 }
 
@@ -1457,7 +1496,7 @@ void NetStack::onConnectionReadable(int fd)
     WriteInterestGuard _wig(this, fd);
     HoldTimer _hold("onConnectionReadable");
     DeferredLogFlush _dlf;   // S2: 临界区内 deferLogf 的统一出口（析构时锁已释放）
-    std::lock_guard<std::mutex> lk(connMutex_);
+    std::unique_lock<std::mutex> lk(connMutex_);
     auto it = connections_.find(fd);
     if (it == connections_.end()) return;
     TcpConnection &conn = *it->second;
@@ -1503,7 +1542,7 @@ void NetStack::onConnectionReadable(int fd)
     }
 
     if (conn.state() == ConnectionState::Encrypted) {
-        drainEncrypted(conn);
+        drainEncrypted(lk, conn);
     }
 }
 
@@ -1511,7 +1550,7 @@ void NetStack::onConnectionReadable(int fd)
 // **握手完成的当次也必须调用**：对端常在握手后立刻把 identity 帧塞进同一 burst，
 // 若那时直接 return，后续没有新边沿 → 帧永久滞留 → 对端 caps 永远协商不了
 // （现象：配对/连接成功，但对端发来的 packet 全部 unhandled）。
-void NetStack::drainEncrypted(TcpConnection &conn)
+void NetStack::drainEncrypted(std::unique_lock<std::mutex> &lk, TcpConnection &conn)
 {
     // json 段（cJSON 解析 + 逐帧派发）计时：仅用于 PHASESPLIT 打点，静态累计，不改签名
     static thread_local int64_t s_jsonMs = 0;
@@ -1552,7 +1591,7 @@ void NetStack::drainEncrypted(TcpConnection &conn)
         return;
     }
     const int64_t _tJson = monoMs();
-    dispatchFrames(conn);
+    dispatchFrames(lk, conn);
     s_jsonMs = monoMs() - _tJson;
     // 只在这两段合计超阈值时打一行（与 PHASESPLIT 同口径）
     if (_ioMs + s_jsonMs > 100) {
@@ -1567,7 +1606,7 @@ void NetStack::onConnectionWritable(int fd)
     // 因此 guard 在析构里取锁是安全的（不会自锁）。
     WriteInterestGuard _wig(this, fd);
     HoldTimer _hold("onConnectionWritable");
-    std::lock_guard<std::mutex> lk(connMutex_);
+    std::unique_lock<std::mutex> lk(connMutex_);
     auto it = connections_.find(fd);
     if (it == connections_.end()) return;
 
@@ -1628,7 +1667,7 @@ void NetStack::onConnectionWritable(int fd)
             if (conn.needsSendIdentity()) {
                 sendIdentityOverTls(conn);
             }
-            drainEncrypted(conn);   // 同一 burst 里可能已带着对端 identity（见 drainEncrypted 注释）
+            drainEncrypted(lk, conn);
         } else if (conn.state() == ConnectionState::Closing) {
             dispatchError(conn.deviceId(), EIO, "tls handshake failed");
             closeConnection(fd, "tls handshake failed");

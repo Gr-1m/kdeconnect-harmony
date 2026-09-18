@@ -80,7 +80,9 @@ private:
     // 出向连接握手阶段失败：带目标地址 + 真实 errno（App 据此提示「连接失败/对端无响应」）
     void dispatchConnectError(const std::string &host, uint16_t port, int code, const char *stage);
     // 加密态排空读 + 派发帧（EPOLLET 正确性 + 握手完成当次排空，见实现注释）
-    void drainEncrypted(TcpConnection &conn);
+    // 两者都要求调用方已持有 connMutex_（lk 为其 unique_lock）：S1 两阶段管线在解析段临时放锁，
+    // 返回时重新加锁。放锁期间连接可能被回收 ⇒ 该段内只按 fd/快照取值，绝不引用传入的 conn。
+    void drainEncrypted(std::unique_lock<std::mutex> &lk, TcpConnection &conn);
     // TLS 握手上限（NetConfig 可注入以便测试缩短；0 → CONNECT_HANDSHAKE_TIMEOUT_MS）
     int handshakeTimeoutMs() const
     {
@@ -110,7 +112,7 @@ private:
     };
     void closeConnection(int fd, const char *reason);
     // 排空读后按 '\n' 切分逐帧派发（接收缓冲在连接对象内，半包留待下次）
-    void dispatchFrames(TcpConnection &conn);
+    void dispatchFrames(std::unique_lock<std::mutex> &lk, TcpConnection &conn);
     // 处理握手前的明文 identity 帧；成功返回 true 并推进到 TLS 握手
     bool handlePlainIdentity(TcpConnection &conn, const std::string &frame);
     void sendIdentityOverTls(TcpConnection &conn);
