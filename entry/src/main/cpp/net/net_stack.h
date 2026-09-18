@@ -210,6 +210,7 @@ private:
     // WP-2：信任设备证书（deviceId → PEM）；连接限流（IP/deviceId → 最近一次 ms）
     std::mutex trustMutex_;
     std::unordered_map<std::string, std::string> trustedCertPem_;
+    // P-4 方案 A：键为 "host|deviceId"（此前按 host）⇒ 异设备同 IP 不互相牵连
     std::unordered_map<std::string, int64_t> lastAcceptByIp_;
     std::unordered_map<std::string, int64_t> lastConnByDevice_;
 
