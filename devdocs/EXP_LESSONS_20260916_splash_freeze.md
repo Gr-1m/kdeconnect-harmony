@@ -111,5 +111,11 @@ payload fd 的 EPOLLOUT 按需挂载，我改了三次都让**载荷握手停摆
 
 `105ddff` + `d3cd02c` 复跑（MatePad Mini / 手机，DevEco MSG18）：`[KDC-FRAMESPLIT]`/`[KDC-DRAINSPLIT]`/`[KDC-LOCKHOLD]`/`[KDC-ENTRY-SPLIT]` **均 0 行**、慢 `JsSendPacket` **0 条**、`THREAD_BLOCK` **0/0**、`maxHold=13ms`、`maxJsLockWait=0ms`、CPU 743ms/5.1s（健康稳态）⇒ 上一轮残留的 326~384ms 单次成本即**缓冲首次分配 + memset + 冷页故障**，已随 `105ddff` 消除；`n=` 探针因无现象而无内容可打（保留为后续长派发的诊断钩子）。
 
-### 5.4 仍未决
+### 5.4 与参考实现的差异（AtomCode REVIEW_REFERENCE_PRACTICES，CodeArts MSG19）
+
+- **版本漂移（P-1）**：KDE 有显式断言（`lanlinkprovider.cpp:433-437`）；**我们不做**——v8 在加密通道内二次交换 identity 并校验 `deviceId`/`protocolVersion` 未变，加上 packet JSON 契约，已兜住同一风险。此条为**有意差异**，勿回退补断言。
+- **双维度限流（P-4）**：Android 有 deviceId + IP 两把表，我们只有 IP ⇒ 同 NAT 双设备会被误伤；**待 S3 批次补 deviceId 维度软限流**（identity 读完后第二道）。
+- **延迟析构纪律（P-3）**：KDE 用 `deleteLater` 声明即可，我们需手动快照+重确认 ⇒ S1 两阶段管线已把回调点减半，悬垂确认面同步减半。
+
+### 5.5 仍未决
 - **既有偶发**：`peerIdentityIsDispatchedAsPacket`（UDP 已发现对端但无 `PairingRequest`，约 1/3），已证实在改动前提交上同样出现 ⇒ 归测试归属方，需要我接手时再说。
