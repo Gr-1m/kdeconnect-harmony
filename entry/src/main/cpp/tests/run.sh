@@ -70,3 +70,18 @@ g++ -std=c++17 -Wall -Wextra -O1 \
 "$OUT/kdc_net_tests"
 
 "$OUT/kdc_payload_tests"
+
+# —— S5-a 不变量：每个头文件必须能**独立编译**（自带所需依赖），否则拆 TU/新增 TU 会随机编译失败 ——
+# 排除 napi_exports.h：它依赖 SDK 的 napi/native_api.h（宿主无该头，属预期而非缺陷）。
+hdr_fail=0
+for h in ../net/*.h ../payload/*.h; do
+    case "$h" in *napi_exports.h) continue ;; esac
+    printf '#include "%s"\nint main(){return 0;}\n' "$(basename "$h")" > "$OUT/hdrcheck.cpp"
+    if ! g++ -std=c++17 -fsyntax-only -I.. -I../net -I../payload -Istub -I../bearssl/inc \
+         "$OUT/hdrcheck.cpp" 2>/dev/null; then
+        echo "header not self-sufficient: $h"
+        hdr_fail=1
+    fi
+done
+echo "header self-check: failed=$hdr_fail (0=全部自足)"
+[ "$hdr_fail" = 0 ]
