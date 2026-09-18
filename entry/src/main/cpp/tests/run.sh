@@ -21,7 +21,7 @@ gcc -O1 -I../bearssl/inc -I../bearssl/src -I../json \
     -c ../json/cJSON.c -o "$OUT/cJSON.o"
 
 # 1) 纯函数单测（proto/地址策略/证书工具）
-g++ -std=c++17 -Wall -Wextra -O1 \
+g++ -std=c++17 -Wall -Wextra -O1 -DKDC_TELEMETRY=1 \
     -I. -I.. -Istub -I../bearssl/inc \
     test_main.cpp \
     ../net/packet_io.cpp \
@@ -35,7 +35,7 @@ g++ -std=c++17 -Wall -Wextra -O1 \
 "$OUT/kdc_native_tests"
 
 # 2) payload 集成测试（真实 PayloadManager + TlsEngine + 假宿主）
-g++ -std=c++17 -Wall -Wextra -O1 \
+g++ -std=c++17 -Wall -Wextra -O1 -DKDC_TELEMETRY=1 \
     -I. -I.. -Istub -I../bearssl/inc \
     payload_e2e.cpp \
     ../payload/payload.cpp \
@@ -50,7 +50,7 @@ g++ -std=c++17 -Wall -Wextra -O1 \
     -o "$OUT/kdc_payload_tests"
 
 # 3) net 栈测试（连接失败可解释性 + 有界握手；不需局域网/设备）
-g++ -std=c++17 -Wall -Wextra -O1 \
+g++ -std=c++17 -Wall -Wextra -O1 -DKDC_TELEMETRY=1 \
     -I. -I.. -Istub -I../bearssl/inc \
     net_stack_tests.cpp \
     ../net/net_stack.cpp \

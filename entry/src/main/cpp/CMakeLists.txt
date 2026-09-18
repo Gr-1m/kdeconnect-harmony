@@ -36,6 +36,9 @@ add_library(kdeconnect_napi SHARED
     ${NET_SRCS}
     ${NAPI_SRCS}
 )
+# S4：排查级埋点编译期开关（release 只留 NETLOOP 粗粒度哨兵）
+target_compile_definitions(kdeconnect_napi PRIVATE $<$<NOT:$<CONFIG:Debug>>:KDC_TELEMETRY=0>)
+
 
 target_include_directories(kdeconnect_napi PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

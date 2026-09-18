@@ -352,10 +352,12 @@ bool NetStack::sendPacket(const std::string &deviceId, const std::string &packet
     if (lockWaitMs > maxJsLockWaitMs_.load()) {
         maxJsLockWaitMs_.store(lockWaitMs);
     }
+#if KDC_TELEMETRY   // S4：排查级埋点（release 关；maxJsLockWaitMs_ 累计不受影响）
     if (lockWaitMs >= 50) {
         deferLogf("I ", "[KDC-LOCKWAIT] sendPacket 等 connMutex_ %lldms（conns=%llu）",  // S2
                   (long long) lockWaitMs, (unsigned long long) connections_.size());
     }
+#endif
     for (auto &p : connections_) {
         TcpConnection &conn = *p.second;
         if (conn.deviceId() != deviceId) {
