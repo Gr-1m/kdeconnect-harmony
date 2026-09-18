@@ -267,7 +267,9 @@ void NetStack::dispatchError(const std::string &deviceId, int code, const std::s
     ev.errorCode = code;
     ev.errorMessage = message;
     dispatchEvent(ev);
-    LOGE("error event: device=%s host=%s:%u code=%d msg=%s",
+    // S2 收尾：本函数会在持 connMutex_ 的路径被调用（如 sendPacket/closeConnection 内部），
+    // 故统一走延迟打；S2b 的 t_flushArmed 保证无冲刷出口的线程（JS 线程）仍立即输出。
+    deferLogf("E ", "error event: device=%s host=%s:%u code=%d msg=%s",
          deviceId.empty() ? "?" : deviceId.c_str(), host.empty() ? "?" : host.c_str(), port, code,
          message.c_str());
 }
