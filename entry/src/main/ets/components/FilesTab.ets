@@ -22,6 +22,9 @@ export struct FilesTab {
   // 打开「已接收文件」弹窗（弹层由 Index 渲染，沿用项目现有弹层范式）
   onOpenReceivedFiles: () => void = () => {
   };
+  // 点击某一行 → 打开「文件详情」弹窗（属性 + 另存为/丢弃/取消），弹层同样由 Index 渲染
+  onOpenPayload: (transferId: number) => void = () => {
+  };
 
   private isActive(p: PayloadTransfer): boolean {
     return p.state === 'started' || p.state === 'progress';
@@ -50,6 +53,9 @@ export struct FilesTab {
         },
         onCancel: (item: PayloadTransfer): void => {
           this.onCancelPayload(item);
+        },
+        onOpen: (tid: number): void => {
+          this.onOpenPayload(tid);
         }
       })
     }, (p: PayloadTransfer) => `${prefix}_${p.transferId}`)

@@ -334,6 +334,46 @@
       "value": "Cancel"
     },
     {
+      "name": "file_action_save_as",
+      "value": "Save as"
+    },
+    {
+      "name": "file_attr_size",
+      "value": "Size"
+    },
+    {
+      "name": "file_attr_time",
+      "value": "Time"
+    },
+    {
+      "name": "sys_volume",
+      "value": "System volume"
+    },
+    {
+      "name": "sys_mute",
+      "value": "Mute"
+    },
+    {
+      "name": "sys_unmute",
+      "value": "Unmute"
+    },
+    {
+      "name": "file_attr_state",
+      "value": "State"
+    },
+    {
+      "name": "file_attr_dir",
+      "value": "Direction"
+    },
+    {
+      "name": "file_dir_receive",
+      "value": "Received"
+    },
+    {
+      "name": "file_dir_send",
+      "value": "Sent"
+    },
+    {
       "name": "action_send_file",
       "value": "Send File"
     },

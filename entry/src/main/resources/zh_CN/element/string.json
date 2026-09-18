@@ -322,6 +322,46 @@
       "value": "取消"
     },
     {
+      "name": "file_action_save_as",
+      "value": "另存为"
+    },
+    {
+      "name": "file_attr_size",
+      "value": "大小"
+    },
+    {
+      "name": "file_attr_time",
+      "value": "时间"
+    },
+    {
+      "name": "sys_volume",
+      "value": "系统音量"
+    },
+    {
+      "name": "sys_mute",
+      "value": "静音"
+    },
+    {
+      "name": "sys_unmute",
+      "value": "取消静音"
+    },
+    {
+      "name": "file_attr_state",
+      "value": "状态"
+    },
+    {
+      "name": "file_attr_dir",
+      "value": "方向"
+    },
+    {
+      "name": "file_dir_receive",
+      "value": "接收"
+    },
+    {
+      "name": "file_dir_send",
+      "value": "发送"
+    },
+    {
       "name": "action_send_file",
       "value": "发送文件"
     },
