@@ -159,6 +159,22 @@ UI 结构（对齐 iOS 端 Devices+Settings 两 Tab，鸿蒙扩展为四 Tab）�
 - **命名**：文件 PascalCase（页面/组件）/ camelCase（工具）沿用现状；类 CamelCase；常量全大写；注释中文为主、标识符英文。
 - **风格**：LF 换行（`.editorconfig` 精神：4 空格缩进、文件末尾换行）；新增文件带 SPDX 头（`GPL-3.0-or-later`，仓库 LICENSE 口径，旧文件 `GPL-2.0-or-later` 随基线不动）。
 
+### 4.9 状态管理陷阱：ForEach 项「内容会变」时必须 @Observed + @ObjectLink
+
+- **①机制**：`ForEach` 用**键**（如 `item.name`）判断"这一项有没有变"，**键不变时不会重新执行子组件构建**；
+  因此给行组件传**标量 `@Prop`**（`desc` / `muted` / `pct` 各一个）时，后续变化**永远冻结在首帧**。
+  （同源陷阱：`@Builder` 传值参数不变同样会跳过重建——本项目早前已记过。）
+- **②判定信号**：**命令已生效、UI 不动**（如点静音后对端确实静音了，但按钮文案不变）⇒ 数据层正常、**渲染层被冻结**，
+  不要再去查数据流；同理"滑杆不跟随对端变化"也是同一个信号。
+- **③标准解**：行数据用 **`@Observed class`**（字段可变 + 一个 `update()` 写入点），行组件用 **`@ObjectLink`**；
+  数据源**保持实例稳定**（同名项复用同一实例、字段原地更新），仅在**成员集合变化**（增删/改名）时换新数组引用，
+  让 `ForEach` 重新求值一次。参考实现：`plugins/SystemVolumePlugin.syncRows()` + `components/SystemSinkRow.ets`。
+- **收益**：某项字段变化只重建**那一行**；成员变化才重建列表；页面其余部分完全不动。
+- **相关（批3 #1 的 `LogStore` 同理）**：`@Observed` 对象挂在以 `@ObjectLink` 订阅它的子组件上时，
+  写其**内部字段**只重建该子组件。注意 ArkTS 硬性要求：该对象在**父组件里必须挂状态装饰器**
+  （用 `private` 会编译报 `The 'regular' property ... cannot be assigned to the '@ObjectLink' property`），
+  但这**不代表**会整页重建——这是刻意的分工，别误删成 `private`。
+
 ## 5. NAPI 契约硬规则（ArkTS 侧执行）
 
 1. 类型与函数**只从 `libkdeconnect_napi.so` 导入**，d.ts 是唯一契约源（`entry/src/main/cpp/types/libkdeconnect_napi/Index.d.ts`）。
