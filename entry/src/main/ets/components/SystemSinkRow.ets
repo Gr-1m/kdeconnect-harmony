@@ -42,7 +42,7 @@ export struct SystemSinkRow {
           .width(22)
           .height(22)
           .onChange((isChecked: boolean) => {
-            if (isChecked) {
+            if (isChecked && !this.sink.isDefault) {
               this.onSelect(this.sink.name);
             }
           })

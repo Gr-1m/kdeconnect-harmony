@@ -39,9 +39,15 @@ export default class EntryAbility extends UIAbility {
     try {
       const win = windowStage.getMainWindowSync();
       win.setWindowLayoutFullScreen(true);
-      const avoid = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
-      AppStorage.setOrCreate('statusBarHeightPx', avoid.topRect.height);
-      AppStorage.setOrCreate('navBarHeightPx', avoid.bottomRect.height);
+      const updateAvoidArea = (): void => {
+        const area = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+        AppStorage.setOrCreate('statusBarHeightPx', area.topRect.height);
+        AppStorage.setOrCreate('navBarHeightPx', area.bottomRect.height);
+      };
+      updateAvoidArea();
+      win.on('windowSizeChange', () => {
+        updateAvoidArea();
+      });
       // 手机（窄屏）锁竖屏；平板等大屏保持 auto_rotation，横屏走并排侧栏
       const LOCK_PHONE_PORTRAIT: boolean = true;
       if (!LOCK_PHONE_PORTRAIT || this.isLargeScreenDevice()) {
