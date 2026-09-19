@@ -684,6 +684,79 @@ void payloadSurvivesLinkReplacement()
     ::waitpid(child, &status, 0);
 }
 
+// 契约：设备级断链必须为进行中的 payload 派发**终态事件**（含 transferId）。
+// 依据：ArkTS 的串行发送队列（DevEco MSG35 §1）以 payloadTransfer 的终态分支推进；native 漏派 ⇒ 队列卡死。
+// 该契约由 closeConnection（无存活链路）→ payload_->onDeviceDown → failJobLocked → emitLocked 保证；
+// 本用例用公开 API disconnectDevice 确定性触发（不依赖时序竞猜）。
+void deviceDownDispatchesPayloadTerminal()
+{
+    ::unlink(kHarnessPeerPemPath);
+    const pid_t child = ::fork();
+    CHECK_MSG(child >= 0, "fork 失败");
+    if (child < 0) return;
+    if (child == 0) {
+        ::execl("/proc/self/exe", "kdc_net_tests", "--peer-links", "1745", nullptr);
+        ::_exit(127);
+    }
+    std::string pem;
+    for (int i = 0; i < 250 && pem.empty(); ++i) {
+        std::FILE *f = std::fopen(kHarnessPeerPemPath, "r");
+        if (f != nullptr) {
+            char buf[8192];
+            size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
+            buf[n] = '\0';
+            pem.assign(buf, n);
+            std::fclose(f);
+        }
+        if (pem.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    CHECK_MSG(!pem.empty(), "harness 前置失败：未取到对端证书");
+    if (!pem.empty()) netStack().setTrustedCertificate(kPeerLinksDeviceId, pem);
+
+    // 等接收确实在途（有进度）——确定性，不靠猜时间
+    int64_t total = 0;
+    int64_t done = 0;
+    const int64_t waitIn = nowMs() + 60000;
+    while (nowMs() < waitIn && (total == 0 || done == 0)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::lock_guard<std::mutex> lk(g_mu);
+        for (const NetEvent &e : g_events) {
+            if (e.type == EventType::PayloadTransfer && !e.payloadDirectionSend &&
+                e.payloadBytesDone > 0) {
+                total = e.payloadSize;
+                done = e.payloadBytesDone;
+            }
+        }
+    }
+    CHECK_MSG(total > 0 && done > 0, "harness 前置失败：载荷未起来");
+
+    netStack().disconnectDevice(kPeerLinksDeviceId);   // 公开 API：设备级断链
+
+    bool sawTerminal = false;
+    uint64_t terminalId = 0;
+    const int64_t deadline = nowMs() + 30000;
+    while (nowMs() < deadline && !sawTerminal) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::lock_guard<std::mutex> lk(g_mu);
+        for (const NetEvent &e : g_events) {
+            if (e.type == EventType::PayloadTransfer && !e.payloadDirectionSend &&
+                (e.payloadState == "failed" || e.payloadState == "cancelled") &&
+                e.payloadTransferId != 0) {
+                sawTerminal = true;
+                terminalId = e.payloadTransferId;
+                std::fprintf(stderr, "  [dbg] terminal id=%llu state=%s code=%d msg=%s\n",
+                             (unsigned long long) e.payloadTransferId, e.payloadState.c_str(),
+                             e.errorCode, e.errorMessage.c_str());
+            }
+        }
+    }
+    CHECK_MSG(sawTerminal, "设备级断链未派发 payload 终态事件（ArkTS 串行队列将卡死）");
+    CHECK_MSG(terminalId != 0, "终态事件必须带 transferId");
+    ::kill(child, SIGKILL);
+    int status = 0;
+    ::waitpid(child, &status, 0);
+}
+
 // —————— ④ 端口未知（0）的拨号：探测 + 缓存（DevEco 第五次报，2026-09-13）——————
 //
 // 载荷「已宣告但未启动」必须可收口（DevEco MSG22 回归，2026-09-17）：
@@ -830,6 +903,7 @@ int main(int argc, char **argv)
         {"peerIdentityIsDispatchedAsPacket"},  {"sendPacketQueuesDuringHandshake"},
         {"portProbeFindsListener"},            {"dialUnknownPortProbesAndConnects"},
         {"announcedPayloadWithoutPortIsTerminal"}, {"payloadSurvivesLinkReplacement"},
+        {"deviceDownDispatchesPayloadTerminal"},
     };
     if (argc >= 2 && std::strcmp(argv[1], "--list") == 0) {
         for (const ListDef &n : kNames) {
@@ -879,6 +953,7 @@ int main(int argc, char **argv)
         {"dialUnknownPortProbesAndConnects", dialUnknownPortProbesAndConnects},
         {"announcedPayloadWithoutPortIsTerminal", announcedPayloadWithoutPortIsTerminal},
         {"payloadSurvivesLinkReplacement", payloadSurvivesLinkReplacement},
+        {"deviceDownDispatchesPayloadTerminal", deviceDownDispatchesPayloadTerminal},
     };
     for (const CaseDef &c : kCases) {
         runCase(c.name, c.fn);

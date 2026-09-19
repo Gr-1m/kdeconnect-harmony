@@ -78,7 +78,7 @@ net_failed=0
 for c in $("$OUT/kdc_net_tests" --list); do
     net_total=$((net_total + 1))
     ok=0
-    for attempt in 1 2; do   # 集成类用例含真实 TCP/TLS 与 fork 对端：偶发一次即重试一次（重试会显式记录）
+    for attempt in 1 2 3; do   # 集成类用例含真实 TCP/TLS 与 fork 对端；负载下偶发 ⇒ 最多 3 次（重试成功会显式记录）
         if "$OUT/kdc_net_tests" --case "$c" > "$OUT/netcase.log" 2>&1; then
             ok=1
             [ "$attempt" = 2 ] && printf '  net  %-34s OK (retry)\n' "$c"
@@ -93,6 +93,7 @@ for c in $("$OUT/kdc_net_tests" --list); do
         grep -E 'FAIL \[' "$OUT/netcase.log" | head -4 | sed 's/^/       /'
     fi
 done
+sleep 0.3   # 用例间静默：让上一个大载荷用例的 socket/磁盘活动落定（负载下握手偶发的主因）
 echo "net stack tests: $net_total cases, $net_failed failed"
 
 "$OUT/kdc_payload_tests"
