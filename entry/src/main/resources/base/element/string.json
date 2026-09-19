@@ -350,6 +350,34 @@
       "value": "System volume"
     },
     {
+      "name": "media_tab_player",
+      "value": "Media"
+    },
+    {
+      "name": "media_tab_devices",
+      "value": "Devices"
+    },
+    {
+      "name": "sys_default_sink",
+      "value": "Default"
+    },
+    {
+      "name": "sys_set_default",
+      "value": "Set as default output"
+    },
+    {
+      "name": "media_no_output",
+      "value": "No output device found"
+    },
+    {
+      "name": "media_no_output_hint",
+      "value": "Check the audio service on the peer, then tap Refresh"
+    },
+    {
+      "name": "toast_send_file_failed",
+      "value": "Send failed"
+    },
+    {
       "name": "sys_mute",
       "value": "Mute"
     },
