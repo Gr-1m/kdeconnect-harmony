@@ -114,8 +114,11 @@ export class PluginHost {
     if (peerIncoming.length === 0 && peerOutgoing.length === 0) {
       return true; // 对端未声明能力 → 视为全支持
     }
+    // P2-7：对端声明了 outgoing 却把 incoming 留空，语义是「我不收任何包」——
+    // 此时我方发送类插件不应装载（旧逻辑 `peerIncoming.length === 0` 会误放行，
+    // 对我们发的每个包类型都返回 true）。
     for (const t of proto.outgoingPacketTypes) {
-      if (peerIncoming.length === 0 || peerIncoming.includes(t)) {
+      if (peerIncoming.length > 0 && peerIncoming.includes(t)) {
         return true;
       }
     }

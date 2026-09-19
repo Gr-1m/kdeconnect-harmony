@@ -57,7 +57,7 @@ export class BatteryPlugin extends PluginBase {
       return true;
     }
     const charging: boolean = b.isCharging ?? false;
-    this.notify('battery', `${charge}|${charging ? '1' : '0'}`);
+    this.notifyEvent({ kind: 'battery', battery: { charge: charge, charging: charging } });
     return true;
   }
 

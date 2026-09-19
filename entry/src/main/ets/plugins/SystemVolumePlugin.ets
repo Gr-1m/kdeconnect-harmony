@@ -185,7 +185,10 @@ export class SystemVolumePlugin extends PluginBase {
       return false;
     }
     const p: number = pct < 0 ? 0 : (pct > 100 ? 100 : Math.round(pct));
-    s.volumeAbs = Math.round(p * s.maxVolume / 100);   // 乐观更新（对端随后会推回真实值）
+    // 乐观更新（对端随后会推回真实值）；send 失败必须回滚，否则本地状态永久偏离对端真值（P2-5）
+    const savedAbs: number = s.volumeAbs;
+    const savedMuted: boolean = s.muted;
+    s.volumeAbs = Math.round(p * s.maxVolume / 100);
     // 与对端语义对齐：KDE 收到 volume 后会无条件 `setMuted(false)` ⇒ 本地静音态也要跟着清掉
     // （否则 UI 会显示"静音中"而对端其实已经在出声）。
     s.muted = false;
@@ -194,7 +197,12 @@ export class SystemVolumePlugin extends PluginBase {
     // **不带 muted**（避免与"清静音"语义打架）。
     const body: SysVolumeBodyDto = { name: s.name, volume: s.volumeAbs };
     const ok: boolean = this.send('kdeconnect.systemvolume.request', body);
-    this.log(ok ? `set volume sent: ${s.name} ${p}%` : `set volume failed: ${s.name} ${p}%`);
+    if (!ok) {
+      s.volumeAbs = savedAbs;
+      s.muted = savedMuted;
+      this.push();
+    }
+    this.log(ok ? `set volume sent: ${s.name} ${p}%` : `set volume failed (rolled back): ${s.name} ${p}%`);
     return ok;
   }
 
@@ -204,13 +212,19 @@ export class SystemVolumePlugin extends PluginBase {
       this.log(`mute skipped: unknown sink ${name}`);
       return false;
     }
+    // 乐观翻转 + send 失败回滚（P2-5）
+    const savedMuted: boolean = s.muted;
     s.muted = !s.muted;
     this.log(`mute toggle: ${s.name} local muted=${s.muted}`);
     this.push();
     // 只发 muted + name（Android sendMute 同款；不需要带 volume，也不需要 enabled）。
     const body: SysVolumeBodyDto = { name: s.name, muted: s.muted };
     const ok: boolean = this.send('kdeconnect.systemvolume.request', body);
-    this.log(ok ? `mute -> ${s.muted} (${s.name})` : `mute send failed (${s.name})`);
+    if (!ok) {
+      s.muted = savedMuted;
+      this.push();
+    }
+    this.log(ok ? `mute -> ${s.muted} (${s.name})` : `mute send failed, rolled back (${s.name})`);
     return ok;
   }
 
@@ -265,9 +279,17 @@ export class SystemVolumePlugin extends PluginBase {
   // 滑杆禁用），列表到达时被 applyList 整体替换 ⇒ 自愈。面板打开时会请求一次列表，因此这只是极短的瞬态。
   private applyIncrement(b: SysVolumeBodyDto): void {
     const name: string = b.name !== undefined ? b.name : '';
-    const s: SysSinkState | undefined = this.find(name);
+    let s: SysSinkState | undefined = this.find(name);
     if (s === undefined) {
-      return;   // 列表里没有这个 sink ⇒ 忽略（无名/未知 sink 无法操作，等列表到达）
+      // P2-6：未知 sink 建「刻度未知」占位（maxVolume=0 ⇒ pct()=-1 ⇒ UI 显示"—"并禁用滑杆），
+      // 等全量列表到达时整体替换自愈——直接丢弃会静默丢掉对端先推的音量/静音变化。
+      if (name.length === 0) {
+        return;
+      }
+      s = new SysSinkState();
+      s.name = name;
+      this.sinks.push(s);
+      this.log(`increment for unknown sink ${name}: placeholder created`);
     }
     if (b.volume !== undefined) {
       s.volumeAbs = b.volume;

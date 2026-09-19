@@ -56,8 +56,17 @@ export class PacketRouter {
   private frameBuffers: Map<string, string> = new Map();
   private logFn: (msg: string) => void;
   private callbacks: RouterCallbacks;
-  // 本侧已发起、等待对端确认的配对请求：用于区分「对端确认」与「对端请求」
-  private requestedPeers: Set<string> = new Set();
+  // 本侧已发起、等待对端确认的配对请求：用于区分「对端确认」与「对端请求」。
+  // 值 = 发起时刻（秒）。带超时（PAIR_REQUEST_TTL_S）：请求若一直无回应，
+  // 残留记录会让对端之后**任意**一次新请求命中 race 分支、跳过用户确认直接接受——
+  // 绕过 AP-1 的用户裁决（安全相关，REVIEW_ARKTS_MERGED P2-1）。
+  private requestedPeers: Map<string, number> = new Map();
+  // 与本地配对弹窗等待时长（PAIR_TIMEOUT_MS=45s 的 UI 超时）同量级，取 60s 留裕量。
+  private static readonly PAIR_REQUEST_TTL_S = 60;
+  // 半帧缓冲上限（P2-3）：正常帧最大 32MiB，但坏实现对可能永远不发 '\n'——
+  // 无上限时按设备无界增长。超限即丢弃该设备的整段缓冲并断开其后续帧容错
+  //（非法数据本就该丢弃，native 侧同时会因帧超限关闭连接）。
+  private static readonly FRAME_BUFFER_MAX = 33 * 1024 * 1024;
 
   constructor(selfDeviceId: string, selfDeviceName: string, selfDeviceType: string,
               logFn: (msg: string) => void, callbacks: RouterCallbacks) {
@@ -80,7 +89,7 @@ export class PacketRouter {
     const body: PairBody = { pair: true, timestamp: ts };
     const ok: boolean = this.sendFrame(deviceId, PACKET_PAIR, body);
     if (ok) {
-      this.requestedPeers.add(deviceId);
+      this.requestedPeers.set(deviceId, Math.floor(Date.now() / 1000));
     }
     this.logFn('pair request sent to ' + deviceId + ' ok=' + ok);
     return ok;
@@ -93,7 +102,11 @@ export class PacketRouter {
     const body: PairBody = { pair: true };
     const ok: boolean = this.sendFrame(deviceId, PACKET_PAIR, body);
     this.logFn('pairing accepted with ' + deviceId + ' ok=' + ok);
-    this.callbacks.onPaired(deviceId);
+    // 帧没发出去（如链路未加密）就不能标记已配对——否则 UI 进入已配对态而对端从未收到确认
+    //（对照 requestPair 的同类处理，MSG77 §3 模式）。
+    if (ok) {
+      this.callbacks.onPaired(deviceId);
+    }
     return ok;
   }
 
@@ -120,7 +133,13 @@ export class PacketRouter {
     const lines: string[] = data.split('\n');
     const last: string | undefined = lines.pop();
     if (last !== undefined) {
-      this.frameBuffers.set(deviceId, last);
+      if (last.length > PacketRouter.FRAME_BUFFER_MAX) {
+        // 半帧超限：对端在持续发送无换行的数据（异常/恶意）——丢弃缓冲，防内存无界增长
+        this.frameBuffers.delete(deviceId);
+        this.logFn('frame buffer overflow from ' + deviceId + ' (' + last.length + ' bytes), dropped');
+      } else {
+        this.frameBuffers.set(deviceId, last);
+      }
     }
     for (const line of lines) {
       const frame: string = line.trim();
@@ -165,9 +184,17 @@ export class PacketRouter {
         const now: number = Math.floor(Date.now() / 1000);
         if (Math.abs(ts - now) > MAX_TIMESTAMP_DIFF_SECONDS) {
           this.logFn('pair rejected: clock skew ' + (now - ts) + 's from ' + deviceId);
+          // 必须回拒绝帧（对照 Android PairingHandler）：只吞不回会让对端停在等待态直到超时。
+          const reject: PairBody = { pair: false };
+          this.sendFrame(deviceId, PACKET_PAIR, reject);
           return;
         }
-        if (this.requestedPeers.has(deviceId)) {
+        const requestedAt: number | undefined = this.requestedPeers.get(deviceId);
+        // race 判定只认**未过期**的请求：过期残留必须走正常确认流程（否则对端任意
+        // 新请求都会跳过用户确认被直接接受——安全漏洞）。
+        const racePending: boolean = requestedAt !== undefined &&
+          (now - requestedAt) < PacketRouter.PAIR_REQUEST_TTL_S;
+        if (racePending) {
           // 双方同时发起：必须回一个**不带 timestamp** 的接受帧，
           // 否则对端永远停在 Requested（表现为「单边已配对」）。
           this.requestedPeers.delete(deviceId);

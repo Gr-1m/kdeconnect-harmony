@@ -54,7 +54,21 @@ export class PayloadHistory {
     }
   }
 
-  static async save(ctx: Context, items: PayloadTransfer[]): Promise<void> {
+  // P2-10：save() 是「读-合并-写」三步，两个传输几乎同时完成时两次 save 交错执行，
+  // 后写者基于旧快照覆盖会丢掉先写者的条目（preferences 无事务）。
+  // 用模块级 Promise 链把 save 串行化：每次调用排在链尾，调用方语义不变（fire-and-forget 仍安全）。
+  private static saveChain: Promise<void> = Promise.resolve();
+
+  static save(ctx: Context, items: PayloadTransfer[]): Promise<void> {
+    PayloadHistory.saveChain = PayloadHistory.saveChain
+      .then((): Promise<void> => PayloadHistory.doSave(ctx, items))
+      .catch((e: Error): void => {
+        // 链不能断：一次失败只影响本次，后续 save 照常排队
+      });
+    return PayloadHistory.saveChain;
+  }
+
+  private static async doSave(ctx: Context, items: PayloadTransfer[]): Promise<void> {
     try {
       const pref = await preferences.getPreferences(ctx, PREF_NAME);
       // AtomCode P2 修复：**防御式合并**。调用方可能只传「刚完成的那几条」，

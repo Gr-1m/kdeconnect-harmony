@@ -108,7 +108,8 @@ export class RunCommandPlugin extends PluginBase {
     const code: number = b.exitCode ?? -1;
     const preview: string = text.length > OUTPUT_PREVIEW_MAX
       ? text.substring(0, OUTPUT_PREVIEW_MAX) : text;
-    this.notify('runcommand.output', `${success ? '1' : '0'}|${code}|${preview}`);
+    this.notifyEvent({ kind: 'runcommand.output',
+      runOutput: { success: success, exitCode: code, text: preview } });
     this.log(`command output: success=${success} exit=${code} (${text.length} chars)`);
   }
 }
