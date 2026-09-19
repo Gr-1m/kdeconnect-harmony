@@ -39,6 +39,12 @@ export class ConnectivityReportPlugin extends PluginBase {
   }
 
   onCreate(): boolean {
+    // 重入保护（AtomCode L-P2-9）：旧实现重复 onCreate 会再建一个 interval，旧的不清理
+    // ⇒ 定时器泄漏 + 持续发包（每个泄漏的定时器都会一直 sendReport）。
+    if (this.timerId >= 0) {
+      clearInterval(this.timerId);
+      this.timerId = -1;
+    }
     this.sendReport(false);
     this.timerId = setInterval(() => {
       this.sendReport(true);

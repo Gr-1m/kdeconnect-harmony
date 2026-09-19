@@ -226,6 +226,10 @@
       "value": "已保存"
     },
     {
+      "name": "files_sent",
+      "value": "已发送"
+    },
+    {
       "name": "files_cancelled",
       "value": "已取消"
     },
@@ -360,6 +364,18 @@
     {
       "name": "toast_send_batch_done",
       "value": "文件发送完成"
+    },
+    {
+      "name": "toast_send_no_target",
+      "value": "请先在设备页选择要发送的设备"
+    },
+    {
+      "name": "toast_manual_bad_host",
+      "value": "请填写对端地址"
+    },
+    {
+      "name": "toast_manual_bad_port",
+      "value": "端口需为 1-65535"
     },
     {
       "name": "sys_mute",

@@ -114,16 +114,19 @@ export class PluginHost {
     if (peerIncoming.length === 0 && peerOutgoing.length === 0) {
       return true; // 对端未声明能力 → 视为全支持
     }
-    for (const t of proto.outgoingPacketTypes) {
-      if (peerIncoming.length === 0 || peerIncoming.includes(t)) {
-        return true;
+      // 发送类能力（AtomCode L-P2-7）：**只有对端明确声明"我能收"（peerIncoming）时才装**。
+      // 旧实现在 `peerIncoming.length === 0` 时无条件匹配 ⇒ 对「声明了 outgoing 但 incoming 为空」的对端
+      // 会装上**全部发送插件**（过宽）。收紧后：对端没声明收什么，就不替它假设（“两端都没声明”的兜底仍在上面）。
+      for (const t of proto.outgoingPacketTypes) {
+        if (peerIncoming.includes(t)) {
+          return true;
+        }
       }
-    }
-    for (const t of proto.supportedPacketTypes) {
-      if (peerOutgoing.length === 0 || peerOutgoing.includes(t)) {
-        return true;
+      for (const t of proto.supportedPacketTypes) {
+        if (peerOutgoing.length === 0 || peerOutgoing.includes(t)) {
+          return true;
+        }
       }
-    }
     return false;
   }
 }

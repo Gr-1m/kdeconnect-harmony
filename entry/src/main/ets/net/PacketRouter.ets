@@ -53,11 +53,35 @@ export class PacketRouter {
   private selfDeviceId: string;
   private selfDeviceName: string;
   private selfDeviceType: string;
+  // 半帧缓冲上限（**总指挥 MSG24 裁定表 #1：1 MiB**，用户认可版）：
+  // 这里只缓存**控制帧**（pair/identity/plugin 包），大文件走 payload 通道、不经这里 ⇒
+  // 控制帧实际大小：identity 硬限 8 KiB，最大的 plugin 控制包（mpris 快照 / systemvolume 全量）也就几 KB。
+  // 1 MiB 已比任何合法控制帧大 20-100 倍，又不会让恶意对端吃光内存；
+  // 用 payload 上限（32 MiB）给控制帧缓冲设限是**混淆了两个通道**，故不取 33 MiB。
+  private static readonly MAX_FRAME_BUFFER: number = 1024 * 1024;
   private frameBuffers: Map<string, string> = new Map();
   private logFn: (msg: string) => void;
   private callbacks: RouterCallbacks;
   // 本侧已发起、等待对端确认的配对请求：用于区分「对端确认」与「对端请求」
-  private requestedPeers: Set<string> = new Set();
+  // 我方主动请求配对后、"等对端回请"的**有效期**（安全：AtomCode L-P2-2）。
+  // 旧实现用 Set 且**从不清理** ⇒ 用户一次确认会在整会话内一直有效，
+  // 之后任何一次来自同一设备的配对请求都会被**跳过用户确认自动接受** ✗。
+  // 现在记录时刻并设上限；超期视为未请求（并顺手清理过期项）。
+  private static readonly PAIR_REQUEST_TTL_MS: number = 120000;
+  private requestedPeers: Map<string, number> = new Map();
+
+  // 该设备是否处于"我方刚请求过配对"的有效窗口内（超期即清理并视为未请求 —— 安全修复 L-P2-2）
+  private hasRecentPairRequest(deviceId: string): boolean {
+    const at: number | undefined = this.requestedPeers.get(deviceId);
+    if (at === undefined) {
+      return false;
+    }
+    if (Date.now() - at > PacketRouter.PAIR_REQUEST_TTL_MS) {
+      this.requestedPeers.delete(deviceId);
+      return false;
+    }
+    return true;
+  }
 
   constructor(selfDeviceId: string, selfDeviceName: string, selfDeviceType: string,
               logFn: (msg: string) => void, callbacks: RouterCallbacks) {
@@ -80,7 +104,7 @@ export class PacketRouter {
     const body: PairBody = { pair: true, timestamp: ts };
     const ok: boolean = this.sendFrame(deviceId, PACKET_PAIR, body);
     if (ok) {
-      this.requestedPeers.add(deviceId);
+      this.requestedPeers.set(deviceId, Date.now());
     }
     this.logFn('pair request sent to ' + deviceId + ' ok=' + ok);
     return ok;
@@ -92,8 +116,13 @@ export class PacketRouter {
   acceptPair(deviceId: string): boolean {
     const body: PairBody = { pair: true };
     const ok: boolean = this.sendFrame(deviceId, PACKET_PAIR, body);
-    this.logFn('pairing accepted with ' + deviceId + ' ok=' + ok);
-    this.callbacks.onPaired(deviceId);
+    // 修复（AtomCode L-P1-2）：**只有接受帧真的发出去了才回调 onPaired**。
+    // 旧实现无条件 onPaired ⇒ 未加密链路/发送失败时 UI 显示"已配对"但对端从未收到，
+    // 对端停在等待态直到超时（`acceptPair` 漏网，requestPair 早已按 MSG77 处理同类）。
+    if (ok) {
+      this.callbacks.onPaired(deviceId);
+    }
+    this.logFn('pairing accepted with ' + deviceId + ' ok=' + ok + (ok ? '' : ' (not marked paired: accept frame not sent)'));
     return ok;
   }
 
@@ -115,8 +144,15 @@ export class PacketRouter {
     if (deviceId === '') {
       return;
     }
-    const prev: string = this.frameBuffers.get(deviceId) ?? '';
-    const data: string = prev + raw;
+      const prev: string = this.frameBuffers.get(deviceId) ?? '';
+      // 上限保护（AtomCode L-P2-3）：超限一律丢弃该设备的半帧缓冲并留痕（等下一条完整帧重建），
+      // 避免"对端只发不带换行的垃圾数据"把内存吃光。
+      if (prev.length + raw.length > PacketRouter.MAX_FRAME_BUFFER) {
+        this.frameBuffers.delete(deviceId);
+        this.logFn(`frame buffer overflow, dropped (dev=${deviceId} len=${prev.length + raw.length})`);
+        return;
+      }
+      const data: string = prev + raw;
     const lines: string[] = data.split('\n');
     const last: string | undefined = lines.pop();
     if (last !== undefined) {
@@ -164,10 +200,13 @@ export class PacketRouter {
         const ts: number = body.timestamp;
         const now: number = Math.floor(Date.now() / 1000);
         if (Math.abs(ts - now) > MAX_TIMESTAMP_DIFF_SECONDS) {
+          // L-P2-1（AtomCode）：旧实现只 log + return ⇒ **对端停在等待态直到超时**。
+          // Android 的做法是回一个拒绝帧，这里复用既有 rejectPair（发 {pair:false} + 日志）。
           this.logFn('pair rejected: clock skew ' + (now - ts) + 's from ' + deviceId);
+          this.rejectPair(deviceId);
           return;
         }
-        if (this.requestedPeers.has(deviceId)) {
+        if (this.hasRecentPairRequest(deviceId)) {
           // 双方同时发起：必须回一个**不带 timestamp** 的接受帧，
           // 否则对端永远停在 Requested（表现为「单边已配对」）。
           this.requestedPeers.delete(deviceId);

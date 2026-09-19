@@ -822,10 +822,13 @@ export struct DevicesTab {
           .fontSize(13)
           .backgroundColor($r('app.color.accent'))
           .borderRadius(10)
-          .onClick(() => {
-            const port: number = parseInt(this.manualPort, 10) || 1716;
-            this.onManualConnect(this.manualHost, port);
-          })
+                .onClick(() => {
+                  // U-P2-3（AtomCode）：**不再把乱填的端口静默回退成 1716**。
+                  // 只有"输入框为空"才用默认端口；非数字一律原样交给上层（NaN）由上层校验并提示。
+                  const raw: string = this.manualPort.trim();
+                  const port: number = raw.length === 0 ? 1716 : parseInt(raw, 10);
+                  this.onManualConnect(this.manualHost, port);
+                })
       }
       .width('100%')
     }

@@ -69,7 +69,11 @@ export struct PayloadRow {
             .fontSize(10)
             .fontColor($r('app.color.accent_text'))
         } else if (this.payloadState === 'finished') {
-          Text(this.settled ? $r('app.string.files_saved') : $r('app.string.files_finished'))
+          // 完成态也要分方向（用户 2026-09-19 指定）：收到 = 已保存；发出 = 已发送。
+        // 口径与 Index.payloadStateText 必须一致（改一处要改两处）。
+        Text(this.payloadDirection === 'send'
+          ? $r('app.string.files_sent')
+          : (this.settled ? $r('app.string.files_saved') : $r('app.string.files_finished')))
             .fontSize(10)
             .fontColor(this.settled ? $r('app.color.dot_connected') : $r('app.color.accent_text'))
         } else if (this.payloadState === 'cancelled') {
@@ -130,6 +134,9 @@ export struct PayloadRow {
           }
         }
         .width('100%')
+        // U-P2-2（AtomCode）：行内按钮的点击**不能冒泡**到整行的 onClick（否则"保存/丢弃/取消"点完
+        // 会顺带打开「文件详情」弹窗）。用 hitTestBehavior 在按钮所在 Row 上阻断命中测试向上传递。
+        .hitTestBehavior(HitTestMode.Block)
       }
     }
     .width('100%')

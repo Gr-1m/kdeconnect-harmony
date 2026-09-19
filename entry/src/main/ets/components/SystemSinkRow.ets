@@ -41,11 +41,13 @@ export struct SystemSinkRow {
           .checked(this.sink.isDefault)
           .width(22)
           .height(22)
-          .onChange((isChecked: boolean) => {
-            if (isChecked) {
-              this.onSelect(this.sink.name);
-            }
-          })
+            .onChange((isChecked: boolean) => {
+              // 防程序化回环（AtomCode U-P2-4）：checked 由数据驱动，**对端回推 isDefault 时
+              // ArkUI 也会回调**；只有"用户真的把它从非选中点成选中"才发请求，否则会重复发 onSelect。
+              if (isChecked && !this.sink.isDefault) {
+                this.onSelect(this.sink.name);
+              }
+            })
         Text(this.title())
           .fontSize(12)
           .fontColor($r('app.color.text_secondary'))

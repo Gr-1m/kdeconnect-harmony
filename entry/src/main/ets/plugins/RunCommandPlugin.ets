@@ -1,4 +1,5 @@
 import { PluginBase } from './PluginBase';
+import { PluginEvent, RunOutputSnapshot } from './PluginEvent';
 
 // 远程命令插件（kdeconnect.runcommand / .request / .output）——MSG112 §1。
 // - 收 `kdeconnect.runcommand`：对端预设命令列表（body.commandList 是**序列化 JSON 字符串**：
@@ -108,7 +109,10 @@ export class RunCommandPlugin extends PluginBase {
     const code: number = b.exitCode ?? -1;
     const preview: string = text.length > OUTPUT_PREVIEW_MAX
       ? text.substring(0, OUTPUT_PREVIEW_MAX) : text;
-    this.notify('runcommand.output', `${success ? '1' : '0'}|${code}|${preview}`);
+      // P1-4 / 裁定 #6：改**类型化嵌套 payload**（原为 `"1|0|输出文本"` 字符串打包）
+      const snap: RunOutputSnapshot = { success: success, exitCode: `${code}`, text: preview };
+      const ev: PluginEvent = { kind: 'runcommand.output', runOutput: snap };
+      this.notifyEvent(ev);
     this.log(`command output: success=${success} exit=${code} (${text.length} chars)`);
   }
 }

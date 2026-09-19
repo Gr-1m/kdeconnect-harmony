@@ -12,7 +12,7 @@ import uiMaterial from '@ohos.arkui.uiMaterial';
 import deviceInfo from '@ohos.deviceInfo';
 import { PacketRouter, RouterCallbacks } from '../net/PacketRouter';
 import { PluginBase } from '../plugins/PluginBase';
-import { PluginEvent } from '../plugins/PluginEvent';
+import { PluginEvent, BatterySnapshot, RunOutputSnapshot } from '../plugins/PluginEvent';
 import { PluginRegistry } from '../plugins/PluginRegistry';
 import { PluginHost } from '../plugins/PluginHost';
 import { PingPlugin } from '../plugins/PingPlugin';
@@ -38,6 +38,7 @@ import { colorModeOf, languageOf, LANG_SYSTEM, THEME_FOLLOW_SYSTEM, systemDevice
 import { DevicesTab } from '../components/DevicesTab';
 import { MprisProgress } from '../components/MprisProgress';
 import { SystemSinkRow } from '../components/SystemSinkRow';
+import { PayloadDetailDialog } from '../components/PayloadDetailDialog';
 import { FilesTab } from '../components/FilesTab';
 import { SettingsTab } from '../components/SettingsTab';
 import { LogsTab } from '../components/LogsTab';
@@ -90,14 +91,13 @@ const MAX_PICK_FILES: number = 9;
 interface SendJob {
   cachePath: string;
   fileName: string;
-  attempt: number;   // 已尝试次数（0 = 首次）；上限见 MAX_SEND_ATTEMPT
 }
 
-// native payload 错误码：握手/接受超时。实测特征（DevEco MSG38）：**紧跟一次成功传输之后立刻启动**的
-// payload 必然命中它（native 侧槽位 teardown 竞态，已上报 Omp）。这类失败值得重试，其它错误不重试。
-const PAYLOAD_ERR_HANDSHAKE_TIMEOUT: number = 110;
-// 单个文件最多重试次数（0 = 不重试）。取 1：够覆盖上面那个确定性竞态，又不会在真故障时无限刷包。
-const MAX_SEND_ATTEMPT: number = 1;
+// 说明（勿删，避免下一位 agent 重新发明）：这里曾实现过「code=110 握手超时 ⇒ 有界重试一次」的兜底
+// （用户实测 3/3 成功），但按 **Omp MSG29 §4-B / CodeArts MSG22 §3** 的要求**已暂撤**：
+// 连续 payload 交替失败的真因尚未定位，在此之前加重试会把真因**掩盖成偶发**。
+// 待 Omp 用阶段诊断（`send listen: port=` / `send accepted:` / `timeout stage:`）定位后，
+// 若确认是"对端尚未就绪"的固有窗口，再作为**协议互操作的必要冗余**恢复（并把依据写进 EXP_LESSONS）。
 
 @Entry
 @Component
@@ -729,14 +729,16 @@ struct Index {
       return;
     }
     if (kind === 'runcommand.output') {
-      const parts: string[] = data.split('|');
-      const ok: boolean = parts.length > 0 && parts[0] === '1';
-      const code: string = parts.length > 1 ? parts[1] : '?';
-      const text: string = parts.length > 2 ? parts[2] : '';
-      const head: string = this.resText(ok
+      // P1-4 / 裁定 #6：直读类型化嵌套 payload（原为 `"1|0|文本"` split）
+      const out: RunOutputSnapshot | undefined = ev.runOutput;
+      if (out === undefined) {
+        return;
+      }
+      const head: string = this.resText(out.success
         ? $r('app.string.toast_run_cmd_ok').id : $r('app.string.toast_run_cmd_failed').id);
-      this.toastText(text.length > 0 ? `${head} (exit=${code}): ${text}` : `${head} (exit=${code})`);
-      this.log(`run command output <- ${deviceId}: success=${ok} exit=${code}`);
+      this.toastText(out.text.length > 0
+        ? `${head} (exit=${out.exitCode}): ${out.text}` : `${head} (exit=${out.exitCode})`);
+      this.log(`run command output <- ${deviceId}: success=${out.success} exit=${out.exitCode}`);
       return;
     }
     if (kind === 'clipboard.request') {
@@ -770,22 +772,24 @@ struct Index {
       this.svSinks = ev.svSinks !== undefined ? ev.svSinks : [];
       return;
     }
-    if (kind !== 'battery') {
-      this.log(`plugin event ${kind} from ${deviceId}`);
+    // 电量（P1-4 类型化通道）：直读对象，取代原先的 `"85|1"` 字符串 split
+    if (kind === 'battery') {
+      const snap: BatterySnapshot | undefined = ev.batterySnap;
+      if (snap === undefined) {
+        return;
+      }
+      const text: string = `${snap.charge}%${snap.charging ? ' ⚡' : ''}`;
+      const exists: boolean = this.batteryItems.some((b: BatteryItem) => b.deviceId === deviceId);
+      const item: BatteryItem = { deviceId: deviceId, text: text };
+      if (exists) {
+        this.batteryItems = this.batteryItems.map((b: BatteryItem) => b.deviceId === deviceId ? item : b);
+      } else {
+        this.batteryItems = this.batteryItems.concat([item]);
+      }
+      this.log(`battery ${text} <- ${deviceId}`);
       return;
     }
-    const parts: string[] = data.split('|');
-    const charge: string = parts.length > 0 ? parts[0] : '?';
-    const charging: boolean = parts.length > 1 && parts[1] === '1';
-    const text: string = `${charge}%${charging ? ' ⚡' : ''}`;
-    const exists: boolean = this.batteryItems.some((b: BatteryItem) => b.deviceId === deviceId);
-    const item: BatteryItem = { deviceId: deviceId, text: text };
-    if (exists) {
-      this.batteryItems = this.batteryItems.map((b: BatteryItem) => b.deviceId === deviceId ? item : b);
-    } else {
-      this.batteryItems = this.batteryItems.concat([item]);
-    }
-    this.log(`battery ${text} <- ${deviceId}`);
+    this.log(`plugin event ${kind} from ${deviceId}`);
   }
 
   // 取某设备已收到的预设命令列表（命令由 RunCommandPlugin 实例持有）
@@ -2127,11 +2131,19 @@ struct Index {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 
+  // 状态文案（**口径必须与 components/PayloadRow.ets 一致，改一处要改两处**）：
+  //   进行中：发送 = 发送中 / 接收 = 接收中（旧实现不分方向，发送中也被写成"接收中"）
+  //   完成：  发送 = 已发送（用户 2026-09-19 指定）/ 接收 = 已保存（已处置）或 已完成
+  //   失败 / 取消：两个方向同词
   private payloadStateText(p: PayloadTransfer): string {
+    const send: boolean = p.direction === 'send';
     if (p.state === 'started' || p.state === 'progress') {
-      return this.resText($r('app.string.files_receiving').id);
+      return this.resText(send ? $r('app.string.files_sending').id : $r('app.string.files_receiving').id);
     }
     if (p.state === 'finished') {
+      if (send) {
+        return this.resText($r('app.string.files_sent').id);
+      }
       return this.resText(p.settled ? $r('app.string.files_saved').id : $r('app.string.files_finished').id);
     }
     return this.resText(p.state === 'failed' ? $r('app.string.files_failed').id : $r('app.string.files_cancelled').id);
@@ -2190,23 +2202,7 @@ struct Index {
     return placeholder;
   }
 
-  // 「文件详情」弹窗里的属性行（标签 + 值）
-  @Builder
-  infoLine(label: ResourceStr, value: string) {
-    Row({ space: 10 }) {
-      Text(label)
-        .fontSize(12)
-        .fontColor($r('app.color.text_secondary'))
-        .width(84)
-      Text(value)
-        .fontSize(12)
-        .fontColor($r('app.color.text_primary'))
-        .layoutWeight(1)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-    }
-    .width('100%')
-  }
+  // （原先这里有页面级 `infoLine` @Builder，只为「文件详情」弹窗服务；该弹窗已抽成组件 ⇒ 已删除，避免死代码。）
 
   // 「另存为」：走系统保存面板（用户自选目录，如「下载」）⇒ 保存后在文件管理里可见。
   // 源文件优先用 spool（filePath），否则用沙箱里已保存的副本。
@@ -2453,6 +2449,25 @@ struct Index {
     }
   }
 
+  // 发送目标设备。**修复**：旧实现直接取 `connectedDevices[0]`，多设备同时在线时会发错人
+  // （用户 2026-09-19 实测：换成 win10dev 发送，两次都发到了 cachyos）。
+  // 语义：发送卡片属于"当前选中设备"的详情页，文件页的发送也以选中设备为准；
+  // 只有"恰好一台在线"时才允许无歧义地自动选它，其余情况**不猜**、提示用户先选设备。
+  private sendTargetDevice(): DeviceItem | undefined {
+    const id: string = this.selectedDeviceId;
+    if (id.length > 0) {
+      for (const d of this.connectedDevices) {
+        if (d.id === id) {
+          return d;
+        }
+      }
+    }
+    if (this.connectedDevices.length === 1) {
+      return this.connectedDevices[0];
+    }
+    return undefined;
+  }
+
   // M2：选文件 → 复制进沙箱 → 入队 → 串行下发（发送方向；进度走 payloadTransfer）。
   // 多选（用户 2026-09-18 拍板 / CodeArts MSG19 §3 放行）：一次最多 MAX_PICK_FILES 个，**串行**：
   //   · 选中后**先把每个文件复制进沙箱**（picker 的 URI 授权是临时的，先落地更稳），再逐个入队；
@@ -2465,10 +2480,13 @@ struct Index {
       this.log('send file: no connected device');
       return;
     }
-    const target: DeviceItem = this.connectedDevices[0];
-    if (this.connectedDevices.length > 1) {
-      this.log(`send file: multiple devices, using ${target.name}`);
+    const target: DeviceItem | undefined = this.sendTargetDevice();
+    if (target === undefined) {
+      this.log(`send file: no unambiguous target (selected='${this.selectedDeviceId}' connected=${this.connectedDevices.length})`);
+      this.toastText(this.resText($r('app.string.toast_send_no_target').id));
+      return;
     }
+    this.log(`send file target: ${target.name} (${target.id.substring(0, 8)})`);
     const hostCtx: Context | undefined = this.getUIContext().getHostContext();
     if (hostCtx === undefined) {
       this.log('send file: no host context');
@@ -2535,7 +2553,7 @@ struct Index {
         }
       }
     }
-    const job: SendJob = { cachePath: cachePath, fileName: fileName, attempt: 0 };
+    const job: SendJob = { cachePath: cachePath, fileName: fileName };
     return job;
   }
 
@@ -2550,7 +2568,7 @@ struct Index {
       this.forgetSendQueue(this.sendTarget);
       return;
     }
-    // 注意：**不 shift** —— 队首任务的"归属"一直保留到它的终态事件（onSendPayloadSettled 里结算/重试），
+    // 注意：**不 shift** —— 队首任务的"归属"一直保留到它的终态事件（onSendPayloadSettled 里结算），
     // 这样失败重试才能把它放回队首，而不是重新走一遍复制沙箱。
     const job: SendJob = this.sendQueue[0];
     try {
@@ -2560,7 +2578,7 @@ struct Index {
       if (tid > 0) {
         this.sendBusyId = tid;
         this.sendInflightJob = job;
-        this.log(`send file #${tid}: ${job.fileName} (attempt=${job.attempt + 1}, queued=${this.sendQueue.length})`);
+        this.log(`send file #${tid}: ${job.fileName} (queued=${this.sendQueue.length})`);
         return;
       }
       this.log(`send file: sendPayload returned 0 (${job.fileName})`);
@@ -2589,6 +2607,9 @@ struct Index {
   }
 
   // 当前批次是否有文件在传（供 payload 终态回调判断"该不该继续泵"）
+  // 发送队列结算：当前文件到达终态 ⇒ 出队、计数（成功才算）、再泵下一个。
+  // 注意：这里**没有**重试 —— 按 Omp MSG29/CodeArts MSG22 暂撤（真因未定位前重试会掩盖问题），
+  // 失败就如实失败；待 native 阶段诊断定性后再评估恢复。
   private onSendPayloadSettled(transferId: number, state: PayloadState, code: number): void {
     if (transferId !== this.sendBusyId) {
       return;   // 不是本队列在传的那一个（例如接收方向、或历史条目）
@@ -2596,21 +2617,13 @@ struct Index {
     const job: SendJob | undefined = this.sendInflightJob;
     this.sendBusyId = -1;
     this.sendInflightJob = undefined;
-    // 队首恒为这一个（pump 时不 shift）⇒ 在这里结算：成功/最终失败都移出队列，重试则放回队首
+    // 队首恒为这一个（pump 时不 shift）⇒ 在这里结算出队
     if (this.sendQueue.length > 0) {
       this.sendQueue.shift();
     }
     if (state === 'finished') {
       this.sendOkCount++;
       this.log(`send file done: ${job !== undefined ? job.fileName : '?'} (${this.sendOkCount}/${this.sendTotal})`);
-    } else if (job !== undefined && job.attempt < MAX_SEND_ATTEMPT
-      && code === PAYLOAD_ERR_HANDSHAKE_TIMEOUT) {
-      // ★ 兜底重试（用户 2026-09-19 拍板）：code=110 握手/接受超时 —— 实测在"紧跟一次成功传输之后"
-      //   必然出现（native 槽位 teardown 竞态，已上报 Omp MSG38）。**只重试一次**、只针对这一类错误，
-      //   成功才计入 ok/total；不用固定 sleep 绕（那是评审否掉的时序补丁）。
-      job.attempt++;
-      this.sendQueue.unshift(job);
-      this.log(`send file retry (code=${code}): ${job.fileName} attempt=${job.attempt + 1}`);
     } else {
       this.log(`send file failed: ${job !== undefined ? job.fileName : '?'} state=${state} code=${code}`);
     }
@@ -3270,9 +3283,19 @@ struct Index {
                 onUnpairDevice: (d: DeviceItem): void => {
                   this.unpairDevice(d);
                 },
-                onManualConnect: (host: string, port: number): void => {
-                  this.manualConnect(host, port);
-                },
+                  onManualConnect: (host: string, port: number): void => {
+                    // U-P2-3（AtomCode）：**系统边界必须校验输入**。旧链路把"空 host / 乱填端口"
+                    // 静默当成可连接（`parseInt(...) || 1716`），用户得不到任何反馈。
+                    if (host.trim().length === 0) {
+                      this.toastText(this.resText($r('app.string.toast_manual_bad_host').id));
+                      return;
+                    }
+                    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+                      this.toastText(this.resText($r('app.string.toast_manual_bad_port').id));
+                      return;
+                    }
+                    this.manualConnect(host.trim(), port);
+                  },
                 selectedDeviceId: this.selectedDeviceId,
                 onPlaceholderAction: (key: string): void => {
                   // 走卡片忙碌态入口（【补丁·待优化】，视觉无变化）
@@ -4040,69 +4063,25 @@ struct Index {
       // 「文件详情」弹窗（点击文件行触发）：属性 + 另存为 / 丢弃 / 取消。
       // 另存为走系统保存面板（用户自选目录 ⇒ 文件管理里可见）；丢弃走 native discardPayload。
       if (this.payloadDetailOpen) {
-        Column() {
-          Column({ space: 12 }) {
-            Text(this.payloadDetail().fileName.length > 0
-              ? this.payloadDetail().fileName : `#${this.payloadDetailId}`)
-              .fontSize(16)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_primary'))
-              .maxLines(2)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-            this.infoLine($r('app.string.file_attr_size'), this.fmtBytes(this.payloadDetail().size))
-            this.infoLine($r('app.string.file_attr_time'), this.timeTextOf(this.payloadDetail()))
-            this.infoLine($r('app.string.file_attr_state'), this.payloadStateText(this.payloadDetail()))
-            this.infoLine($r('app.string.file_attr_dir'), this.resText(this.payloadDetail().direction === 'receive'
-              ? $r('app.string.file_dir_receive').id : $r('app.string.file_dir_send').id))
-            Row({ space: 10 }) {
-              Button($r('app.string.file_action_save_as'))
-                .layoutWeight(1)
-                .height(42)
-                .fontSize(14)
-                .backgroundColor($r('app.color.accent'))
-                .borderRadius(12)
-                .onClick(() => {
-                  this.saveAsPayload(this.payloadDetail());
-                })
-              Button($r('app.string.files_action_discard'))
-                .layoutWeight(1)
-                .height(42)
-                .fontSize(14)
-                .backgroundColor($r('app.color.danger_bg'))
-                .fontColor($r('app.color.danger_text'))
-                .borderRadius(12)
-                .onClick(() => {
-                  this.discardPayload(this.payloadDetail());
-                  this.payloadDetailOpen = false;
-                })
-              Button($r('app.string.action_cancel'))
-                .layoutWeight(1)
-                .height(42)
-                .fontSize(14)
-                .backgroundColor($r('app.color.chip_bg'))
-                .fontColor($r('app.color.text_secondary'))
-                .borderRadius(12)
-                .onClick(() => {
-                  this.payloadDetailOpen = false;
-                })
-            }
-            .width('100%')
+        // S6 第 1 步：弹窗已抽成 components/PayloadDetailDialog.ets（**行为保持**：只搬结构）
+        PayloadDetailDialog({
+          fileName: this.payloadDetail().fileName.length > 0
+            ? this.payloadDetail().fileName : `#${this.payloadDetailId}`,
+          sizeText: this.fmtBytes(this.payloadDetail().size),
+          timeText: this.timeTextOf(this.payloadDetail()),
+          stateText: this.payloadStateText(this.payloadDetail()),
+          dirText: this.resText(this.payloadDetail().direction === 'receive'
+            ? $r('app.string.file_dir_receive').id : $r('app.string.file_dir_send').id),
+          onSaveAs: (): void => {
+            this.saveAsPayload(this.payloadDetail());
+          },
+          onDiscard: (): void => {
+            this.discardPayload(this.payloadDetail());
+            this.payloadDetailOpen = false;
+          },
+          onClose: (): void => {
+            this.payloadDetailOpen = false;
           }
-          .width('80%')
-          .padding(20)
-          .borderRadius(20)
-          .backgroundColor('#F2111A36')
-          .border({ width: 1, color: $r('app.color.card_border') })
-          .alignItems(HorizontalAlign.Center)
-          .onClick(() => {})
-        }
-        .width('100%')
-        .height('100%')
-        .justifyContent(FlexAlign.Center)
-        .alignItems(HorizontalAlign.Center)
-        .backgroundColor('#99000000')
-        .onClick(() => {
-          this.payloadDetailOpen = false;
         })
       }
 
