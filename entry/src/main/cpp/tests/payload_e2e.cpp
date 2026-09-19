@@ -471,6 +471,24 @@ void payloadE2eSendReceive()
     }
     CHECK_MSG(!spoolPath.empty(), "finished 事件缺少 payloadFilePath");
 
+    // —— P2 泄漏修复回归（CodeArts MSG26 §1）：发送任务终态后应被回收，接收任务须留到 settle ——
+    // 背景：jobs_ 的 erase 原本只在 settle() 内（它拒绝 send 任务、cancel 对 finished 亦提前返回）
+    // ⇒ 每发一个文件永久泄漏一个 PayloadJob（连带 TlsEngine）。现在 onTick 延迟清扫 send 任务。
+    // 用"未来时间戳"调用 onTick 触发清扫（无需真睡 PAYLOAD_JOB_REAP_MS）。
+    {
+        const size_t senderBefore = a.manager().jobCount();
+        const size_t recvBefore = b.manager().jobCount();
+        const int64_t future = monoMs() + PAYLOAD_JOB_REAP_MS + 1000;
+        a.manager().onTick(future);
+        b.manager().onTick(future);
+        CHECK_MSG(a.manager().jobCount() < senderBefore,
+                  "发送侧已终态的任务未被回收（jobs_ 泄漏回归）：before=%zu after=%zu",
+                  senderBefore, a.manager().jobCount());
+        CHECK_MSG(b.manager().jobCount() == recvBefore,
+                  "接收侧任务**不得**被清扫（必须留到 settle 取走落盘结果）：before=%zu after=%zu",
+                  recvBefore, b.manager().jobCount());
+    }
+
     const std::string dest = destDir + "/received.bin";
     CHECK(b.manager().settle(id, dest, true));
     CHECK_MSG(readFileEquals(dest, src), "落盘内容与源文件不一致");
