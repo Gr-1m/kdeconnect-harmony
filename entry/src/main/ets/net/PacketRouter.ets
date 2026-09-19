@@ -9,7 +9,13 @@ import native from 'libkdeconnect_napi.so';
 // Android 参考（PairingHandler）：时钟偏差超 30 分钟则拒绝配对请求。
 const MAX_TIMESTAMP_DIFF_SECONDS = 1800;
 const REQUESTED_PEER_TIMEOUT_MS = 60000;
-const MAX_FRAME_BUFFER_BYTES = 1048576;
+// 半帧缓冲两级上限（合并裁定 #1 修订，2026-09-19 用户要求「留退路」）：
+// - 1 MiB = 告警线：正常控制帧（identity 8KiB / mpris·sv 快照几 KB）远低于此；越线说明对端
+//   行为异常或我们在收一个超大帧——**不丢弃**，记日志观察（每设备只告警一次，避免刷屏）。
+// - 33 MiB = 硬限：协议单包上限 MAX_PACKET_SIZE(32MiB)+1 派生；超过只可能是「永不发换行」
+//   的异常流（正常巨大帧也会在 32MiB 内以换行收尾），丢弃重建防内存吃光。
+const FRAME_BUFFER_WARN_BYTES = 1048576;
+const FRAME_BUFFER_HARD_LIMIT_BYTES = 33 * 1048576;
 
 // 核心包类型（由本层处理，不进插件）
 const PACKET_PAIR = 'kdeconnect.pair';
@@ -56,6 +62,8 @@ export class PacketRouter {
   private selfDeviceName: string;
   private selfDeviceType: string;
   private frameBuffers: Map<string, string> = new Map();
+  // 已越过告警线的设备（warn-once 去重；缓冲回落后解除）
+  private frameWarned: Set<string> = new Set();
   private logFn: (msg: string) => void;
   private callbacks: RouterCallbacks;
   private requestedPeers: Map<string, number> = new Map();
@@ -134,14 +142,24 @@ export class PacketRouter {
     }
     const prev: string = this.frameBuffers.get(deviceId) ?? '';
     const data: string = prev + raw;
-    if (data.length > MAX_FRAME_BUFFER_BYTES) {
+    if (data.length > FRAME_BUFFER_HARD_LIMIT_BYTES) {
       this.logFn('frame buffer overflow for ' + deviceId + ': ' + data.length + ' bytes, discarding');
       this.frameBuffers.delete(deviceId);
+      this.frameWarned.delete(deviceId);
       return;
+    }
+    if (data.length > FRAME_BUFFER_WARN_BYTES && !this.frameWarned.has(deviceId)) {
+      // 退路（用户 2026-09-19）：超 1MiB 不再丢弃——放行继续凑帧，只告警一次留痕，
+      // 直到该设备的缓冲回到告警线以下才重新武装。
+      this.frameWarned.add(deviceId);
+      this.logFn('frame buffer large for ' + deviceId + ': ' + data.length + ' bytes (continuing, warn-once)');
     }
     const lines: string[] = data.split('\n');
     const last: string | undefined = lines.pop();
     if (last !== undefined) {
+      if (last.length <= FRAME_BUFFER_WARN_BYTES) {
+        this.frameWarned.delete(deviceId);
+      }
       this.frameBuffers.set(deviceId, last);
     }
     for (const line of lines) {
