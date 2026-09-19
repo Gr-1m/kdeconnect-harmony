@@ -1,9 +1,12 @@
 import uiMaterial from '@ohos.arkui.uiMaterial';
+import { LogStore } from '../common/LogStore';
 
 // 日志 Tab：开发期排查用（对齐 iOS 端无此页；上架前评估移除或隐藏）。
+// 批3 #1：日志状态改由 @Observed LogStore 承载，这里以 @ObjectLink 绑定
+// ⇒ 日志刷新只重建本组件，不再触发整页重建（清空也直接走 store，页面层只负责可见性节流）。
 @Component
 export struct LogsTab {
-  @Link logText: string;
+  @ObjectLink logStore: LogStore;
   @Prop immersive: boolean = false;
   // 清空走页面层（同时清缓冲，否则下一次合并刷新会把旧行贴回来）
   onClearLogs: () => void = () => {
@@ -30,7 +33,7 @@ export struct LogsTab {
       }
       .width('100%')
       Scroll() {
-        Text(this.logText.length > 0 ? this.logText : '—')
+        Text(this.logStore.text.length > 0 ? this.logStore.text : '—')
           .fontSize(11)
           .fontColor($r('app.color.accent_text'))
           .fontFamily('monospace')
