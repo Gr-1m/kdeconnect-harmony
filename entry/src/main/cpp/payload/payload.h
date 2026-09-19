@@ -4,6 +4,7 @@
 #include "../net/net_types.h"
 #include "../net/packet_io.h"
 #include "../net/tls_engine.h"
+#include "../net/net_log.h"
 #include "../net/write_interest.h"
 
 #include <map>
