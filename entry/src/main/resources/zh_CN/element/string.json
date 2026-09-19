@@ -95,7 +95,7 @@
     },
     {
       "name": "files_save_path",
-      "value": "接收的文件将保存到：应用沙箱 files/kdeconnect/"
+      "value": "保存在 App 私有目录，可通过「另存为」导出"
     },
     {
       "name": "settings_app_name",
@@ -346,14 +346,6 @@
       "value": "设备"
     },
     {
-      "name": "sys_default_sink",
-      "value": "默认"
-    },
-    {
-      "name": "sys_set_default",
-      "value": "设为默认输出"
-    },
-    {
       "name": "media_no_output",
       "value": "未发现输出设备"
     },
@@ -364,6 +356,10 @@
     {
       "name": "toast_send_file_failed",
       "value": "发送失败"
+    },
+    {
+      "name": "toast_send_batch_done",
+      "value": "文件发送完成"
     },
     {
       "name": "sys_mute",

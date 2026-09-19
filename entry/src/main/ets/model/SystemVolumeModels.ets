@@ -30,3 +30,36 @@ export class SystemSinkUi {
     this.isDefault = isDefault;
   }
 }
+
+// 纯展示层：把 sink 转成用户能看懂的名字（用户 2026-09-19 裁决 / CodeArts MSG21 §3 允许）。
+// 背景：本机实测对端下发的 `description` 是**空的**（KDE/pulse 侧未填），行标题就退化成
+//       `alsa_output.pci-0000_00_1f.3.analog-stereo` 这种内部名，可读性差。
+// 规则（**只影响显示**，不参与任何协议字段/请求参数，也不写回 description）：
+//   ① description 非空 ⇒ 原样用它；
+//   ② 否则取内部名最后一个 `.` 之后的部分（`analog-stereo` / `hdmi-stereo`），
+//      按 `-` 切词、首字母大写，已知缩写（hdmi/usb/spdif/iec958/bt）按惯例大写或展开；
+//   ③ 兜底：转换结果为空则回退显示原始 name（宁可难看，不可显示空）。
+export function sinkDisplayName(description: string, name: string): string {
+  if (description.length > 0) {
+    return description;
+  }
+  const dot: number = name.lastIndexOf('.');
+  const tail: string = dot >= 0 && dot + 1 < name.length ? name.substring(dot + 1) : name;
+  const words: string[] = tail.split('-');
+  const out: string[] = [];
+  for (const w of words) {
+    if (w.length === 0) {
+      continue;
+    }
+    const lower: string = w.toLowerCase();
+    if (lower === 'bt') {
+      out.push('Bluetooth');
+    } else if (lower === 'hdmi' || lower === 'usb' || lower === 'spdif' || lower === 'iec958') {
+      out.push(lower.toUpperCase());
+    } else {
+      out.push(lower.substring(0, 1).toUpperCase() + lower.substring(1));
+    }
+  }
+  const pretty: string = out.join(' ');
+  return pretty.length > 0 ? pretty : name;
+}

@@ -107,7 +107,7 @@
     },
     {
       "name": "files_save_path",
-      "value": "Received files will be saved to: app sandbox files/kdeconnect/"
+      "value": "Saved in the app private directory; use Save as to export"
     },
     {
       "name": "settings_app_name",
@@ -358,14 +358,6 @@
       "value": "Devices"
     },
     {
-      "name": "sys_default_sink",
-      "value": "Default"
-    },
-    {
-      "name": "sys_set_default",
-      "value": "Set as default output"
-    },
-    {
       "name": "media_no_output",
       "value": "No output device found"
     },
@@ -376,6 +368,10 @@
     {
       "name": "toast_send_file_failed",
       "value": "Send failed"
+    },
+    {
+      "name": "toast_send_batch_done",
+      "value": "Files sent"
     },
     {
       "name": "sys_mute",
