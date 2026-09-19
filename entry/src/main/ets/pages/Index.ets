@@ -86,6 +86,19 @@ const DRAWER_WIDTH_LIMIT: ConstraintSizeOptions = { maxWidth: 360 };
 // 一次最多选几个文件发送（用户 2026-09-18 拍板改为多选；上限取值与系统文件选择器常见上限一致）
 const MAX_PICK_FILES: number = 9;
 
+// 多选发送的单个任务（文件已复制进沙箱，等队列轮到它）
+interface SendJob {
+  cachePath: string;
+  fileName: string;
+  attempt: number;   // 已尝试次数（0 = 首次）；上限见 MAX_SEND_ATTEMPT
+}
+
+// native payload 错误码：握手/接受超时。实测特征（DevEco MSG38）：**紧跟一次成功传输之后立刻启动**的
+// payload 必然命中它（native 侧槽位 teardown 竞态，已上报 Omp）。这类失败值得重试，其它错误不重试。
+const PAYLOAD_ERR_HANDSHAKE_TIMEOUT: number = 110;
+// 单个文件最多重试次数（0 = 不重试）。取 1：够覆盖上面那个确定性竞态，又不会在真故障时无限刷包。
+const MAX_SEND_ATTEMPT: number = 1;
+
 @Entry
 @Component
 struct Index {
@@ -96,9 +109,9 @@ struct Index {
   // 这正是本批要的收益：日志刷新只重建日志组件，页面其余部分不受影响。
   @State logStore: LogStore = new LogStore();
   @State currentTab: number = 0;
-  // 日志合并刷新计数（非 @State，避免自身触发重建）。原为「日志驱动的整页重建次数」探针；
-  // 批3 后写日志不再重建页面，此计数只代表 flush 次数（保留用于量化刷新频率）。
-  private buildCount: number = 0;
+  // 日志合并刷新计数（非 @State，避免自身触发重建）：批3 后写日志不再重建页面，
+  // 这个计数只代表 flush 次数（用于量化刷新频率），名字随语义改掉，别再叫 buildCount。
+  private logFlushCount: number = 0;
   // 事件日志开关：true 时打印完整事件 JSON（排查用）；常态 false ⇒ 只打轻量摘要
   private debugEventLog: boolean = false;
   // 卡片忙碌态【补丁·待优化】（用户 2026-09-16 提案 / CodeArts MSG6-7 批准）：
@@ -168,6 +181,16 @@ struct Index {
   private netConnRegistered: boolean = false;
   // AP-2 payload 传输（接收/发送进度与处置状态）
   @State payloads: PayloadTransfer[] = [];
+  // 多选发送队列（CodeArts MSG19 §3：**串行**、不并发抢 payload 通道）。
+  // 为什么不是"固定间隔 sleep"：那是时间猜测——链路/对端一慢就仍会并发撞通道。
+  // 这里改成「上一个 payload 到达终态事件后再发下一个」，与 native 的完成语义对齐（事件驱动）。
+  // 依赖：native 为每个 payload 派发终态事件（P3-2 已登记跟踪；若漏派，队列会停在这一批）。
+  private sendQueue: SendJob[] = [];
+  private sendBusyId: number = -1;   // 正在传输的 transferId（-1 = 空闲）
+  private sendInflightJob: SendJob | undefined = undefined;  // 上面那个 transferId 对应的任务（结算用）
+  private sendTarget: string = '';   // 本批次目标设备
+  private sendOkCount: number = 0;   // 本批次**成功完成**的文件数（在终态里结算，不在下发时计数）
+  private sendTotal: number = 0;     // 本批次总数（>0 表示批次进行中）
   // 插件推来的展示项（目前：电量）
   @State batteryItems: BatteryItem[] = [];
   // 对端（kdeconnect.runcommand）下发的预设命令列表：只保存当前设备的，供「远程命令」弹窗展示
@@ -734,11 +757,17 @@ struct Index {
       }
       return;
     }
-    // 系统音量（kdeconnect.systemvolume）：插件推**全量快照**（已换算成百分比），UI 只渲染。
-    // 旧实现是 `"<vol>|<muted>"` 字符串打包 + 页面侧 split 解包 —— 与批1 的类型化方向相反，已删除。
+    // 系统音量（kdeconnect.systemvolume）：插件推**整份行数组**（已换算成百分比），UI 只渲染。
+    // **单槽**（用户 2026-09-19 裁决 / CodeArts MSG21 §3）：面板一次只服务一台设备 ⇒ 只接受
+    // 当前面板设备的推送。别的设备推包不得改写它（否则正在看的面板会被刷空）。
+    // 不会缺数据：打开面板时 svPrepare() 会主动 requestSinks()，该响应带着自己的 deviceId 回来。
+    // （请求-响应同源：插件是"每设备一份实例"，响应只会从被请求的那台设备回来 —— Omp MSG27 §3 提醒点。）
+    // 旧实现是 `"<vol>|<muted>"` 字符串打包 + 页面侧 split 解包，与批1 的类型化方向相反，已删除。
     if (kind === 'systemvolume.sinks') {
+      if (deviceId !== this.mprisDeviceId) {
+        return;
+      }
       this.svSinks = ev.svSinks !== undefined ? ev.svSinks : [];
-      this.svDeviceId = deviceId;
       return;
     }
     if (kind !== 'battery') {
@@ -1315,6 +1344,9 @@ struct Index {
         // 媒体面板清账（P2，MSG132 §2）：丢该设备的面板镜像并关面板
         // （插件实例已销毁，再点控制键必然失败；留着快照还会显示过期曲目）
         this.forgetMpris(did);
+        // P3（AtomCode 评审条件 / CodeArts MSG21 §2）：断链必须**清空发送队列**，
+        // 否则残留任务会在设备重连后自动开传（用户并未再操作，属可见的错误行为）。
+        this.forgetSendQueue(did);
         // 会话中的设备断链 → 连接/配对失败
         if (did !== '' && this.sessionDeviceId === did) {
           if (this.sessionState === 'connecting') {
@@ -1985,6 +2017,8 @@ struct Index {
     // 终态记录写入历史（内存 + Preferences），**收发都存**，供跨重启在文件页/「已接收」弹窗查看
     // （2026-09-17：原先只存 receive ⇒ 发送记录重启即丢，用户实测"历史里只剩一条"）
     if (state === 'finished' || state === 'failed' || state === 'cancelled') {
+      // 多选发送队列：本批次当前文件到达终态 ⇒ 结算并泵下一个（"串行"的真正落点，见 pumpSendQueue）
+      this.onSendPayloadSettled(tid, state, event.errorCode !== undefined ? event.errorCode : 0);
       // 终态记时间（详情弹窗展示"什么时间传过来的"）
       item.timeMs = Date.now();
       this.putReceivedHistory(item);
@@ -2419,13 +2453,13 @@ struct Index {
     }
   }
 
-  // M2：选文件 → 复制进沙箱 → native.sendPayload（发送方向；进度走 payloadTransfer）。
-  // 多选（用户 2026-09-18 拍板 / MSG30 评估）：一次最多 MAX_PICK_FILES 个，**串行**下发。
-  //   · 串行而非并发：native 侧同一连接同时只推进一个 payload，并发会被 payload gate 拒掉；
-  //     文件页也按"一个个排着发"给每个文件各自一行进度。
-  //   · 沙箱副本名加 `send_<批次时间戳>_<序号>_` 前缀：避免同批次内**同名文件**互相覆盖，
-  //     也避免覆盖上一个仍在流式传输中的文件。副本留在 cacheDir（应用缓存目录，系统可在
-  //     空间紧张时回收），与改前"副本留在 cacheDir"的行为一致。
+  // M2：选文件 → 复制进沙箱 → 入队 → 串行下发（发送方向；进度走 payloadTransfer）。
+  // 多选（用户 2026-09-18 拍板 / CodeArts MSG19 §3 放行）：一次最多 MAX_PICK_FILES 个，**串行**：
+  //   · 选中后**先把每个文件复制进沙箱**（picker 的 URI 授权是临时的，先落地更稳），再逐个入队；
+  //   · 真正的串行由 pumpSendQueue() + payload 终态事件驱动（见 handlePayloadTransfer），
+  //     **不用固定间隔 sleep** —— 那是时间猜测，无法保证"不并发抢 payload 通道"。
+  //   · 沙箱副本名加 `send_<批次时间戳>_<序号>_` 前缀：避免同批次内**同名文件**互相覆盖，也避免
+  //     覆盖上一个仍在流式传输中的文件。副本留在 cacheDir（应用缓存目录，系统可在空间紧张时回收）。
   private async pickAndSendFile(): Promise<void> {
     if (this.connectedDevices.length === 0) {
       this.log('send file: no connected device');
@@ -2453,25 +2487,29 @@ struct Index {
       return;
     }
     const batchTs: number = Date.now();
-    let okCount: number = 0;
+    const jobs: SendJob[] = [];
     for (let i = 0; i < uris.length; i++) {
-      if (this.sendOnePickedFile(hostCtx, uris[i], target, batchTs, i)) {
-        okCount++;
-      }
-      // 文件之间让出主线程：连续 N 次「拷贝 + 下发」不该挤在同一帧里
-      if (i + 1 < uris.length) {
-        await this.yieldMs(80);
+      const job: SendJob | undefined = this.stageSendJob(hostCtx, uris[i], batchTs, i);
+      if (job !== undefined) {
+        jobs.push(job);
       }
     }
-    this.log(`send file batch: ${okCount}/${uris.length} -> ${target.name}`);
-    if (okCount === 0) {
+    if (jobs.length === 0) {
       this.toastText(this.resText($r('app.string.toast_send_file_failed').id));
+      return;
     }
+    // 入队（允许与上一批排队：pumpSendQueue 会等当前传输结束再继续）
+    this.sendTarget = target.id;
+    this.sendTotal += jobs.length;
+    for (const j of jobs) {
+      this.sendQueue.push(j);
+    }
+    this.log(`send file batch queued: ${jobs.length} (queue=${this.sendQueue.length}) -> ${target.name}`);
+    this.pumpSendQueue();
   }
 
-  // 下发单个已选文件（返回是否成功下发）。抽成独立方法只为让批处理循环保持线性可读。
-  private sendOnePickedFile(ctx: Context, srcUri: string, target: DeviceItem,
-                            batchTs: number, seq: number): boolean {
+  // 把 picker 返回的一个 URI 复制进沙箱，成功则返回可下发的任务
+  private stageSendJob(ctx: Context, srcUri: string, batchTs: number, seq: number): SendJob | undefined {
     let fileName: string = srcUri.substring(srcUri.lastIndexOf('/') + 1);
     try {
       fileName = decodeURIComponent(fileName);
@@ -2487,7 +2525,7 @@ struct Index {
     } catch (e) {
       this.log(`send file: copy into sandbox failed (${fileName}): `
         + (e instanceof Error ? e.message : 'unknown'));
-      return false;
+      return undefined;
     } finally {
       if (srcFd !== undefined) {
         try {
@@ -2497,27 +2535,94 @@ struct Index {
         }
       }
     }
-    try {
-      const body: SendShareBody = { filename: fileName };
-      const transferId: number = native.sendPayload(target.id, 'kdeconnect.share.request',
-        JSON.stringify(body), cachePath);
-      this.log(transferId > 0
-        ? `send file #${transferId}: ${fileName} -> ${target.name}`
-        : `send file: sendPayload returned 0 (${fileName})`);
-      return transferId > 0;
-    } catch (e) {
-      this.log(`sendPayload error (${fileName}): ` + (e instanceof Error ? e.message : 'unknown'));
-      return false;
-    }
+    const job: SendJob = { cachePath: cachePath, fileName: fileName, attempt: 0 };
+    return job;
   }
 
-  // 让出主线程 ms 毫秒（多文件串行发送的间隔；不用 sleep 轮询，避免忙等）
-  private yieldMs(ms: number): Promise<void> {
-    return new Promise<void>((resolve: () => void): void => {
-      setTimeout((): void => {
-        resolve();
-      }, ms);
-    });
+  // 队列泵：空闲时才发队首；**下一个文件由上一个 payload 的终态事件驱动**（见 handlePayloadTransfer）
+  private pumpSendQueue(): void {
+    if (this.sendBusyId >= 0 || this.sendQueue.length === 0) {
+      return;
+    }
+    // 双保险之二（P3）：入口校验目标仍在线 —— 断链事件可能晚于入队、或晚于上一个终态事件，
+    // 一律不对离线设备继续下发（清空并返回，不递归）。
+    if (!this.connectedDevices.some((d: DeviceItem) => d.id === this.sendTarget)) {
+      this.forgetSendQueue(this.sendTarget);
+      return;
+    }
+    // 注意：**不 shift** —— 队首任务的"归属"一直保留到它的终态事件（onSendPayloadSettled 里结算/重试），
+    // 这样失败重试才能把它放回队首，而不是重新走一遍复制沙箱。
+    const job: SendJob = this.sendQueue[0];
+    try {
+      const body: SendShareBody = { filename: job.fileName };
+      const tid: number = native.sendPayload(this.sendTarget, 'kdeconnect.share.request',
+        JSON.stringify(body), job.cachePath);
+      if (tid > 0) {
+        this.sendBusyId = tid;
+        this.sendInflightJob = job;
+        this.log(`send file #${tid}: ${job.fileName} (attempt=${job.attempt + 1}, queued=${this.sendQueue.length})`);
+        return;
+      }
+      this.log(`send file: sendPayload returned 0 (${job.fileName})`);
+    } catch (e) {
+      this.log(`sendPayload error (${job.fileName}): ` + (e instanceof Error ? e.message : 'unknown'));
+    }
+    // 连"下发"都没成功（同步失败）：丢弃该文件，继续泵下一个（不阻塞整批）
+    this.sendQueue.shift();
+    this.pumpSendQueue();
+  }
+
+  // 断链时清空发送队列（P3）。只清"发给该设备"的批次：断的是别的设备时不影响当前批次。
+  // 双保险之一（另一个在 pumpSendQueue 入口做在线校验）—— 队列不能对着离线设备继续发。
+  private forgetSendQueue(deviceId: string): void {
+    if (deviceId.length === 0 || this.sendTarget !== deviceId) {
+      return;
+    }
+    const dropped: number = this.sendQueue.length + (this.sendBusyId >= 0 ? 1 : 0);
+    this.sendQueue = [];
+    this.sendBusyId = -1;
+    this.sendInflightJob = undefined;
+    this.sendTarget = '';
+    this.sendOkCount = 0;
+    this.sendTotal = 0;
+    this.log(`send queue cleared on disconnect (dropped=${dropped})`);
+  }
+
+  // 当前批次是否有文件在传（供 payload 终态回调判断"该不该继续泵"）
+  private onSendPayloadSettled(transferId: number, state: PayloadState, code: number): void {
+    if (transferId !== this.sendBusyId) {
+      return;   // 不是本队列在传的那一个（例如接收方向、或历史条目）
+    }
+    const job: SendJob | undefined = this.sendInflightJob;
+    this.sendBusyId = -1;
+    this.sendInflightJob = undefined;
+    // 队首恒为这一个（pump 时不 shift）⇒ 在这里结算：成功/最终失败都移出队列，重试则放回队首
+    if (this.sendQueue.length > 0) {
+      this.sendQueue.shift();
+    }
+    if (state === 'finished') {
+      this.sendOkCount++;
+      this.log(`send file done: ${job !== undefined ? job.fileName : '?'} (${this.sendOkCount}/${this.sendTotal})`);
+    } else if (job !== undefined && job.attempt < MAX_SEND_ATTEMPT
+      && code === PAYLOAD_ERR_HANDSHAKE_TIMEOUT) {
+      // ★ 兜底重试（用户 2026-09-19 拍板）：code=110 握手/接受超时 —— 实测在"紧跟一次成功传输之后"
+      //   必然出现（native 槽位 teardown 竞态，已上报 Omp MSG38）。**只重试一次**、只针对这一类错误，
+      //   成功才计入 ok/total；不用固定 sleep 绕（那是评审否掉的时序补丁）。
+      job.attempt++;
+      this.sendQueue.unshift(job);
+      this.log(`send file retry (code=${code}): ${job.fileName} attempt=${job.attempt + 1}`);
+    } else {
+      this.log(`send file failed: ${job !== undefined ? job.fileName : '?'} state=${state} code=${code}`);
+    }
+    this.pumpSendQueue();
+    if (this.sendBusyId < 0 && this.sendQueue.length === 0 && this.sendTotal > 0) {
+      // 整批结束：一条汇总提示（CodeArts MSG19 §3：「逐条 toast 或一条汇总」——取后者，避免刷屏）
+      const head: string = this.resText($r('app.string.toast_send_batch_done').id);
+      this.toastText(`${head} (${this.sendOkCount}/${this.sendTotal})`);
+      this.log(`send file batch done: ${this.sendOkCount}/${this.sendTotal}`);
+      this.sendOkCount = 0;
+      this.sendTotal = 0;
+    }
   }
 
   private log(line: string): void {
@@ -2552,9 +2657,9 @@ struct Index {
     // 开屏卡顿排查（MSG8 §4 问题 1/#1）：每次 flushLog 都会写 @State logText ⇒ 触发一次整页重建。
     // 这里计数并在首屏窗口内打印，用来量化「开屏期日志驱动的重建次数」。build() 里不能写任意语句，
     // 所以计数放在这个真正触发重建的点上。
-    this.buildCount++;
-    if (this.buildCount <= 3 || this.buildCount % 50 === 0) {
-      console.info(`KDC logflush #${this.buildCount} @${Date.now()}`);
+    this.logFlushCount++;
+    if (this.logFlushCount <= 3 || this.logFlushCount % 50 === 0) {
+      console.info(`KDC logflush #${this.logFlushCount} @${Date.now()}`);
     }
   }
 
@@ -2571,11 +2676,6 @@ struct Index {
     for (const k of stale) {
       this.actionGateMs.delete(k);
     }
-  }
-
-  // 清空日志（含缓冲，否则下一次 flush 会把旧行又贴回来）
-  private clearLog(): void {
-    this.logStore.clear();
   }
 
   // 沉浸光感能力探测（仅记录）。底栏材质由 HdsTabs 的 barFloatingStyle.systemMaterialEffect
@@ -3286,10 +3386,7 @@ struct Index {
             Column() {
                 LogsTab({
                   logStore: this.logStore,
-                  immersive: false,
-                  onClearLogs: (): void => {
-                    this.clearLog();
-                  }
+                  immersive: false
                 })
             }
             .padding({ top: 12, bottom: 108 })

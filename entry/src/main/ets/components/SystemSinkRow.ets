@@ -1,4 +1,4 @@
-import { SystemSinkUi } from '../model/SystemVolumeModels';
+import { SystemSinkUi, sinkDisplayName } from '../model/SystemVolumeModels';
 
 // 「设备」tab 的单个输出设备行（系统音量 / OutputDevice）。
 //
@@ -27,7 +27,8 @@ export struct SystemSinkRow {
   }
 
   private title(): string {
-    return this.sink.description.length > 0 ? this.sink.description : this.sink.name;
+    // 展示层美化：description 为空时把 ALSA 内部名转可读名（详见 sinkDisplayName 注释）
+    return sinkDisplayName(this.sink.description, this.sink.name);
   }
 
   build() {

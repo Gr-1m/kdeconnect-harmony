@@ -8,9 +8,6 @@ import { LogStore } from '../common/LogStore';
 export struct LogsTab {
   @ObjectLink logStore: LogStore;
   @Prop immersive: boolean = false;
-  // 清空走页面层（同时清缓冲，否则下一次合并刷新会把旧行贴回来）
-  onClearLogs: () => void = () => {
-  };
   cardMaterial: uiMaterial.Material | undefined = undefined;
 
   build() {
@@ -28,7 +25,9 @@ export struct LogsTab {
           .fontColor($r('app.color.text_secondary'))
           .borderRadius(8)
           .onClick(() => {
-            this.onClearLogs();
+            // 清空直接落在 store 上（缓冲与文本都在里面，一次 clear 两样都清，
+            // 不需要再经页面层转一道——那层转发是旧实现的遗留）
+            this.logStore.clear();
           })
       }
       .width('100%')

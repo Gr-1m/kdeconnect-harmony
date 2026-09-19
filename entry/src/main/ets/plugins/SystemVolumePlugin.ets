@@ -10,6 +10,11 @@ import { SystemSinkUi } from '../model/SystemVolumeModels';
 //   收 kdeconnect.systemvolume：
 //       全量：{ "sinkList": [ { name, description, muted, volume, maxVolume, enabled }, … ] }
 //       增量：{ name, volume, muted, enabled }
+//         ⚠️ 两条里的 `volume` 用的是**同一把尺子**：绝对刻度（见下方 ★ 1）。
+//            schema 的增量示例写 `"volume": 49`（看着像百分比）属**示例误导**——KDE pulse / macOS /
+//            Windows 三个后端下发的都是绝对值（pulse 是 `sink->volume()`，与 maxVolume 同刻度）。
+//            本项目一律按绝对刻度处理；该「schema 表述 vs KDE 实现」的不一致已记入
+//            `devdocs/EXP_LESSONS_20260919_systemvolume.md`（CodeArts MSG20 §1 要求登记）。
 //   发 kdeconnect.systemvolume.request：
 //       拉列表：{ "requestSinks": true }
 //       调音量：{ name, volume }        ← Android sendVolume 同款
@@ -79,8 +84,6 @@ export class SystemVolumePlugin extends PluginBase {
   // 之所以缓存实例：UI 侧 ForEach 的键是 name，键不变就不会重建子组件，
   // 必须靠 @Observed 实例原地更新 + 子组件 @ObjectLink 才能刷新（详见 SystemVolumeModels.ets 头注释）。
   private rows: SystemSinkUi[] = [];
-  // 上次推给 UI 的行摘要（仅用于日志去重，避免 push 刷屏）
-  private lastPushSig: string = '';
 
   constructor() {
     super();
@@ -160,14 +163,6 @@ export class SystemVolumePlugin extends PluginBase {
       }
     }
     return undefined;
-  }
-
-  private uiSig(ui: SystemSinkUi[]): string {
-    const parts: string[] = [];
-    for (const s of ui) {
-      parts.push(`${s.name}:${s.muted ? 'M' : '-'}${s.isDefault ? 'D' : '-'}@${s.volumePct}`);
-    }
-    return parts.join(' ');
   }
 
   // ---------- UI 动作（一律**按 name** 操作，不再有"主输出"隐式目标）----------
@@ -278,10 +273,6 @@ export class SystemVolumePlugin extends PluginBase {
       s.volumeAbs = b.volume;
     }
     if (b.muted !== undefined) {
-      if (b.muted !== s.muted) {
-        // 取证：对端回推的静音态与本地不同（用于区分"乐观值被对端覆盖"与"UI 没刷新"）。
-        this.log(`increment overwrites muted: ${s.name} ${s.muted} -> ${b.muted}`);
-      }
       s.muted = b.muted;
     }
     if (b.enabled !== undefined) {
@@ -303,15 +294,7 @@ export class SystemVolumePlugin extends PluginBase {
   }
 
   private push(): void {
-    const ui: SystemSinkUi[] = this.syncRows();
-    // 取证：确认"推给 UI 的行里 muted/enabled 到底是什么" —— 直接区分「数据没推对」与「UI 没刷新」。
-    // 只在摘要变化时打，低频。
-    const sig: string = this.uiSig(ui);
-    if (sig !== this.lastPushSig) {
-      this.lastPushSig = sig;
-      this.log(`push sinks [${sig.substring(0, 120)}]`);
-    }
-    const ev: PluginEvent = { kind: 'systemvolume.sinks', svSinks: ui };
+    const ev: PluginEvent = { kind: 'systemvolume.sinks', svSinks: this.syncRows() };
     this.notifyEvent(ev);
   }
 }
