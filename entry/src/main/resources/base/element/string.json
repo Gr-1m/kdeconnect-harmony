@@ -238,6 +238,10 @@
       "value": "Saved"
     },
     {
+      "name": "files_sent",
+      "value": "Sent"
+    },
+    {
       "name": "files_cancelled",
       "value": "Cancelled"
     },
@@ -372,6 +376,18 @@
     {
       "name": "toast_send_batch_done",
       "value": "Files sent"
+    },
+    {
+      "name": "toast_send_no_target",
+      "value": "Select a device first"
+    },
+    {
+      "name": "toast_manual_bad_host",
+      "value": "Enter the peer address"
+    },
+    {
+      "name": "toast_manual_bad_port",
+      "value": "Port must be 1-65535"
     },
     {
       "name": "sys_mute",

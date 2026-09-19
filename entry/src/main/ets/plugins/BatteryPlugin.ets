@@ -1,5 +1,6 @@
 import { batteryInfo } from '@kit.BasicServicesKit';
 import { PluginBase } from './PluginBase';
+import { BatterySnapshot, PluginEvent } from './PluginEvent';
 
 interface BatteryBody {
   currentCharge?: number;
@@ -57,7 +58,14 @@ export class BatteryPlugin extends PluginBase {
       return true;
     }
     const charging: boolean = b.isCharging ?? false;
-    this.notify('battery', `${charge}|${charging ? '1' : '0'}`);
+    // 注：`thresholdEvent`（对端希望"我方电量跨阈值时上报"）**按总指挥 MSG24 裁定表 #9 撤出** ——
+    // 它属功能扩展而非本次重构范围；只推一个没有消费端的半成品事件"不如不做"，留待功能批次实现完整语义。
+    // P1-4（裁定 #6）：电量改走**类型化嵌套事件**（原 `"85|1"` 字符串打包 + 页面侧 split）。
+    // P1-4（三方对比裁定）：电量改走**类型化事件**（原先是 `"85|1"` 字符串打包 + 页面侧 split，
+    // 与 MPRIS/SV 的类型化通道并存会"新旧两套更混乱"）。
+    const snap: BatterySnapshot = { charge: charge, charging: charging };
+    const ev: PluginEvent = { kind: 'battery', batterySnap: snap };
+    this.notifyEvent(ev);
     return true;
   }
 

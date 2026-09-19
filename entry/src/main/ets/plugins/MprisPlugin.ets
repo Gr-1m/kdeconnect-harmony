@@ -309,7 +309,14 @@ export class MprisPlugin extends PluginBase {
     // 规则：只有出现在 playerList 里的名字才允许成为「当前播放器」；列表为空（对端不发列表）时放行。
     const target: string = b.player ?? this.currentPlayer;
     const listed: boolean = this.playerList.length === 0 || this.playerList.includes(target);
-    if (target.length > 0 && (listed || this.currentPlayer.length === 0)) {
+    // L-P2-4（AtomCode）：修两处**焦点劫持** ——
+    //   ① 删除"currentPlayer 为空即放行"的白名单旁路：旧写法 `(listed || currentPlayer.length === 0)`
+    //      允许**任意**后台播放器的增量包抢到"首次焦点"；
+    //   ② 已有当前播放器时，**只有同一个播放器**的包能继续当当前播放器 ——
+    //      否则后台播放器的周期 pos 包会把面板焦点反复抢走（表现为面板来回跳）。
+    // 规则：能成为当前播放器的，必须"已列名（或对端不发列表 ⇒ 放行兜底）"且"当前未定或就是它自己"。
+    const canClaim: boolean = listed && (this.currentPlayer.length === 0 || target === this.currentPlayer);
+    if (target.length > 0 && canClaim) {
       this.currentPlayer = target;
     }
     if (this.currentPlayer.length === 0 && this.playerList.length > 0) {

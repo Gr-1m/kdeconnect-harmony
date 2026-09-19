@@ -185,6 +185,8 @@ export class SystemVolumePlugin extends PluginBase {
       return false;
     }
     const p: number = pct < 0 ? 0 : (pct > 100 ? 100 : Math.round(pct));
+    const prevAbs: number = s.volumeAbs;
+    const prevMuted: boolean = s.muted;
     s.volumeAbs = Math.round(p * s.maxVolume / 100);   // 乐观更新（对端随后会推回真实值）
     // 与对端语义对齐：KDE 收到 volume 后会无条件 `setMuted(false)` ⇒ 本地静音态也要跟着清掉
     // （否则 UI 会显示"静音中"而对端其实已经在出声）。
@@ -194,7 +196,14 @@ export class SystemVolumePlugin extends PluginBase {
     // **不带 muted**（避免与"清静音"语义打架）。
     const body: SysVolumeBodyDto = { name: s.name, volume: s.volumeAbs };
     const ok: boolean = this.send('kdeconnect.systemvolume.request', body);
-    this.log(ok ? `set volume sent: ${s.name} ${p}%` : `set volume failed: ${s.name} ${p}%`);
+    if (!ok) {
+      // 失败回滚（AtomCode L-P2-5）：乐观更新在发送**前**就落了盘，失败若不回滚，UI 会一直显示
+      // 一个从未生效的音量（且与对端真实值脱节，直到对端下次推包才纠正）。
+      s.volumeAbs = prevAbs;
+      s.muted = prevMuted;
+      this.push();
+    }
+    this.log(ok ? `set volume sent: ${s.name} ${p}%` : `set volume rolled back: ${s.name} ${p}%`);
     return ok;
   }
 
@@ -204,13 +213,19 @@ export class SystemVolumePlugin extends PluginBase {
       this.log(`mute skipped: unknown sink ${name}`);
       return false;
     }
+    const prevMuted: boolean = s.muted;
     s.muted = !s.muted;
     this.log(`mute toggle: ${s.name} local muted=${s.muted}`);
     this.push();
     // 只发 muted + name（Android sendMute 同款；不需要带 volume，也不需要 enabled）。
     const body: SysVolumeBodyDto = { name: s.name, muted: s.muted };
     const ok: boolean = this.send('kdeconnect.systemvolume.request', body);
-    this.log(ok ? `mute -> ${s.muted} (${s.name})` : `mute send failed (${s.name})`);
+    if (!ok) {
+      // 失败回滚（AtomCode L-P2-5）：乐观翻转在发送前就落了盘，失败不回滚会让 UI 长期与对端不一致。
+      s.muted = prevMuted;
+      this.push();
+    }
+    this.log(ok ? `mute -> ${s.muted} (${s.name})` : `mute rolled back (${s.name})`);
     return ok;
   }
 
@@ -267,7 +282,18 @@ export class SystemVolumePlugin extends PluginBase {
     const name: string = b.name !== undefined ? b.name : '';
     const s: SysSinkState | undefined = this.find(name);
     if (s === undefined) {
-      return;   // 列表里没有这个 sink ⇒ 忽略（无名/未知 sink 无法操作，等列表到达）
+      // 与上面的注释**对齐**（AtomCode L-P2-6：旧实现直接 return，注释承诺的"占位自愈"并不存在，
+      // 对端先推增量时这次变化就被静默丢掉了）。这里建一条**刻度未知**的占位：
+      // 记下 volume/muted/enabled，但 maxVolume 仍为 0 ⇒ pct() = -1 ⇒ UI 显示「—」、滑杆禁用；
+      // 等全量列表到达时被 applyList 整体替换（并补上刻度）⇒ 自愈，且**变化不再丢**。
+      const fresh: SysSinkState = new SysSinkState();
+      fresh.name = name;
+      fresh.volumeAbs = b.volume !== undefined ? b.volume : -1;
+      fresh.muted = b.muted === true;
+      fresh.enabled = b.enabled === true;
+      this.sinks.push(fresh);
+      this.log(`increment for unknown sink -> placeholder (scale unknown): ${name}`);
+      return;
     }
     if (b.volume !== undefined) {
       s.volumeAbs = b.volume;

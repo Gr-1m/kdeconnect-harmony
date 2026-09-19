@@ -54,7 +54,21 @@ export class PayloadHistory {
     }
   }
 
-  static async save(ctx: Context, items: PayloadTransfer[]): Promise<void> {
+  // 写入串行化（AtomCode L-P2-10）：save() 是"读-合并-写"，两个传输同时完成时交错写会让先完成者丢失。
+  // 用一条 Promise 链把写入排队（前一个写完再开始下一个）——零依赖、调用方签名不变。
+  private static writeChain: Promise<void> = Promise.resolve();
+
+  static save(ctx: Context, items: PayloadTransfer[]): Promise<void> {
+    const next: Promise<void> = PayloadHistory.writeChain.then((): Promise<void> => {
+      return PayloadHistory.saveNow(ctx, items);
+    });
+    // 单个写入失败不阻塞后续排队（错误已在 saveNow 内部吞掉并留痕）
+    PayloadHistory.writeChain = next.catch((): void => {
+    });
+    return next;
+  }
+
+  private static async saveNow(ctx: Context, items: PayloadTransfer[]): Promise<void> {
     try {
       const pref = await preferences.getPreferences(ctx, PREF_NAME);
       // AtomCode P2 修复：**防御式合并**。调用方可能只传「刚完成的那几条」，

@@ -14,6 +14,13 @@ interface ClipboardBody {
 // - 发 `kdeconnect.clipboard`：本机剪贴板内容（PasteButton 授权后）
 // - 发 `kdeconnect.clipboard.connect`：**索取**对端剪贴板（timestamp=0 保证对端一定回复）
 export class ClipboardPlugin extends PluginBase {
+  // 本端**刚从对端写入剪贴板**的内容 + 时刻：用于 sendClipboard() 的回环抑制（AtomCode L-P1-1）。
+  // 语义与 Android ClipboardPlugin 的 lastContents 一致，并按**总指挥 MSG24 裁定表 #4** 加 **2 分钟窗**
+  // （对照 Android）：只在"刚同步过来的短时间内"抑制回发 —— 用户过一会儿自己复制同一段文本再发，
+  // 属于真实意图，不该被永久抑制。
+  private lastReceivedContent: string = '';
+  private lastReceivedAtMs: number = 0;
+  private static readonly LOOP_GUARD_MS: number = 120000;
   constructor() {
     super();
     this.displayName = 'Clipboard';
@@ -41,6 +48,10 @@ export class ClipboardPlugin extends PluginBase {
     try {
       const data: pasteboard.PasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, content);
       pasteboard.getSystemPasteboard().setDataSync(data);
+      // 防回环（AtomCode L-P1-1 / 裁定 #4）：记下"这段内容是对端同步过来的"+时刻，
+      // sendClipboard() 在**2 分钟窗内**遇到同内容即抑制 —— 否则双端互刷成死循环。
+      this.lastReceivedContent = content;
+      this.lastReceivedAtMs = Date.now();
       this.notify('clipboard', `${content.length}`);
       this.log(`clipboard updated from peer (${content.length} chars)`);
     } catch (e) {
@@ -58,6 +69,14 @@ export class ClipboardPlugin extends PluginBase {
       if (text.length === 0) {
         this.log('local clipboard empty, nothing sent');
         return false;
+      }
+      if (text === this.lastReceivedContent
+        && (Date.now() - this.lastReceivedAtMs) <= ClipboardPlugin.LOOP_GUARD_MS) {
+        // 防回环（AtomCode L-P1-1 + 裁定 #4 的 2 分钟窗）：这段内容正是**刚**由对端同步过来的，
+        // 原样发回会造成双端互刷死循环。返回 true = "已按规则处理完毕"，**不是失败**
+        // —— 否则 UI 会对一次正常去重弹发送失败提示。窗外的同内容视为用户真实意图，照常发送。
+        this.log('clipboard echo suppressed (loop guard: same content within 2min)');
+        return true;
       }
       const body: ClipboardBody = { content: text, timestamp: Date.now() };
       const ok: boolean = this.send('kdeconnect.clipboard', body);

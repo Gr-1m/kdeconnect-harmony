@@ -11,6 +11,20 @@ import { SystemSinkUi } from '../model/SystemVolumeModels';
 // 契约：协议与线上格式**完全不变**，只改进程内通道。
 // 约定（2026-09-19 补，避免再出现"字符串打包通道"）：**结构化数据一律加类型化字段**，
 // 不要再往 text 里塞 "a|b|c" 这种自造格式 —— 系统音量曾这样做过，已改回 svSinks。
+// 电量快照（P1-4 类型化通道；**总指挥 MSG24 裁定表 #6：取嵌套 payload 接口**，可扩展性优于平铺标量）
+// 取代原先的 `"85|1"` 字符串打包，避免"同一个文件里新旧两套通道并存"
+export interface BatterySnapshot {
+  charge: number;
+  charging: boolean;
+}
+
+// 远程命令输出（同上，#6 嵌套）：取代 `"1|0|输出文本"` 字符串打包
+export interface RunOutputSnapshot {
+  success: boolean;
+  exitCode: string;
+  text: string;
+}
+
 export interface PluginEvent {
   // 'mpris.playerList' | 'mpris.playerUpdate' | 'systemvolume.sinks'
   // | 'battery' | 'clipboard' | 'clipboard.request' | 'findmyphone'
@@ -21,6 +35,10 @@ export interface PluginEvent {
   mprisSnap?: MprisSnapshot;   // kind = 'mpris.playerUpdate'
   // kind = 'systemvolume.sinks'：对端输出设备的**全量快照**（幂等，可随时重推）
   svSinks?: SystemSinkUi[];
+  // kind = 'battery'：电量快照（P1-4 类型化，取代 `"85|1"`）
+  batterySnap?: BatterySnapshot;
+  // kind = 'runcommand.output'：远程命令执行结果（P1-4 类型化，取代 `"1|0|文本"`）
+  runOutput?: RunOutputSnapshot;
   // 标量/短文本载荷（由 PluginBase.notify 自动填充；语义与旧 data 字符串一致）
   text?: string;
 }
