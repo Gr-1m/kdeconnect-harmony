@@ -27,14 +27,17 @@ import { MprisPlugin } from '../plugins/MprisPlugin';
 import { RemoteInputPlugin } from '../plugins/RemoteInputPlugin';
 import { NotificationPlugin } from '../plugins/NotificationPlugin';
 import { DeviceItem, RememberedDevice, BatteryItem } from '../model/DeviceModels';
-import { MprisItem, MprisSnapshot, emptyMprisItem, mprisDisplayPos, mprisTimeText, mprisPlayerText } from '../model/MprisModels';
+import { MprisItem, MprisSnapshot, emptyMprisItem, mprisPlayerText } from '../model/MprisModels';
+import { SystemSinkUi } from '../model/SystemVolumeModels';
 import { PayloadTransfer, PayloadDirection, PayloadState } from '../model/PayloadModels';
 import { TrustedDevice } from '../model/TrustModels';
 import { TrustStore } from '../common/TrustStore';
 import { PayloadHistory } from '../common/PayloadHistory';
+import { LogStore } from '../common/LogStore';
 import { colorModeOf, languageOf, LANG_SYSTEM, THEME_FOLLOW_SYSTEM, systemDeviceName } from '../common/AppSettings';
 import { DevicesTab } from '../components/DevicesTab';
 import { MprisProgress } from '../components/MprisProgress';
+import { SystemSinkRow } from '../components/SystemSinkRow';
 import { FilesTab } from '../components/FilesTab';
 import { SettingsTab } from '../components/SettingsTab';
 import { LogsTab } from '../components/LogsTab';
@@ -80,14 +83,21 @@ const NOTICE_MS: number = 2500;
 const DRAWER_DEVICE_CAP: number = 2;
 // 抽屉面板宽度上限（vp）：大屏上 78% 会撑成一条巨板，故夹住
 const DRAWER_WIDTH_LIMIT: ConstraintSizeOptions = { maxWidth: 360 };
+// 一次最多选几个文件发送（用户 2026-09-18 拍板改为多选；上限取值与系统文件选择器常见上限一致）
+const MAX_PICK_FILES: number = 9;
 
 @Entry
 @Component
 struct Index {
   @State status: string = 'booting';
-  @State logText: string = '';
+  // 日志状态（批3 #1）：收进 @Observed LogStore，由 LogsTab 以 @ObjectLink 绑定。
+  // ⚠️ 这里**必须**挂 @State 才能传给 @ObjectLink（ArkTS 不允许 regular 属性绑定该装饰器）。
+  // 但**改 store 的内部字段（text）不会重建页面** —— @Observed 只通知 @ObjectLink 订阅者（LogsTab），
+  // 这正是本批要的收益：日志刷新只重建日志组件，页面其余部分不受影响。
+  @State logStore: LogStore = new LogStore();
   @State currentTab: number = 0;
-  // 开屏卡顿排查用：build() 调用计数（非 @State，避免自身触发重建）
+  // 日志合并刷新计数（非 @State，避免自身触发重建）。原为「日志驱动的整页重建次数」探针；
+  // 批3 后写日志不再重建页面，此计数只代表 flush 次数（保留用于量化刷新频率）。
   private buildCount: number = 0;
   // 事件日志开关：true 时打印完整事件 JSON（排查用）；常态 false ⇒ 只打轻量摘要
   private debugEventLog: boolean = false;
@@ -140,21 +150,18 @@ struct Index {
   @State selectedDeviceId: string = '';
   private sessionTimerId: number = -1;
   private noticeTimerId: number = -1;
-  // 媒体面板的 1s 插值时钟（仅面板打开时运行，关闭/退出必清）
-  private mprisTickerId: number = -1;
   // 点击/发包限频（key = "设备:动作" → 上次触发时刻）。手机实测：卡片点太快会连发网络请求 +
   // 连开弹窗，叠加重渲染直接把主线程压死（THREAD_BLOCK_3S/6S → 点击无响应）。
   private actionGateMs: Map<string, number> = new Map();
-  // 日志缓冲：日志可能每秒来十几条（每个 packet 一条），逐条写 @State 会触发同频整页重渲染。
-  // 改为先入缓冲、定时合并刷新（见 log()/flushLog()）。
-  private logBuf: string[] = [];
+  // 日志刷新节流（缓冲与文本已移入 common/LogStore.ets）：日志可能每秒来十几条（每个 packet 一条），
+  // 攒一批再 flush，避免刷新频率跟着日志频率走。
   private logFlushTimer: number = -1;
   private logLastFlushMs: number = 0;   // 上次 flushLog 时刻（P2-2 动态窗用）
-  // 进度/音量 Slider 的「用户是否真在拖」标志。
+  // 音量 Slider 的「用户是否真在拖」标志。
   // 实测坑：Slider 的 onChange 在**程序性**改 value/max 时也会回调（面板刚打开时 length 从 -1
-  // 变成真实值 ⇒ 回调被当成 Click/End）→ 误发 SetPosition(1)，把对端播放位置拽回开头。
+  // 变成真实值 ⇒ 回调被当成 Click/End）→ 误发设置请求。
   // 因此只有先收到 Begin（真拖动才会发）的这一次才算用户操作。
-  private mprisSeekDragging: boolean = false;
+  // （进度条的同类 gate 已随批2 下沉进 MprisProgress 组件内部。）
   private mprisVolDragging: boolean = false;
   // 局域网发现（MSG73/MSG74）：网络变化时触发 native 重新广播 identity
   private netConnection: connection.NetConnection | undefined = undefined;
@@ -175,17 +182,16 @@ struct Index {
   // 「文件详情」弹窗（点击文件行打开）：显示属性 + 另存为/丢弃/取消
   @State payloadDetailOpen: boolean = false;
   @State payloadDetailId: number = 0;
-  // 系统音量（kdeconnect.systemvolume）读数：与 MPRIS 播放器音量分开显示
-  @State sysVolume: number = -1;        // -1 = 未知/不可用
-  @State sysMuted: boolean = false;
-  @State sysVolumeDeviceId: string = '';
+  // 对端音频输出设备（kdeconnect.systemvolume 的**全量快照**，刻度已换算成百分比）：
+  // 由 SystemVolumePlugin 推来，UI 只渲染（见 components/SystemSinkRow.ets）。
+  @State svSinks: SystemSinkUi[] = [];
+  @State svDeviceId: string = '';        // 上面快照属于哪台设备（防切换面板时串数据）
+  // 媒体面板的两个 tab（用户 2026-09-18 要求）：0=媒体（播放器控制）1=设备（OutputDevice 列表）
+  @State mprisTab: number = 0;
   // 媒体控制面板（方向 1：手机控电脑端播放器）：按设备镜像对端播放器状态
   @State mprisItems: MprisItem[] = [];
   @State mprisDeviceId: string = '';
   @State mprisDialogOpen: boolean = false;
-  // 本地时钟（1s ticker 驱动）：进度条位置由 mprisDisplayPos() 用「收包时刻 + 经过时间」插值，
-  // 否则对端只在变化时推 pos，播放中进度条会一动不动。
-  @State mprisNowMs: number = 0;
   // 状态栏 / 导航栏安全区高度（EntryAbility 写入，单位 px）
   @StorageProp('statusBarHeightPx') statusBarHeightPx: number = 0;
   @StorageProp('navBarHeightPx') navBarHeightPx: number = 0;
@@ -371,19 +377,10 @@ struct Index {
   onPageShow(): void {
     this.pageShown = true;
     this.applySettingsIfReady();
-    // 回到前台：媒体面板还开着就恢复插值时钟（onPageHide 会把它停掉）
-    if (this.mprisDialogOpen) {
-      this.startMprisTicker();
-    }
     // 回前台/首次进入时主动广播一次：对端广播间隔较长，若启动时刚好错过上一轮，
     // 设备页会长时间空着（用户 2026-09-16 反馈「列表里什么都没有」）。
     // 有 3s 门控（actionGate 'net:triggerBroadcast'），不会放大主线程负担。
     this.triggerDiscoveryBroadcast();
-  }
-
-  onPageHide(): void {
-    // 退后台：停插值时钟，别在后台每秒唤醒 UI（用户建议「实时同步的前后台分开」）
-    this.stopMprisTicker();
   }
 
   // 点击/发包限频：同一「设备:动作」在窗口内重复触发直接忽略。
@@ -434,8 +431,6 @@ struct Index {
 
   aboutToDisappear(): void {
     this.unregisterNetworkListener();
-    // 媒体面板的插值时钟必须清掉（否则页面销毁后仍在跑）
-    this.stopMprisTicker();
     try {
       native.stop();
     } catch (e) {
@@ -739,13 +734,11 @@ struct Index {
       }
       return;
     }
-    // 系统音量（kdeconnect.systemvolume）：<volume 0-100 或 ?>|<muted 1|0>
-    if (kind === 'sysvolume') {
-      const sp: string[] = data.split('|');
-      const v: number = sp.length > 0 && sp[0] !== '?' ? Number.parseInt(sp[0], 10) : -1;
-      this.sysVolume = Number.isFinite(v) ? v : -1;
-      this.sysMuted = sp.length > 1 && sp[1] === '1';
-      this.sysVolumeDeviceId = deviceId;
+    // 系统音量（kdeconnect.systemvolume）：插件推**全量快照**（已换算成百分比），UI 只渲染。
+    // 旧实现是 `"<vol>|<muted>"` 字符串打包 + 页面侧 split 解包 —— 与批1 的类型化方向相反，已删除。
+    if (kind === 'systemvolume.sinks') {
+      this.svSinks = ev.svSinks !== undefined ? ev.svSinks : [];
+      this.svDeviceId = deviceId;
       return;
     }
     if (kind !== 'battery') {
@@ -856,21 +849,61 @@ struct Index {
     return undefined;
   }
 
-  private sysVolumeSet(v: number): void {
-    if (!this.actionGate(`sysvol:${this.mprisDeviceId}:vol`, 200)) {
+  // 当前面板设备的输出设备快照（设备不符 ⇒ 空数组，避免显示上一台设备的行）
+  private svSinksForCurrent(): SystemSinkUi[] {
+    return this.svDeviceId === this.mprisDeviceId ? this.svSinks : [];
+  }
+
+  // 打开面板时：换设备先清空快照，再向对端**请求一次列表**（协议级刷新，
+  // 与媒体 tab 的 requestPlayerList/requestStatus 同性质）。
+  // 注意：这里**不再**从插件"抄状态"到页面 —— 状态只有插件一份，任何变化它都会推全量快照。
+  private svPrepare(): void {
+    if (this.svDeviceId !== this.mprisDeviceId) {
+      this.svSinks = [];
+      this.svDeviceId = this.mprisDeviceId;
+    }
+    const p: SystemVolumePlugin | undefined = this.sysVolumePluginOf(this.mprisDeviceId);
+    if (p !== undefined) {
+      p.requestSinks();
+    }
+  }
+
+  private svSinkSet(name: string, pct: number): void {
+    // 60ms 轻门控（用户要求拖动实时同步；Android 端不松手即同步，这里只防刷包）
+    if (!this.actionGate(`sysvol:${name}:vol`, 60)) {
       return;
     }
     const p: SystemVolumePlugin | undefined = this.sysVolumePluginOf(this.mprisDeviceId);
-    if (p === undefined || !p.setVolume(v)) {
+    if (p === undefined || !p.setVolume(name, pct)) {
       this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
     }
   }
 
-  private sysVolumeToggleMute(): void {
+  private svSinkToggleMute(name: string): void {
     const p: SystemVolumePlugin | undefined = this.sysVolumePluginOf(this.mprisDeviceId);
-    if (p === undefined || !p.toggleMute()) {
+    if (p === undefined || !p.toggleMute(name)) {
       this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
     }
+  }
+
+  // 「选择输出设备」：把该 sink 设为对端默认输出（协议上单独发 {name, enabled:true}）
+  private svSinkSetDefault(name: string): void {
+    const p: SystemVolumePlugin | undefined = this.sysVolumePluginOf(this.mprisDeviceId);
+    if (p === undefined || !p.setDefault(name)) {
+      this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+    }
+  }
+
+  // 面板页脚「刷新」：按当前 tab 决定刷新对象（媒体=播放器列表/状态，设备=输出设备列表）
+  private panelRefresh(): void {
+    if (this.mprisTab === 1) {
+      const p: SystemVolumePlugin | undefined = this.sysVolumePluginOf(this.mprisDeviceId);
+      if (p === undefined || !p.requestSinks()) {
+        this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+      }
+      return;
+    }
+    this.mediaRefresh();
   }
 
   // 面板读数（build() 里直接调，靠 @State 触发刷新；**不要**用 @Builder 传值，值参数不变会跳过重建）
@@ -888,34 +921,8 @@ struct Index {
     return !it.gotAny || it.playerList.length === 0;
   }
 
-  // 进度条位置：由「收包时的 pos + 本地经过时间」插值（1s ticker 驱动刷新）。
-  // 注意量程用**千分比**而不是毫秒：曲目长度常达 1e6 ms（如 1129000），
-  // Slider 拿百万量程 + step=1000 时布局/刻度计算代价很大，手机快速连点开合面板会卡死主线程
-  // （实测 THREAD_BLOCK_3S，且只有带 Slider 的媒体面板会卡、无 Slider 的远程命令弹窗不卡）。
-  private mprisPosPermille(): number {
-    const len: number = this.mprisSnap().length;
-    if (len <= 0) {
-      return 0;
-    }
-    const pos: number = mprisDisplayPos(this.mprisSnap(), this.mprisNowMs);
-    return Math.round(pos * 1000 / len);
-  }
-
-  private mprisPos(): number {
-    return mprisDisplayPos(this.mprisSnap(), this.mprisNowMs);
-  }
-
-  // 千分比 → 毫秒（拖动结束回传对端时用）
-  private mprisPermilleToMs(permille: number): number {
-    const len: number = this.mprisSnap().length;
-    return len > 0 ? Math.round(permille * len / 1000) : 0;
-  }
-
-  private mprisMaxPos(): number {
-    const len: number = this.mprisSnap().length;
-    return len > 0 ? 1000 : 1;
-  }
-
+  // 音量读数（进度条的插值/千分比量程随批2 一起下沉进 MprisProgress 组件，
+  // 页面侧不再保留 mprisNowMs / mprisPos / mprisPosPermille / mprisPermilleToMs / mprisMaxPos —— 均已删除）
   private mprisVol(): number {
     const v: number = this.mprisSnap().volume;
     return v > 0 ? v : 0;
@@ -946,22 +953,8 @@ struct Index {
     return $r('app.string.media_loop_none');
   }
 
-  private startMprisTicker(): void {
-    // 批2 根治：插值时钟已下沉到 MprisProgress 组件（组件局部 @State + 自己的 1s ticker），
-    // 这里**不再**写页面级 mprisNowMs —— 否则面板打开期间每秒整页重建。
-    // 保留方法体为空以兼容既有调用点（onPageShow / openMprisDialog）。
-  }
-
-  private stopMprisTicker(): void {
-    if (this.mprisTickerId >= 0) {
-      clearInterval(this.mprisTickerId);
-      this.mprisTickerId = -1;
-    }
-  }
-
   private closeMprisDialog(): void {
     this.mprisDialogOpen = false;
-    this.stopMprisTicker();
   }
 
   // P2（MSG132 §2）：设备断链/离线 → 丢掉该设备的面板镜像 + 关面板停 ticker。
@@ -1818,9 +1811,10 @@ struct Index {
       }
       this.mprisDeviceId = id;
       this.putMpris(mp.item());
-      this.mprisNowMs = Date.now();
       this.mprisDialogOpen = true;
-      this.startMprisTicker();
+      this.mprisTab = 0;
+      // 打开面板：重置/请求系统音量快照（「设备」tab 的输出设备列表）
+      this.svPrepare();
       mp.requestPlayerList();
       mp.requestStatus();
       this.log(`media panel opened for ${id} (players=${this.mprisList().length})`);
@@ -2425,7 +2419,13 @@ struct Index {
     }
   }
 
-  // M2：选文件 → 复制进沙箱 → native.sendPayload（发送方向；进度走 payloadTransfer）
+  // M2：选文件 → 复制进沙箱 → native.sendPayload（发送方向；进度走 payloadTransfer）。
+  // 多选（用户 2026-09-18 拍板 / MSG30 评估）：一次最多 MAX_PICK_FILES 个，**串行**下发。
+  //   · 串行而非并发：native 侧同一连接同时只推进一个 payload，并发会被 payload gate 拒掉；
+  //     文件页也按"一个个排着发"给每个文件各自一行进度。
+  //   · 沙箱副本名加 `send_<批次时间戳>_<序号>_` 前缀：避免同批次内**同名文件**互相覆盖，
+  //     也避免覆盖上一个仍在流式传输中的文件。副本留在 cacheDir（应用缓存目录，系统可在
+  //     空间紧张时回收），与改前"副本留在 cacheDir"的行为一致。
   private async pickAndSendFile(): Promise<void> {
     if (this.connectedDevices.length === 0) {
       this.log('send file: no connected device');
@@ -2443,7 +2443,7 @@ struct Index {
     let uris: string[] = [];
     try {
       const docPicker: picker.DocumentViewPicker = new picker.DocumentViewPicker(hostCtx);
-      const options: picker.DocumentSelectOptions = { maxSelectNumber: 1 };
+      const options: picker.DocumentSelectOptions = { maxSelectNumber: MAX_PICK_FILES };
       uris = await docPicker.select(options);
     } catch (e) {
       this.log('send file: picker cancelled/failed');
@@ -2452,22 +2452,42 @@ struct Index {
     if (uris.length === 0) {
       return;
     }
-    const srcUri: string = uris[0];
+    const batchTs: number = Date.now();
+    let okCount: number = 0;
+    for (let i = 0; i < uris.length; i++) {
+      if (this.sendOnePickedFile(hostCtx, uris[i], target, batchTs, i)) {
+        okCount++;
+      }
+      // 文件之间让出主线程：连续 N 次「拷贝 + 下发」不该挤在同一帧里
+      if (i + 1 < uris.length) {
+        await this.yieldMs(80);
+      }
+    }
+    this.log(`send file batch: ${okCount}/${uris.length} -> ${target.name}`);
+    if (okCount === 0) {
+      this.toastText(this.resText($r('app.string.toast_send_file_failed').id));
+    }
+  }
+
+  // 下发单个已选文件（返回是否成功下发）。抽成独立方法只为让批处理循环保持线性可读。
+  private sendOnePickedFile(ctx: Context, srcUri: string, target: DeviceItem,
+                            batchTs: number, seq: number): boolean {
     let fileName: string = srcUri.substring(srcUri.lastIndexOf('/') + 1);
     try {
       fileName = decodeURIComponent(fileName);
     } catch (e) {
       // URI 未编码时 decodeURIComponent 会抛；忽略，沿用原名
     }
-    const cachePath: string = `${hostCtx.cacheDir}/${fileName}`;
+    const cachePath: string = `${ctx.cacheDir}/send_${batchTs}_${seq}_${fileName}`;
     // picker 返回的是 URI：必须经 fd 读，直接 copyFile(uri, path) 会失败（实测 "copy into sandbox failed"）。
     let srcFd: fileIo.File | undefined = undefined;
     try {
       srcFd = fileIo.openSync(srcUri, fileIo.OpenMode.READ_ONLY);
       fileIo.copyFileSync(srcFd.fd, cachePath);
     } catch (e) {
-      this.log('send file: copy into sandbox failed: ' + (e instanceof Error ? e.message : 'unknown'));
-      return;
+      this.log(`send file: copy into sandbox failed (${fileName}): `
+        + (e instanceof Error ? e.message : 'unknown'));
+      return false;
     } finally {
       if (srcFd !== undefined) {
         try {
@@ -2483,19 +2503,27 @@ struct Index {
         JSON.stringify(body), cachePath);
       this.log(transferId > 0
         ? `send file #${transferId}: ${fileName} -> ${target.name}`
-        : 'send file: sendPayload returned 0 (failed)');
+        : `send file: sendPayload returned 0 (${fileName})`);
+      return transferId > 0;
     } catch (e) {
-      this.log('sendPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.log(`sendPayload error (${fileName}): ` + (e instanceof Error ? e.message : 'unknown'));
+      return false;
     }
   }
 
+  // 让出主线程 ms 毫秒（多文件串行发送的间隔；不用 sleep 轮询，避免忙等）
+  private yieldMs(ms: number): Promise<void> {
+    return new Promise<void>((resolve: () => void): void => {
+      setTimeout((): void => {
+        resolve();
+      }, ms);
+    });
+  }
+
   private log(line: string): void {
-    const t: string = new Date().toTimeString().substring(0, 8);
-    this.logBuf.push(`[${t}] ${line}`);
-    if (this.logBuf.length > 200) {
-      this.logBuf.splice(0, this.logBuf.length - 200);
-    }
-    // 合并刷新：窗口内的多条日志攒成一次 @State 写入，避免日志频率直接驱动渲染频率。
+    // 缓冲与文本都在 LogStore 里（批3 #1）：这里只负责"什么时候 flush"
+    this.logStore.append(line);
+    // 合并刷新：窗口内的多条日志攒成一次写入，避免日志频率直接驱动刷新频率。
     // P2（MSG145 §2 P2-2）：原实现让「低频期首条」也要等满 900ms（用户体感：卡一下才出日志）。
     // 改为动态窗：距上次 flush 已空闲 ≥900ms ⇒ 视为新批次，100ms 短窗让首条尽快出现；
     // 高频期（距上次 flush <900ms）保持 900ms 节拍不变 —— 即**不会**退回「逐条渲染」。
@@ -2510,16 +2538,16 @@ struct Index {
   }
 
   private flushLog(): void {
-    if (this.logBuf.length === 0) {
+    if (this.logStore.isEmpty()) {
       return;
     }
-    // ARKTS_ANALYSIS §8-A（根治）：日志页不可见时不写 @State。
-    // 写 logText 会触发**整页重建**；开屏/日常操作期大量日志都发生在别的页签上，
-    // 这些重建纯属浪费（用户看不到日志）。切回日志页时由 tabs onChange 补一次 flush。
+    // ARKTS_ANALYSIS §8-A、批3 #1：日志页不可见时不 flush。
+    // 写 LogStore 只会重建 LogsTab（不再整页重建），所以这**已不是正确性要求**，只是省 CPU；
+    // 切回日志页时由 tabs onChange 补一次 flush（否则期间攒的行要等下一次日志才出现）。
     if (this.currentTab !== 3) {
       return;
     }
-    this.logText = this.logBuf.slice(-50).join('\n');
+    this.logStore.flush();
     this.logLastFlushMs = Date.now();
     // 开屏卡顿排查（MSG8 §4 问题 1/#1）：每次 flushLog 都会写 @State logText ⇒ 触发一次整页重建。
     // 这里计数并在首屏窗口内打印，用来量化「开屏期日志驱动的重建次数」。build() 里不能写任意语句，
@@ -2547,8 +2575,7 @@ struct Index {
 
   // 清空日志（含缓冲，否则下一次 flush 会把旧行又贴回来）
   private clearLog(): void {
-    this.logBuf = [];
-    this.logText = '';
+    this.logStore.clear();
   }
 
   // 沉浸光感能力探测（仅记录）。底栏材质由 HdsTabs 的 barFloatingStyle.systemMaterialEffect
@@ -3258,7 +3285,7 @@ struct Index {
           TabContent() {
             Column() {
                 LogsTab({
-                  logText: this.logText,
+                  logStore: this.logStore,
                   immersive: false,
                   onClearLogs: (): void => {
                     this.clearLog();
@@ -3434,6 +3461,31 @@ struct Index {
               .fontColor($r('app.color.text_muted'))
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
+            // 两个 tab（用户 2026-09-18 要求）：0=媒体（播放器控制）1=设备（OutputDevice）
+            Row({ space: 8 }) {
+              Text($r('app.string.media_tab_player'))
+                .fontSize(13)
+                .fontWeight(this.mprisTab === 0 ? FontWeight.Medium : FontWeight.Normal)
+                .fontColor(this.mprisTab === 0 ? $r('app.color.accent_text') : $r('app.color.text_secondary'))
+                .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+                .borderRadius(10)
+                .backgroundColor(this.mprisTab === 0 ? $r('app.color.accent_soft') : Color.Transparent)
+                .onClick(() => {
+                  this.mprisTab = 0;
+                })
+              Text($r('app.string.media_tab_devices'))
+                .fontSize(13)
+                .fontWeight(this.mprisTab === 1 ? FontWeight.Medium : FontWeight.Normal)
+                .fontColor(this.mprisTab === 1 ? $r('app.color.accent_text') : $r('app.color.text_secondary'))
+                .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+                .borderRadius(10)
+                .backgroundColor(this.mprisTab === 1 ? $r('app.color.accent_soft') : Color.Transparent)
+                .onClick(() => {
+                  this.mprisTab = 1;
+                })
+            }
+            .width('100%')
+            if (this.mprisTab === 0) {
 
             if (this.mprisEmpty()) {
               Text($r('app.string.media_empty'))
@@ -3633,6 +3685,38 @@ struct Index {
               .width('100%')
             }
 
+            } else {
+              // 「设备」tab：对端音频输出设备（OutputDevice）列表 —— 每个 sink 一行，可分别调音量/静音。
+              // 数据是插件推的**全量快照**（SystemSinkUi，刻度已换算成百分比）：UI 不做换算、不做兜底猜测，
+              // 也不持有第二份状态；打开面板时只向对端请求一次列表（协议级刷新）。
+              if (this.svSinksForCurrent().length === 0) {
+                Text($r('app.string.media_no_output'))
+                  .fontSize(13)
+                  .fontColor($r('app.color.text_secondary'))
+                Text($r('app.string.media_no_output_hint'))
+                  .fontSize(11)
+                  .fontColor($r('app.color.text_muted'))
+                  .textAlign(TextAlign.Center)
+              } else {
+                ForEach(this.svSinksForCurrent(), (s: SystemSinkUi) => {
+                  SystemSinkRow({
+                    sink: s,
+                    onVolumeChange: (name: string, pct: number): void => {
+                      this.svSinkSet(name, pct);
+                    },
+                    onToggleMute: (name: string): void => {
+                      this.svSinkToggleMute(name);
+                    },
+                    onSelect: (name: string): void => {
+                      this.svSinkSetDefault(name);
+                    }
+                  })
+                }, (s: SystemSinkUi) => s.name)
+              }
+            }
+
+            // 共用页脚（两个 tab 都是刷新/关闭）：旧实现把这两个按钮放在「媒体」tab 内部，
+            // 切到「设备」tab 后就**没有关闭入口**了 —— 已按「tab 只切内容、页脚共用」修正。
             Row({ space: 10 }) {
               Button($r('app.string.media_refresh'))
                 .layoutWeight(1)
@@ -3642,7 +3726,7 @@ struct Index {
                 .fontColor($r('app.color.text_secondary'))
                 .borderRadius(12)
                 .onClick(() => {
-                  this.mediaRefresh();
+                  this.panelRefresh();
                 })
               Button($r('app.string.action_cancel'))
                 .layoutWeight(1)
@@ -3653,44 +3737,6 @@ struct Index {
                 .borderRadius(12)
                 .onClick(() => {
                   this.closeMprisDialog();
-                })
-            }
-            .width('100%')
-
-            // ★ 系统音量（用户 2026-09-18 要求）：**常显**，与上面的「播放器音量」分成两块。
-            // 播放器不提供音量属性（Firefox 的 MPRIS 就没有）或根本没有播放器时，这里仍可调对端系统音量。
-            Row({ space: 8 }) {
-              Text($r('app.string.sys_volume'))
-                .fontSize(12)
-                .fontColor($r('app.color.text_secondary'))
-                .width(64)
-              Slider({
-                value: this.sysVolumeDeviceId === this.mprisDeviceId && this.sysVolume >= 0 ? this.sysVolume : 0,
-                min: 0,
-                max: 100,
-                step: 1
-              })
-                .layoutWeight(1)
-                .enabled(this.sysVolumeDeviceId === this.mprisDeviceId && this.sysVolume >= 0)
-                .onChange((value: number, mode: SliderChangeMode) => {
-                  // 只认松手（End/Click）：拖动过程不打点，Begin/Moving 一律跳过
-                  if (mode === SliderChangeMode.Begin || mode === SliderChangeMode.Moving) {
-                    return;
-                  }
-                  this.sysVolumeSet(value);
-                })
-              Text(this.sysVolumeDeviceId === this.mprisDeviceId && this.sysVolume >= 0 ? `${this.sysVolume}` : '—')
-                .fontSize(10)
-                .fontColor($r('app.color.text_muted'))
-                .width(28)
-              Button(this.sysMuted ? $r('app.string.sys_unmute') : $r('app.string.sys_mute'))
-                .fontSize(11)
-                .height(30)
-                .backgroundColor($r('app.color.chip_bg'))
-                .fontColor(this.sysMuted ? $r('app.color.danger_text') : $r('app.color.text_secondary'))
-                .borderRadius(8)
-                .onClick(() => {
-                  this.sysVolumeToggleMute();
                 })
             }
             .width('100%')

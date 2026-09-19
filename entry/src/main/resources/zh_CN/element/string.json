@@ -338,6 +338,34 @@
       "value": "系统音量"
     },
     {
+      "name": "media_tab_player",
+      "value": "媒体"
+    },
+    {
+      "name": "media_tab_devices",
+      "value": "设备"
+    },
+    {
+      "name": "sys_default_sink",
+      "value": "默认"
+    },
+    {
+      "name": "sys_set_default",
+      "value": "设为默认输出"
+    },
+    {
+      "name": "media_no_output",
+      "value": "未发现输出设备"
+    },
+    {
+      "name": "media_no_output_hint",
+      "value": "请确认电脑音频服务正常，或点「刷新」重试"
+    },
+    {
+      "name": "toast_send_file_failed",
+      "value": "发送失败"
+    },
+    {
       "name": "sys_mute",
       "value": "静音"
     },
