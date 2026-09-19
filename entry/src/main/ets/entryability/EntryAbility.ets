@@ -39,15 +39,20 @@ export default class EntryAbility extends UIAbility {
     try {
       const win = windowStage.getMainWindowSync();
       win.setWindowLayoutFullScreen(true);
-      const updateAvoidArea = (): void => {
-        const area = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
-        AppStorage.setOrCreate('statusBarHeightPx', area.topRect.height);
-        AppStorage.setOrCreate('navBarHeightPx', area.bottomRect.height);
-      };
-      updateAvoidArea();
-      win.on('windowSizeChange', () => {
-        updateAvoidArea();
-      });
+      const avoid = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+      AppStorage.setOrCreate('statusBarHeightPx', avoid.topRect.height);
+      AppStorage.setOrCreate('navBarHeightPx', avoid.bottomRect.height);
+      try {
+        win.on('avoidAreaChange', (data: window.AvoidAreaOptions): void => {
+          if (data.type === window.AvoidAreaType.TYPE_SYSTEM) {
+            AppStorage.setOrCreate('statusBarHeightPx', data.area.topRect.height);
+            AppStorage.setOrCreate('navBarHeightPx', data.area.bottomRect.height);
+          }
+        });
+      } catch (e2) {
+        hilog.warn(0x0000, 'testTag', 'avoidAreaChange listen failed: %{public}s',
+          e2 instanceof Error ? e2.message : 'unknown');
+      }
       // 手机（窄屏）锁竖屏；平板等大屏保持 auto_rotation，横屏走并排侧栏
       const LOCK_PHONE_PORTRAIT: boolean = true;
       if (!LOCK_PHONE_PORTRAIT || this.isLargeScreenDevice()) {

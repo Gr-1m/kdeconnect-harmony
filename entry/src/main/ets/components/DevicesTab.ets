@@ -823,8 +823,11 @@ export struct DevicesTab {
           .backgroundColor($r('app.color.accent'))
           .borderRadius(10)
           .onClick(() => {
-            const port: number = parseInt(this.manualPort, 10) || 1716;
-            this.onManualConnect(this.manualHost, port);
+            // 裁定表 #10（双层校验）：空端口用默认值；非数字原样传 NaN 交上层 toast 提示
+            //（旧写法 `parseInt || 1716` 会把 NaN 吞成默认端口，用户得不到任何反馈）。
+            const raw: string = this.manualPort.trim();
+            const parsed: number = raw.length === 0 ? 1716 : parseInt(raw, 10);
+            this.onManualConnect(this.manualHost.trim(), parsed);
           })
       }
       .width('100%')

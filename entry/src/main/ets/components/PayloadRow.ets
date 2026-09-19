@@ -130,8 +130,7 @@ export struct PayloadRow {
           }
         }
         .width('100%')
-        .onClick(() => {
-        })
+        .hitTestBehavior(HitTestMode.Block)
       }
     }
     .width('100%')

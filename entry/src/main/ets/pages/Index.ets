@@ -12,7 +12,7 @@ import uiMaterial from '@ohos.arkui.uiMaterial';
 import deviceInfo from '@ohos.deviceInfo';
 import { PacketRouter, RouterCallbacks } from '../net/PacketRouter';
 import { PluginBase } from '../plugins/PluginBase';
-import { PluginEvent } from '../plugins/PluginEvent';
+import { PluginEvent, BatteryPayload, RunOutputPayload } from '../plugins/PluginEvent';
 import { PluginRegistry } from '../plugins/PluginRegistry';
 import { PluginHost } from '../plugins/PluginHost';
 import { PingPlugin } from '../plugins/PingPlugin';
@@ -33,9 +33,11 @@ import { PayloadTransfer, PayloadDirection, PayloadState } from '../model/Payloa
 import { TrustedDevice } from '../model/TrustModels';
 import { TrustStore } from '../common/TrustStore';
 import { PayloadHistory } from '../common/PayloadHistory';
+import { PayloadDetailDialog } from '../components/PayloadDetailDialog';
 import { LogStore } from '../common/LogStore';
 import { colorModeOf, languageOf, LANG_SYSTEM, THEME_FOLLOW_SYSTEM, systemDeviceName } from '../common/AppSettings';
 import { DevicesTab } from '../components/DevicesTab';
+import { DrawerOverlay } from '../components/DrawerOverlay';
 import { MprisProgress } from '../components/MprisProgress';
 import { SystemSinkRow } from '../components/SystemSinkRow';
 import { FilesTab } from '../components/FilesTab';
@@ -730,9 +732,14 @@ struct Index {
       return;
     }
     if (kind === 'runcommand.output') {
-      const ok: boolean = ev.runcommandSuccess ?? false;
-      const code: number = ev.runcommandExitCode ?? -1;
-      const text: string = ev.runcommandOutput ?? '';
+      // 嵌套 payload（裁定表 #6）：读 ev.runOutput 结构化字段
+      const ro: RunOutputPayload | undefined = ev.runOutput;
+      if (ro === undefined) {
+        return;
+      }
+      const ok: boolean = ro.success;
+      const code: number = ro.exitCode;
+      const text: string = ro.text;
       const head: string = this.resText(ok
         ? $r('app.string.toast_run_cmd_ok').id : $r('app.string.toast_run_cmd_failed').id);
       this.toastText(text.length > 0 ? `${head} (exit=${code}): ${text}` : `${head} (exit=${code})`);
@@ -774,8 +781,13 @@ struct Index {
       this.log(`plugin event ${kind} from ${deviceId}`);
       return;
     }
-    const charge: number = ev.batteryCharge ?? -1;
-    const charging: boolean = ev.batteryCharging ?? false;
+    // 嵌套 payload（裁定表 #6）：读 ev.battery 结构化字段
+    const bp: BatteryPayload | undefined = ev.battery;
+    if (bp === undefined) {
+      return;
+    }
+    const charge: number = bp.charge;
+    const charging: boolean = bp.charging;
     const text: string = `${charge}%${charging ? ' ⚡' : ''}`;
     const exists: boolean = this.batteryItems.some((b: BatteryItem) => b.deviceId === deviceId);
     const item: BatteryItem = { deviceId: deviceId, text: text };
@@ -1459,13 +1471,13 @@ struct Index {
 
   // 手动连接（可选功能）：host:port 直连，与发现列表「连接」同一条会话状态机
   private manualConnect(host: string, port: number): void {
-    if (host.length === 0) {
-      this.toastText('connect failed: empty host');
+    if (host.trim().length === 0) {
+      this.toastText(this.resText($r('app.string.toast_manual_bad_host').id));
       this.log('manual connect rejected: empty host');
       return;
     }
-    if (isNaN(port) || port <= 0 || port > 65535) {
-      this.toastText(`connect failed: invalid port ${port}`);
+    if (isNaN(port) || port < 1 || port > 65535) {
+      this.toastText(this.resText($r('app.string.toast_manual_bad_port').id));
       this.log(`manual connect rejected: invalid port ${port}`);
       return;
     }
@@ -2136,11 +2148,18 @@ struct Index {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 
+  // 状态文案（裁定表 #14，DevEco 独有采纳；口径必须与 components/PayloadRow.ets 一致，改一处要改两处）：
+  //   进行中：发送 = 发送中 / 接收 = 接收中（旧实现不分方向，发送中也被写成"接收中"）
+  //   完成：  发送 = 已发送 / 接收 = 已保存（已处置）或 已完成；失败/取消两方向同词
   private payloadStateText(p: PayloadTransfer): string {
+    const send: boolean = p.direction === 'send';
     if (p.state === 'started' || p.state === 'progress') {
-      return this.resText($r('app.string.files_receiving').id);
+      return this.resText(send ? $r('app.string.files_sending').id : $r('app.string.files_receiving').id);
     }
     if (p.state === 'finished') {
+      if (send) {
+        return this.resText($r('app.string.files_sent').id);
+      }
       return this.resText(p.settled ? $r('app.string.files_saved').id : $r('app.string.files_finished').id);
     }
     return this.resText(p.state === 'failed' ? $r('app.string.files_failed').id : $r('app.string.files_cancelled').id);
@@ -2612,17 +2631,12 @@ struct Index {
     if (state === 'finished') {
       this.sendOkCount++;
       this.log(`send file done: ${job !== undefined ? job.fileName : '?'} (${this.sendOkCount}/${this.sendTotal})`);
-    } else if (job !== undefined && job.attempt < MAX_SEND_ATTEMPT
-      && code === PAYLOAD_ERR_HANDSHAKE_TIMEOUT) {
-      // ★ 兜底重试（用户 2026-09-19 拍板）：code=110 握手/接受超时 —— 实测在"紧跟一次成功传输之后"
-      //   必然出现（native 槽位 teardown 竞态，已上报 Omp MSG38）。**只重试一次**、只针对这一类错误，
-      //   成功才计入 ok/total；不用固定 sleep 绕（那是评审否掉的时序补丁）。
-      job.attempt++;
-      this.sendQueue.unshift(job);
-      this.log(`send file retry (code=${code}): ${job.fileName} attempt=${job.attempt + 1}`);
     } else {
       this.log(`send file failed: ${job !== undefined ? job.fileName : '?'} state=${state} code=${code}`);
     }
+    // 裁定表 #15（合并裁定）：code=110「兜底重试一次」已撤除——Omp MSG38 判断：阶段未定位前
+    // 加重试会把真因掩盖成偶发。恢复条件：native 阶段诊断（46c55d4）的复跑数据定位后，
+    // 若确认是「对端尚未就绪」的固有窗口，再以**有界**重试回归并如实计数。
     this.pumpSendQueue();
     if (this.sendBusyId < 0 && this.sendQueue.length === 0 && this.sendTotal > 0) {
       // 整批结束：一条汇总提示（CodeArts MSG19 §3：「逐条 toast 或一条汇总」——取后者，避免刷屏）
@@ -2901,285 +2915,36 @@ struct Index {
     this.log(`remember known device ${id} (connected once)`);
   }
 
-  // 抽屉里实际渲染的已连接设备：收起态只取前 drawerDeviceCap 台，展开态全部
-  private visibleDrawerDevices(): DeviceItem[] {
-    const list: DeviceItem[] = this.connectedShown();
-    if (this.drawerExpanded || list.length <= DRAWER_DEVICE_CAP) {
-      return list;
-    }
-    return list.slice(0, DRAWER_DEVICE_CAP);
-  }
-
-  // 抽屉里的设备行（对齐参考稿「我的产品」列表：方图 + 名称 + 副标题 + 状态标签，
-  // 选中行整行高亮）。点击 = 选中该设备并收起抽屉，页面随即展示该设备详情 + 大按钮。
-  @Builder
-  drawerDeviceRow(d: DeviceItem) {
-    Row({ space: 12 }) {
-      Column() {
-        SymbolGlyph($r('sys.symbol.computer'))
-          .fontSize(22)
-          .fontColor([$r('app.color.text_primary')])
-      }
-      .width(44)
-      .height(44)
-      .borderRadius(12)
-      .backgroundColor($r('app.color.chip_bg'))
-      .justifyContent(FlexAlign.Center)
-
-      Column({ space: 2 }) {
-        Text(d.name)
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(d.id)
-          .fontSize(10)
-          .fontColor($r('app.color.text_muted'))
-          .fontFamily('monospace')
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-
-      Text(this.isPairedId(d.id) ? $r('app.string.remembered_hint') : $r('app.string.remembered_unpaired'))
-        .fontSize(10)
-        .fontColor(this.isPairedId(d.id) ? $r('app.color.dot_remembered') : $r('app.color.text_muted'))
-        .padding({ left: 8, right: 8, top: 2, bottom: 2 })
-        .borderRadius(999)
-        .backgroundColor($r('app.color.chip_bg'))
-    }
-    .width('100%')
-    .padding({ left: 10, right: 10, top: 8, bottom: 8 })
-    .borderRadius(14)
-    .backgroundColor(this.selectedDeviceId === d.id ? $r('app.color.accent_soft') : Color.Transparent)
-    .onClick(() => {
-      // 必须走 openDeviceDetail：它同时负责「选中设备 + 切到已连接设备分区（功能页）」。
-      // 原来只置 selectedDeviceId，若当前停在发现/记忆/手动分区，点完页面不变 → 用户反馈"点了没反应"
-      this.openDeviceDetail(d);
-      this.closeDrawer();
-    })
-  }
-
-  // 发现列表展示用：IP:端口（端口未知时只给 IP；地址未知给占位文案）
-  private addressOf(d: DeviceItem): ResourceStr {
-    if (d.host === '') {
-      return $r('app.string.address_pending');
-    }
-    return d.tcpPort > 0 ? `${d.host}:${d.tcpPort}` : d.host;
-  }
-
-  // 抽屉里的「发现设备」行：点击/配对按钮 = 发起配对（配对成功才转入「已连接」）
-  @Builder
-  drawerPairRow(d: DeviceItem) {
-    Row({ space: 12 }) {
-      Column() {
-        SymbolGlyph($r('sys.symbol.computer'))
-          .fontSize(22)
-          .fontColor([$r('app.color.text_secondary')])
-      }
-      .width(44)
-      .height(44)
-      .borderRadius(12)
-      .backgroundColor($r('app.color.chip_bg'))
-      .justifyContent(FlexAlign.Center)
-
-      Column({ space: 2 }) {
-        Text(d.name)
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        // 发现行只显示 IP:端口（设备 ID 在配对弹窗里核对）
-        Text(this.addressOf(d))
-          .fontSize(10)
-          .fontColor($r('app.color.text_muted'))
-          .fontFamily('monospace')
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-
-      if (this.requestedPairIds.includes(d.id)) {
-        Text($r('app.string.pair_pending'))
-          .fontSize(10)
-          .fontColor($r('app.color.accent_text'))
-          .padding({ left: 8, right: 8, top: 2, bottom: 2 })
-          .borderRadius(999)
-          .backgroundColor($r('app.color.accent_soft'))
-      } else {
-        Button($r('app.string.pair_action'))
-          .fontSize(12)
-          .height(32)
-          .backgroundColor($r('app.color.accent'))
-          .borderRadius(8)
-          .onClick(() => {
-            this.requestPairWith(d);
-            this.closeDrawer();
-          })
-      }
-    }
-    .width('100%')
-    .padding({ left: 10, right: 10, top: 8, bottom: 8 })
-    .borderRadius(14)
-    .onClick(() => {
-      this.requestPairWith(d);
-      this.closeDrawer();
-    })
-  }
-
-  // 抽屉里「展开 ⌄」之后露出的分区入口（发现 / 记住 / 手动）：
-  // 这三个页面本身不变，只是入口挪到展开区（对齐参考稿的「展开」折叠）。
-  @Builder
-  drawerSectionRow(index: number, label: ResourceStr, count: number) {
-    Row({ space: 10 }) {
-      Text(label)
-        .fontSize(14)
-        .fontColor(this.deviceSection === index ? $r('app.color.accent_text') : $r('app.color.text_secondary'))
-        .fontWeight(this.deviceSection === index ? FontWeight.Medium : FontWeight.Normal)
-        .layoutWeight(1)
-      if (count > 0) {
-        Text(`${count}`)
-          .fontSize(10)
-          .fontColor($r('app.color.accent_text'))
-          .padding({ left: 6, right: 6, top: 1, bottom: 1 })
-          .borderRadius(999)
-          .backgroundColor($r('app.color.accent_soft'))
-      }
-    }
-    .width('100%')
-                    .padding({ left: 12, right: 12, top: 15, bottom: 15 })
-    .borderRadius(12)
-    .backgroundColor(this.deviceSection === index ? $r('app.color.accent_soft') : Color.Transparent)
-    .onClick(() => {
-      this.pickDrawerSection(index);
-    })
-  }
-
   @Builder
   drawerOverlay() {
-    Stack({ alignContent: Alignment.TopStart }) {
-      // 遮罩：浅色变暗（不用纯黑/材质层——暗色主题下会糊成"黑方块"）；全屏淡入淡出
-      Column()
-        .width('100%')
-        .height('100%')
-        .backgroundColor('#40000000')
-        .onClick(() => {
-          this.closeDrawer();
-        })
-        .transition(TransitionEffect.OPACITY.animation({ duration: 220, curve: Curve.EaseOut }))
-
-      // 面板：左贴屏边、右侧圆角、滑入/滑出
-      Column({ space: 10 }) {
-        Row({ space: 10 }) {
-          Text($r('app.string.tab_devices'))
-            .fontSize(16)
-            .fontWeight(FontWeight.Bold)
-            .fontColor($r('app.color.text_primary'))
-            .layoutWeight(1)
-          Text('✕')
-            .fontSize(16)
-            .fontColor($r('app.color.text_secondary'))
-            .padding(8)
-            .onClick(() => {
-              this.closeDrawer();
-            })
-        }
-        .width('100%')
-
-        Scroll() {
-          Column({ space: 6 }) {
-            Text($r('app.string.connected_devices'))
-              .fontSize(14)
-              .fontWeight(FontWeight.Medium)
-              .fontColor($r('app.color.text_secondary'))
-              .width('100%')
-              .padding({ top: 4, bottom: 4 })
-            if (this.connectedShown().length === 0) {
-              Text($r('app.string.drawer_pick_device_hint'))
-                .fontSize(12)
-                .fontColor($r('app.color.text_muted'))
-                .width('100%')
-                .padding({ top: 4, bottom: 4 })
-            }
-            ForEach(this.visibleDrawerDevices(), (d: DeviceItem) => {
-              this.drawerDeviceRow(d)
-            }, (d: DeviceItem) => `conn-${d.id}`)
-
-            // 「展开 ⌄」只作用于**已连接设备列表**（设备多时先收起、点开看全部）；
-            // 下面三个分区入口（发现/记住/手动）常驻可见可点，不参与收起
-            if (this.connectedShown().length > DRAWER_DEVICE_CAP) {
-              Row({ space: 6 }) {
-                Text(this.drawerExpanded ? $r('app.string.drawer_collapse') : $r('app.string.drawer_expand'))
-                  .fontSize(13)
-                  .fontColor($r('app.color.accent_text'))
-                SymbolGlyph(this.drawerExpanded ? $r('sys.symbol.chevron_up') : $r('sys.symbol.chevron_down'))
-                  .fontSize(13)
-                  .fontColor([$r('app.color.accent_text')])
-              }
-              .width('100%')
-              .justifyContent(FlexAlign.Center)
-              .padding({ top: 10, bottom: 10 })
-              .onClick(() => {
-                animateTo({ duration: 200, curve: Curve.EaseInOut }, () => {
-                  this.drawerExpanded = !this.drawerExpanded;
-                });
-              })
-            }
-
-            // 发现设备：未配对的在线设备（含已连上但未配对的）—— 配对入口在发现列表里
-            // （用户 2026-09-14 裁决：只有配对成功才进「已连接」，故配对按钮留在发现列表）
-            Text($r('app.string.discovered_devices'))
-              .fontSize(14)
-              .fontWeight(FontWeight.Medium)
-              .fontColor($r('app.color.text_secondary'))
-              .width('100%')
-              .padding({ top: 10, bottom: 4 })
-            if (this.discoveredShown().length === 0) {
-              Text($r('app.string.discovered_hint'))
-                .fontSize(12)
-                .fontColor($r('app.color.text_muted'))
-                .width('100%')
-                .padding({ top: 4, bottom: 4 })
-            }
-            ForEach(this.discoveredShown(), (d: DeviceItem) => {
-              this.drawerPairRow(d)
-            }, (d: DeviceItem) => `disc-${d.id}`)
-
-            this.drawerSectionRow(2, $r('app.string.remembered_devices'), this.offlineKnownShown().length)
-            this.drawerSectionRow(3, $r('app.string.manual_connect'), 0)
-          }
-          .width('100%')
-          .alignItems(HorizontalAlign.Start)
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .align(Alignment.TopStart)
-        .scrollBar(BarState.Off)
+    // 合并裁定 #13：设备抽屉抽为 DrawerOverlay 组件（来自 AtomCode 副本）——
+    // 页面只传派生列表与回调，UI/交互细节收敛到组件内。
+    DrawerOverlay({
+      connectedList: this.connectedShown(),
+      discoveredList: this.discoveredShown(),
+      rememberedCount: this.offlineKnownShown().length,
+      selectedDeviceId: this.selectedDeviceId,
+      requestedPairIds: this.requestedPairIds,
+      deviceSection: this.deviceSection,
+      drawerExpanded: this.drawerExpanded,
+      onClose: (): void => {
+        this.closeDrawer();
+      },
+      onOpenDevice: (d: DeviceItem): void => {
+        this.openDeviceDetail(d);
+        this.closeDrawer();
+      },
+      onPairRequest: (d: DeviceItem): void => {
+        this.requestPairWith(d);
+        this.closeDrawer();
+      },
+      onPickSection: (index: number): void => {
+        this.pickDrawerSection(index);
+      },
+      isPaired: (deviceId: string): boolean => {
+        return this.isPairedId(deviceId);
       }
-      .width('78%')
-      .constraintSize(DRAWER_WIDTH_LIMIT)
-      .height('100%')
-      .padding({
-        left: 16,
-        right: 16,
-        top: this.getUIContext().px2vp(this.statusBarHeightPx) + 16,
-        bottom: 16
-      })
-      // 抽屉：恢复毛玻璃，并换用更实的 drawer_bg（用户反馈去掉模糊后太透、文字看不清）
-      .backgroundColor($r('app.color.drawer_bg'))
-      .backgroundBlurStyle(BlurStyle.BACKGROUND_THIN)
-      .borderRadius({ topRight: 22, bottomRight: 22 })
-      .border({ width: 1, color: $r('app.color.bar_border') })
-      .alignItems(HorizontalAlign.Start)
-      .clip(true)
-      .transition(TransitionEffect.translate({ x: -400 }).animation({ duration: 280, curve: Curve.EaseOut }))
-    }
-    .width('100%')
-    .height('100%')
+    })
   }
 
   build() {
@@ -4046,72 +3811,26 @@ struct Index {
         })
       }
 
-      // 「文件详情」弹窗（点击文件行触发）：属性 + 另存为 / 丢弃 / 取消。
-      // 另存为走系统保存面板（用户自选目录 ⇒ 文件管理里可见）；丢弃走 native discardPayload。
       if (this.payloadDetailOpen) {
-        Column() {
-          Column({ space: 12 }) {
-            Text(this.payloadDetail().fileName.length > 0
-              ? this.payloadDetail().fileName : `#${this.payloadDetailId}`)
-              .fontSize(16)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_primary'))
-              .maxLines(2)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-            this.infoLine($r('app.string.file_attr_size'), this.fmtBytes(this.payloadDetail().size))
-            this.infoLine($r('app.string.file_attr_time'), this.timeTextOf(this.payloadDetail()))
-            this.infoLine($r('app.string.file_attr_state'), this.payloadStateText(this.payloadDetail()))
-            this.infoLine($r('app.string.file_attr_dir'), this.resText(this.payloadDetail().direction === 'receive'
-              ? $r('app.string.file_dir_receive').id : $r('app.string.file_dir_send').id))
-            Row({ space: 10 }) {
-              Button($r('app.string.file_action_save_as'))
-                .layoutWeight(1)
-                .height(42)
-                .fontSize(14)
-                .backgroundColor($r('app.color.accent'))
-                .borderRadius(12)
-                .onClick(() => {
-                  this.saveAsPayload(this.payloadDetail());
-                })
-              Button($r('app.string.files_action_discard'))
-                .layoutWeight(1)
-                .height(42)
-                .fontSize(14)
-                .backgroundColor($r('app.color.danger_bg'))
-                .fontColor($r('app.color.danger_text'))
-                .borderRadius(12)
-                .onClick(() => {
-                  this.discardPayload(this.payloadDetail());
-                  this.payloadDetailOpen = false;
-                })
-              Button($r('app.string.action_cancel'))
-                .layoutWeight(1)
-                .height(42)
-                .fontSize(14)
-                .backgroundColor($r('app.color.chip_bg'))
-                .fontColor($r('app.color.text_secondary'))
-                .borderRadius(12)
-                .onClick(() => {
-                  this.payloadDetailOpen = false;
-                })
-            }
-            .width('100%')
+        // 合并裁定 #13：「文件详情」弹窗抽为 components/PayloadDetailDialog.ets（来自 DevEco，行为保持）
+        PayloadDetailDialog({
+          fileName: this.payloadDetail().fileName.length > 0
+            ? this.payloadDetail().fileName : `#${this.payloadDetailId}`,
+          sizeText: this.fmtBytes(this.payloadDetail().size),
+          timeText: this.timeTextOf(this.payloadDetail()),
+          stateText: this.payloadStateText(this.payloadDetail()),
+          dirText: this.resText(this.payloadDetail().direction === 'receive'
+            ? $r('app.string.file_dir_receive').id : $r('app.string.file_dir_send').id),
+          onSaveAs: (): void => {
+            this.saveAsPayload(this.payloadDetail());
+          },
+          onDiscard: (): void => {
+            this.discardPayload(this.payloadDetail());
+            this.payloadDetailOpen = false;
+          },
+          onClose: (): void => {
+            this.payloadDetailOpen = false;
           }
-          .width('80%')
-          .padding(20)
-          .borderRadius(20)
-          .backgroundColor($r('app.color.dialog_bg'))
-          .border({ width: 1, color: $r('app.color.card_border') })
-          .alignItems(HorizontalAlign.Center)
-          .onClick(() => {})
-        }
-        .width('100%')
-        .height('100%')
-        .justifyContent(FlexAlign.Center)
-        .alignItems(HorizontalAlign.Center)
-        .backgroundColor($r('app.color.dialog_mask'))
-        .onClick(() => {
-          this.payloadDetailOpen = false;
         })
       }
 

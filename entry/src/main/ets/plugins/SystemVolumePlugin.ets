@@ -273,9 +273,16 @@ export class SystemVolumePlugin extends PluginBase {
     const name: string = b.name !== undefined ? b.name : '';
     let s: SysSinkState | undefined = this.find(name);
     if (s === undefined) {
+      if (name.length === 0) {
+        return;
+      }
       s = new SysSinkState();
       s.name = name;
+      s.volumeAbs = b.volume !== undefined ? b.volume : -1;
+      s.muted = b.muted === true;
+      s.enabled = b.enabled === true;
       this.sinks.push(s);
+      this.log(`increment for unknown sink -> placeholder (scale unknown): ${name}`);
     }
     if (b.volume !== undefined) {
       s.volumeAbs = b.volume;

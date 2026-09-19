@@ -12,24 +12,24 @@ import { SystemSinkUi } from '../model/SystemVolumeModels';
 // 约定（2026-09-19 补，避免再出现"字符串打包通道"）：**结构化数据一律加类型化字段**，
 // 不要再往 text 里塞 "a|b|c" 这种自造格式 —— 系统音量曾这样做过，已改回 svSinks。
 export interface PluginEvent {
-  // 'mpris.playerList' | 'mpris.playerUpdate' | 'systemvolume.sinks'
-  // | 'battery' | 'clipboard' | 'clipboard.request' | 'findmyphone'
-  // | 'runcommand.list' | 'runcommand.output'
   kind: string;
-  // 结构化载荷（避免 JSON 往返的字段）
-  mprisList?: string[];        // kind = 'mpris.playerList'
-  mprisSnap?: MprisSnapshot;   // kind = 'mpris.playerUpdate'
-  // kind = 'systemvolume.sinks'：对端输出设备的**全量快照**（幂等，可随时重推）
+  mprisList?: string[];
+  mprisSnap?: MprisSnapshot;
   svSinks?: SystemSinkUi[];
-  // kind = 'battery'：对端电量（结构化，不再 "85|1" 字符串打包）
-  batteryCharge?: number;
-  batteryCharging?: boolean;
-  // kind = 'runcommand.output'：命令执行结果（结构化，不再 "1|0|text" 字符串打包）
-  runcommandSuccess?: boolean;
-  runcommandExitCode?: number;
-  runcommandOutput?: string;
-  // 标量/短文本载荷（由 PluginBase.notify 自动填充；语义与旧 data 字符串一致）
+  battery?: BatteryPayload;
+  runOutput?: RunOutputPayload;
   text?: string;
+}
+
+export interface BatteryPayload {
+  charge: number;
+  charging: boolean;
+}
+
+export interface RunOutputPayload {
+  success: boolean;
+  exitCode: number;
+  text: string;
 }
 
 // 便捷构造：标量事件（旧 notify(kind, data) 的等价物）
