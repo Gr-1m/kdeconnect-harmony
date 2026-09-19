@@ -39,6 +39,12 @@ export class ConnectivityReportPlugin extends PluginBase {
   }
 
   onCreate(): boolean {
+    // P2-9：重入防护——重复 onCreate（上层异常重装）必须先清旧 interval，
+    // 否则旧定时器永久存活并持续向对端发包。
+    if (this.timerId >= 0) {
+      clearInterval(this.timerId);
+      this.timerId = -1;
+    }
     this.sendReport(false);
     this.timerId = setInterval(() => {
       this.sendReport(true);

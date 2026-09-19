@@ -63,6 +63,7 @@ export struct DevicesTab {
   // 手动连接默认值：host 留空（10.0.2.2 只是 QEMU 模拟器的 NAT 网关，真机无意义），port 用默认端口
   @State manualHost: string = '';
   @State manualPort: string = '1716';
+  @State manualError: boolean = false;   // P2-17：输入校验失败标记（红框提示）
   // 发现列表下拉刷新态（触发广播后自动收起）
   @State discoveryRefreshing: boolean = false;
   // 主区实测宽度（vp）：决定大按钮列数（窄→2 列 / 宽→3 列）
@@ -803,8 +804,12 @@ export struct DevicesTab {
           .fontColor($r('app.color.text_primary'))
           .backgroundColor($r('app.color.input_bg'))
           .borderRadius(10)
+          .border(this.manualError ? { width: 1, color: '#e05555' } : { width: 0 })
           .onChange((v: string) => {
             this.manualHost = v;
+            if (this.manualError && v.trim().length > 0) {
+              this.manualError = false;   // 用户开始改正即撤红框
+            }
           })
         TextInput({ text: this.manualPort, placeholder: 'port' })
           .layoutWeight(3)
@@ -823,8 +828,17 @@ export struct DevicesTab {
           .backgroundColor($r('app.color.accent'))
           .borderRadius(10)
           .onClick(() => {
-            const port: number = parseInt(this.manualPort, 10) || 1716;
-            this.onManualConnect(this.manualHost, port);
+            // P2-17：手动连接是系统边界输入，必须校验——空 host / 非数字端口静默回退
+            // 会让用户以为点了连接（上游 Android 同样校验并提示）。
+            const host: string = this.manualHost.trim();
+            const parsed: number = parseInt(this.manualPort.trim(), 10);
+            if (host.length === 0 || (!Number.isNaN(parsed) && (parsed < 1 || parsed > 65535))) {
+              this.manualError = true;
+              return;
+            }
+            this.manualError = false;
+            const port: number = Number.isNaN(parsed) ? 1716 : parsed;
+            this.onManualConnect(host, port);
           })
       }
       .width('100%')

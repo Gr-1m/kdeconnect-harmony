@@ -107,6 +107,14 @@
     {
       "name": "drawer_bg",
       "value": "#F00D142C"
+    },
+    {
+      "name": "dialog_panel_bg",
+      "value": "#F2111A36"
+    },
+    {
+      "name": "overlay_scrim",
+      "value": "#99000000"
     }
   ]
 }

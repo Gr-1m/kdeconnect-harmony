@@ -306,10 +306,12 @@ export class MprisPlugin extends PluginBase {
     // 2) 目标播放器：包里有 player 就是它，否则沿用当前。
     // 实测坑：KDE 会同时用两个身份名发同一个播放器（如 playerList=["Firefox"]，却仍有
     // `player:"Mozilla firefox"` 的包）⇒ 若见谁都切，面板会来回跳、曲目信息忽有忽无。
-    // 规则：只有出现在 playerList 里的名字才允许成为「当前播放器」；列表为空（对端不发列表）时放行。
+    // 规则（P2-4）：只有出现在 playerList 里的名字才允许成为「当前播放器」；列表为空
+    //（对端不发列表）时放行。注意：空 currentPlayer 时**不能**放行未列入的名字——否则
+    // KDE 双身份（"Mozilla firefox"）这类列表外别名会先占住焦点，后续列表内名字反而抢不回。
     const target: string = b.player ?? this.currentPlayer;
     const listed: boolean = this.playerList.length === 0 || this.playerList.includes(target);
-    if (target.length > 0 && (listed || this.currentPlayer.length === 0)) {
+    if (target.length > 0 && listed) {
       this.currentPlayer = target;
     }
     if (this.currentPlayer.length === 0 && this.playerList.length > 0) {

@@ -42,7 +42,9 @@ export struct SystemSinkRow {
           .width(22)
           .height(22)
           .onChange((isChecked: boolean) => {
-            if (isChecked) {
+            // P2-18：程序化更新 checked（对端回推 enabled/isDefault 变化）在部分 ArkUI 版本
+            // 会再次触发 onChange → 重复发 onSelect。只认「与当前态不同」的变化。
+            if (isChecked && !this.sink.isDefault) {
               this.onSelect(this.sink.name);
             }
           })

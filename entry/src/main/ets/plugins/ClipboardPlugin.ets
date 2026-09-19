@@ -14,6 +14,12 @@ interface ClipboardBody {
 // - 发 `kdeconnect.clipboard`：本机剪贴板内容（PasteButton 授权后）
 // - 发 `kdeconnect.clipboard.connect`：**索取**对端剪贴板（timestamp=0 保证对端一定回复）
 export class ClipboardPlugin extends PluginBase {
+  // 回环防护（对照 Android ClipboardPlugin 的 lastContents/timestamp）：记录最近一次
+  // 从对端收到并写入系统剪贴板的内容——sendClipboard 读到同一内容时跳过发送，
+  // 否则「桌面复制→手机收到→手机发送→桌面收到」会双端互刷死循环。
+  private lastFromPeer: string = '';
+  private lastFromPeerMs: number = 0;
+
   constructor() {
     super();
     this.displayName = 'Clipboard';
@@ -41,6 +47,8 @@ export class ClipboardPlugin extends PluginBase {
     try {
       const data: pasteboard.PasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, content);
       pasteboard.getSystemPasteboard().setDataSync(data);
+      this.lastFromPeer = content;             // 记录来源：sendClipboard 见到同一内容即跳过（防回环）
+      this.lastFromPeerMs = Date.now();
       this.notify('clipboard', `${content.length}`);
       this.log(`clipboard updated from peer (${content.length} chars)`);
     } catch (e) {
@@ -57,6 +65,12 @@ export class ClipboardPlugin extends PluginBase {
       const text: string = data.getPrimaryText();
       if (text.length === 0) {
         this.log('local clipboard empty, nothing sent');
+        return false;
+      }
+      // 防回环：内容正是刚从对端收到的那份 → 它已经在对端的剪贴板里，发回去只会互刷。
+      // 时间窗（Android 同款 2min）过后用户若真复制了相同内容，重新发送是允许的。
+      if (text === this.lastFromPeer && Date.now() - this.lastFromPeerMs < 120000) {
+        this.log('clipboard unchanged since peer sync, skip send (loop guard)');
         return false;
       }
       const body: ClipboardBody = { content: text, timestamp: Date.now() };

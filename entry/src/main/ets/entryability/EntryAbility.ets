@@ -42,8 +42,22 @@ export default class EntryAbility extends UIAbility {
       const avoid = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
       AppStorage.setOrCreate('statusBarHeightPx', avoid.topRect.height);
       AppStorage.setOrCreate('navBarHeightPx', avoid.bottomRect.height);
+      // P2-15：安全区高度只在启动时取一次会过期——旋转/折叠/隐藏导航栏后布局错位。
+      // 监听变更并持续回写 AppStorage（TYPE_SYSTEM 覆盖状态栏与导航条两种规避区变化）。
+      try {
+        win.on('avoidAreaChange', (data) => {
+          if (data.type !== window.AvoidAreaType.TYPE_SYSTEM) {
+            return;
+          }
+          AppStorage.setOrCreate('statusBarHeightPx', data.area.topRect.height);
+          AppStorage.setOrCreate('navBarHeightPx', data.area.bottomRect.height);
+        });
+      } catch (e2) {
+        hilog.warn(0x0000, 'testTag', 'avoidAreaChange listen failed: %{public}s',
+          e2 instanceof Error ? e2.message : 'unknown');
+      }
       // 手机（窄屏）锁竖屏；平板等大屏保持 auto_rotation，横屏走并排侧栏
-      const LOCK_PHONE_PORTRAIT: boolean = false; // 对照实验：临时关闭，排查 THREAD_BLOCK_6S
+      const LOCK_PHONE_PORTRAIT: boolean = true; // 用户决策（2026-09-17）：手机锁竖屏；THREAD_BLOCK_6S 已另案定位，与此无关
       if (!LOCK_PHONE_PORTRAIT || this.isLargeScreenDevice()) {
         hilog.info(0x0000, 'testTag', 'orientation follows system (deviceType=%{public}s)',
           deviceInfo.deviceType);
