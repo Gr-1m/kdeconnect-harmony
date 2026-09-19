@@ -636,6 +636,59 @@ void payloadLockOrder()
     a.stop();
 }
 
+// 探针（DevEco MSG38：连续 payload 成功/失败严格交替，code=110）：
+// 复现 ArkTS 串行队列的语义 —— 「上一次终态 → 立刻发起下一个」，连发 4 次，
+// 逐次记录终态与两侧在册任务数。用于验证「端口复用/槽位未释放」假设是否在宿主侧可复现。
+void payloadConsecutiveSends()
+{
+    const std::string sendDir = makeTempDir("cons_send");
+    const std::string recvDir = makeTempDir("cons_recv");
+    CHECK(!sendDir.empty() && !recvDir.empty());
+    const std::string src = writeSourceFile(sendDir, 256 * 1024);
+    CHECK(!src.empty());
+
+    FakeHost a(kIdA, sendDir);
+    FakeHost b(kIdB, recvDir);
+    a.setPeerCertPem(kIdB, b.ownCertPem());
+    b.setPeerCertPem(kIdA, a.ownCertPem());
+    a.onFrame_ = [&](const std::string &deviceId, const std::string &frame) {
+        (void) deviceId;
+        pullOnFrame(b, kIdA, frame);
+    };
+    a.start();
+    b.start();
+
+    int nFinished = 0;
+    int nFailed = 0;
+    for (int i = 0; i < 4; ++i) {
+        const uint64_t id = a.manager().startSend(kIdB, "kdeconnect.share.request",
+                                                 "{\"filename\":\"cons.bin\"}", src);
+        CHECK_MSG(id != 0, "第 %d 次 startSend 返回 0", i);
+        const bool ok = a.waitState("finished", true, 8000);
+        bool thisFailed = false;
+        for (const NetEvent &e : a.snapshot()) {
+            if (e.type == EventType::PayloadTransfer && e.payloadDirectionSend &&
+                e.payloadTransferId == id && e.payloadState == "failed") {
+                thisFailed = true;
+                std::fprintf(stderr, "       code=%d msg=%s\n", e.errorCode,
+                             e.errorMessage.c_str());
+            }
+        }
+        if (ok) {
+            ++nFinished;
+        } else if (thisFailed) {
+            ++nFailed;
+        }
+        std::fprintf(stderr, "  [cons] #%d id=%llu -> %s (jobs a=%zu b=%zu)\n", i,
+                     (unsigned long long) id,
+                     ok ? "finished" : (thisFailed ? "failed" : "未知(超时)"),
+                     a.manager().jobCount(), b.manager().jobCount());
+    }
+    std::fprintf(stderr, "  [cons] 汇总: finished=%d/4 failed=%d\n", nFinished, nFailed);
+    CHECK_MSG(nFinished == 4, "连续 payload 未全部成功（finished=%d failed=%d）", nFinished,
+              nFailed);
+}
+
 void runCase(const char *name, void (*fn)())
 {
     g_case = name;
@@ -656,6 +709,7 @@ int main()
     runCase("payloadLockOrder", payloadLockOrder);
     runCase("tlsServerCapturesPeerCert", tlsServerCapturesPeerCert);
     runCase("spoolPurgesStaleOrphans", spoolPurgesStaleOrphans);
+    runCase("payloadConsecutiveSends", payloadConsecutiveSends);
     std::printf("payload integration tests (host): %d cases, %d failed\n", g_cases, g_failed);
     return g_failed == 0 ? 0 : 1;
 }
