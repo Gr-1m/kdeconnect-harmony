@@ -477,6 +477,33 @@ int runPeerLinksMode(uint16_t targetPort)
     return 0;
 }
 
+// 「证书 CN ≠ 声明的 deviceId」的对端（负路径）：用于验证 NetStack 的控制链路 CN 校验（P2-1）。
+// 形态：用 CN=hosttest9999… 的自签证书，却在 identity 里声明 hosttest4444… ⇒ 必须被断链。
+const char *kMismatchPeerId = "hosttest44444444444444444444444444";
+const char *kMismatchCertCn = "hosttest99999999999999999999999999";
+
+int runPeerMismatchMode(uint16_t targetPort)
+{
+    CertPair cert = CertGen::generateSelfSignedEc(kMismatchCertCn, 10);   // 证书 CN ≠ 下面声明的 deviceId
+    NetConfig cfg;
+    cfg.deviceId = kMismatchPeerId;
+    cfg.deviceName = "kdc-nettest-mismatch";
+    cfg.deviceType = "desktop";
+    cfg.certPem = cert.certPem;
+    cfg.keyPem = cert.keyPem;
+    cfg.tcpPort = 1748;
+    cfg.udpPort = 17160;
+    cfg.spoolDir = "/tmp/kdc_nettest_spool";
+    NetStack &ns = netStack();
+    if (!ns.start(cfg)) {
+        return 1;
+    }
+    ns.connectToPeer("127.0.0.1", targetPort);
+    std::this_thread::sleep_for(std::chrono::milliseconds(6000));
+    ns.stop();
+    return 0;
+}
+
 int runPeerMode(uint16_t targetPort, bool announcePayload = false)
 {
     const std::string devId = "hosttest22222222222222222222222222";
@@ -757,6 +784,44 @@ void deviceDownDispatchesPayloadTerminal()
     ::waitpid(child, &status, 0);
 }
 
+// 安全负路径（AtomCode 审计建议）：对端证书 CN ≠ 其声明的 deviceId ⇒ 必须断链（fail-closed）。
+// 对应 native 的 P2-1 校验（drainEncrypted：握手完成且 deviceId 已知后一次性比对 peerCommonName）。
+void peerCertCnMismatchIsRejected()
+{
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    const pid_t child = ::fork();
+    CHECK_MSG(child >= 0, "fork 失败");
+    if (child < 0) return;
+    if (child == 0) {
+        ::execl("/proc/self/exe", "kdc_net_tests", "--peer-mismatch", "1745", nullptr);
+        ::_exit(127);
+    }
+    bool sawError = false;
+    bool sawConnectedToMismatch = false;
+    const int64_t deadline = nowMs() + 20000;
+    while (nowMs() < deadline && !sawError) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::lock_guard<std::mutex> lk(g_mu);
+        for (const NetEvent &e : g_events) {
+            if (e.type == EventType::Error &&
+                e.errorMessage.find("CN") != std::string::npos) {
+                sawError = true;
+                std::fprintf(stderr, "  [dbg] rejected: device=%s msg=%s\n", e.deviceId.c_str(),
+                             e.errorMessage.c_str());
+            }
+            if (e.type == EventType::Connected && e.deviceId == kMismatchPeerId) {
+                sawConnectedToMismatch = true;
+            }
+        }
+    }
+    CHECK_MSG(sawError, "证书 CN 与声明 deviceId 不一致未被拒绝（P2-1 安全语义回归）");
+    CHECK_MSG(!sawConnectedToMismatch,
+              "伪造者仍被当作已连接设备（CN 校验未生效或被绕过）");
+    ::kill(child, SIGKILL);
+    int status = 0;
+    ::waitpid(child, &status, 0);
+}
+
 // —————— ④ 端口未知（0）的拨号：探测 + 缓存（DevEco 第五次报，2026-09-13）——————
 //
 // 载荷「已宣告但未启动」必须可收口（DevEco MSG22 回归，2026-09-17）：
@@ -888,6 +953,9 @@ int main(int argc, char **argv)
     if (argc >= 3 && std::strcmp(argv[1], "--peer") == 0) {
         return runPeerMode(static_cast<uint16_t>(std::atoi(argv[2])));
     }
+    if (argc >= 3 && std::strcmp(argv[1], "--peer-mismatch") == 0) {
+        return runPeerMismatchMode(static_cast<uint16_t>(std::atoi(argv[2])));
+    }
     if (argc >= 3 && std::strcmp(argv[1], "--peer-links") == 0) {
         return runPeerLinksMode(static_cast<uint16_t>(std::atoi(argv[2])));
     }
@@ -903,7 +971,7 @@ int main(int argc, char **argv)
         {"peerIdentityIsDispatchedAsPacket"},  {"sendPacketQueuesDuringHandshake"},
         {"portProbeFindsListener"},            {"dialUnknownPortProbesAndConnects"},
         {"announcedPayloadWithoutPortIsTerminal"}, {"payloadSurvivesLinkReplacement"},
-        {"deviceDownDispatchesPayloadTerminal"},
+        {"deviceDownDispatchesPayloadTerminal"}, {"peerCertCnMismatchIsRejected"},
     };
     if (argc >= 2 && std::strcmp(argv[1], "--list") == 0) {
         for (const ListDef &n : kNames) {
@@ -954,6 +1022,7 @@ int main(int argc, char **argv)
         {"announcedPayloadWithoutPortIsTerminal", announcedPayloadWithoutPortIsTerminal},
         {"payloadSurvivesLinkReplacement", payloadSurvivesLinkReplacement},
         {"deviceDownDispatchesPayloadTerminal", deviceDownDispatchesPayloadTerminal},
+        {"peerCertCnMismatchIsRejected", peerCertCnMismatchIsRejected},
     };
     for (const CaseDef &c : kCases) {
         runCase(c.name, c.fn);

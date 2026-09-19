@@ -367,6 +367,29 @@ void NetStack::dispatchFrames(std::unique_lock<std::mutex> &lk, TcpConnection &c
                     // code=104 "control connection closed"；发送侧伴生 code=5 "payload tls write failed"）。
                     c2.setDeviceId(info.deviceId);
                     c2.setPeerInfo(peerHost, peerPort, info.deviceName, info.deviceType);
+                    // P2-1 强化（由新增负路径用例 peerCertCnMismatchIsRejected 发现）：
+                    // CN 校验必须**早于** Connected 派发。原实现只在 drainEncrypted 顶部校验，
+                    // 而入向连接在 TLS 握手完成时就已派发 Connected（onConnectionReadable 的握手分支）
+                    // ⇒ 伪造者会先被当作"已连接设备"，之后才被断链。这里在身份刚落定时立即校验，
+                    // 从而在**任何** Connected/PairingRequest 事件之前完成 fail-closed。
+                    if (!c2.cnVerified() && !info.deviceId.empty()) {
+                        const std::string cn = c2.tlsEngine() != nullptr
+                                                   ? c2.tlsEngine()->peerCommonName()
+                                                   : std::string();
+                        if (cn.empty() || cn != info.deviceId) {
+                            deferLogf("E ", "control link cert CN mismatch (pre-Connected): "
+                                            "cn='%s' deviceId='%s' fd=%d",
+                                      cn.c_str(), info.deviceId.c_str(), fd);
+                            dropConn = true;
+                            dropReason = "cert CN mismatch";
+                            lk.unlock();
+                            dispatchError(info.deviceId, EACCES, "peer cert CN != deviceId");
+                            lk.lock();
+                            abortBatch = true;
+                            continue;
+                        }
+                        c2.markCnVerified();
+                    }
                     deviceId = info.deviceId;
                     std::vector<int> stale;
                     for (const auto &p2 : connections_) {
@@ -535,6 +558,24 @@ void NetStack::onConnectionReadable(int fd)
 
     if (conn.state() == ConnectionState::TlsHandshake) {
         if (conn.doTlsHandshake()) {
+            // P2-1 强化（由负路径用例 peerCertCnMismatchIsRejected 发现）：**入向连接在握手完成时
+            // deviceId 已由明文 identity 确定**，而原实现此刻就派发 Connected ⇒ 伪造者会先被当作
+            // "已连接设备"，随后才被 drainEncrypted 顶部的 CN 校验断链。这里在派发 Connected **之前**
+            // 完成校验（fail-closed），使 UI 永远不会先看到一台不该被信任的设备。
+            if (conn.isIncoming() && !conn.cnVerified() && !conn.deviceId().empty()) {
+                const std::string cn = conn.tlsEngine() != nullptr
+                                           ? conn.tlsEngine()->peerCommonName()
+                                           : std::string();
+                if (cn.empty() || cn != conn.deviceId()) {
+                    deferLogf("E ", "control link cert CN mismatch (pre-Connected, handshake): "
+                                    "cn='%s' deviceId='%s' fd=%d",
+                              cn.c_str(), conn.deviceId().c_str(), fd);
+                    dispatchError(conn.deviceId(), EACCES, "peer cert CN != deviceId");
+                    closeConnection(fd, "cert CN mismatch");
+                    return;
+                }
+                conn.markCnVerified();
+            }
             if (conn.isIncoming() && !conn.connectedNotified()) {
                 conn.markConnectedNotified();
                 NetEvent ev {};
