@@ -1,6 +1,6 @@
 import { batteryInfo } from '@kit.BasicServicesKit';
 import { PluginBase } from './PluginBase';
-import { PluginEvent } from './PluginEvent';
+import { PluginEvent, BatteryPayload } from './PluginEvent';
 
 interface BatteryBody {
   currentCharge?: number;
@@ -53,11 +53,6 @@ export class BatteryPlugin extends PluginBase {
     }
     const b: BatteryBody = body as BatteryBody;
     const charge: number = b.currentCharge ?? -1;
-    const thresholdEvent: number = b.thresholdEvent ?? 0;
-    if (thresholdEvent > 0) {
-      this.log(`battery threshold event ${thresholdEvent} from peer`);
-      this.notify('battery.threshold', `${thresholdEvent}`);
-    }
     if (charge < 0) {
       this.log('battery packet without currentCharge');
       return true;
@@ -65,8 +60,7 @@ export class BatteryPlugin extends PluginBase {
     const charging: boolean = b.isCharging ?? false;
     const ev: PluginEvent = {
       kind: 'battery',
-      batteryCharge: charge,
-      batteryCharging: charging
+      battery: { charge: charge, charging: charging }
     };
     this.notifyEvent(ev);
     return true;

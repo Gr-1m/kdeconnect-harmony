@@ -64,9 +64,9 @@ export class ClipboardPlugin extends PluginBase {
         this.log('local clipboard empty, nothing sent');
         return false;
       }
-      if (text === this.lastReceivedContent && (Date.now() - this.lastReceivedTime) < 5000) {
-        this.log('clipboard echo suppressed (just received from peer)');
-        return false;
+      if (text === this.lastReceivedContent && (Date.now() - this.lastReceivedTime) < 120000) {
+        this.log('clipboard echo suppressed (loop guard, same as last received from peer)');
+        return true;
       }
       const body: ClipboardBody = { content: text, timestamp: Date.now() };
       const ok: boolean = this.send('kdeconnect.clipboard', body);

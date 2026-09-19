@@ -120,7 +120,7 @@ export class PluginHost {
       }
     }
     for (const t of proto.supportedPacketTypes) {
-      if (peerOutgoing.includes(t)) {
+      if (peerOutgoing.length === 0 || peerOutgoing.includes(t)) {
         return true;
       }
     }

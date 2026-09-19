@@ -218,6 +218,10 @@
       "value": "发送中"
     },
     {
+      "name": "files_sent",
+      "value": "已发送"
+    },
+    {
       "name": "files_finished",
       "value": "已完成"
     },

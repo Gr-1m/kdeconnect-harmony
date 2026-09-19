@@ -309,7 +309,8 @@ export class MprisPlugin extends PluginBase {
     // 规则：只有出现在 playerList 里的名字才允许成为「当前播放器」；列表为空（对端不发列表）时放行。
     const target: string = b.player ?? this.currentPlayer;
     const listed: boolean = this.playerList.length === 0 || this.playerList.includes(target);
-    if (target.length > 0 && listed && this.currentPlayer.length > 0) {
+    const canClaim: boolean = listed && (this.currentPlayer.length === 0 || target === this.currentPlayer);
+    if (target.length > 0 && canClaim) {
       this.currentPlayer = target;
     }
     if (this.currentPlayer.length === 0 && this.playerList.length > 0) {
