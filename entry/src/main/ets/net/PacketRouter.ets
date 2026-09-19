@@ -8,6 +8,7 @@ import native from 'libkdeconnect_napi.so';
 
 // Android 参考（PairingHandler）：时钟偏差超 30 分钟则拒绝配对请求。
 const MAX_TIMESTAMP_DIFF_SECONDS = 1800;
+const REQUESTED_PEER_TIMEOUT_MS = 60000;
 
 // 核心包类型（由本层处理，不进插件）
 const PACKET_PAIR = 'kdeconnect.pair';
@@ -56,8 +57,7 @@ export class PacketRouter {
   private frameBuffers: Map<string, string> = new Map();
   private logFn: (msg: string) => void;
   private callbacks: RouterCallbacks;
-  // 本侧已发起、等待对端确认的配对请求：用于区分「对端确认」与「对端请求」
-  private requestedPeers: Set<string> = new Set();
+  private requestedPeers: Map<string, number> = new Map();
 
   constructor(selfDeviceId: string, selfDeviceName: string, selfDeviceType: string,
               logFn: (msg: string) => void, callbacks: RouterCallbacks) {
@@ -80,7 +80,7 @@ export class PacketRouter {
     const body: PairBody = { pair: true, timestamp: ts };
     const ok: boolean = this.sendFrame(deviceId, PACKET_PAIR, body);
     if (ok) {
-      this.requestedPeers.add(deviceId);
+      this.requestedPeers.set(deviceId, Date.now());
     }
     this.logFn('pair request sent to ' + deviceId + ' ok=' + ok);
     return ok;
@@ -93,7 +93,9 @@ export class PacketRouter {
     const body: PairBody = { pair: true };
     const ok: boolean = this.sendFrame(deviceId, PACKET_PAIR, body);
     this.logFn('pairing accepted with ' + deviceId + ' ok=' + ok);
-    this.callbacks.onPaired(deviceId);
+    if (ok) {
+      this.callbacks.onPaired(deviceId);
+    }
     return ok;
   }
 
@@ -108,6 +110,20 @@ export class PacketRouter {
   forgetPeer(deviceId: string): void {
     this.requestedPeers.delete(deviceId);
     this.frameBuffers.delete(deviceId);
+  }
+
+  private cleanExpiredRequestedPeers(): void {
+    const now: number = Date.now();
+    const expired: string[] = [];
+    this.requestedPeers.forEach((ts: number, id: string) => {
+      if (now - ts > REQUESTED_PEER_TIMEOUT_MS) {
+        expired.push(id);
+      }
+    });
+    for (const id of expired) {
+      this.requestedPeers.delete(id);
+      this.logFn('requestedPeers expired: ' + id);
+    }
   }
 
   // packetReceived 事件入口。raw 可能含多帧或半帧。
@@ -159,6 +175,7 @@ export class PacketRouter {
   //   {pair:false} = 解除配对
   // timestamp 为秒；时钟偏差超限直接拒绝（Android 参考）。
   private handlePair(deviceId: string, body: PairBody): void {
+    this.cleanExpiredRequestedPeers();
     if (body.pair === true) {
       if (body.timestamp !== undefined) {
         const ts: number = body.timestamp;
@@ -168,8 +185,6 @@ export class PacketRouter {
           return;
         }
         if (this.requestedPeers.has(deviceId)) {
-          // 双方同时发起：必须回一个**不带 timestamp** 的接受帧，
-          // 否则对端永远停在 Requested（表现为「单边已配对」）。
           this.requestedPeers.delete(deviceId);
           const accept: PairBody = { pair: true };
           const ok: boolean = this.sendFrame(deviceId, PACKET_PAIR, accept);

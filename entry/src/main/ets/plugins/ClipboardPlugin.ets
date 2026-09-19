@@ -14,6 +14,9 @@ interface ClipboardBody {
 // - 发 `kdeconnect.clipboard`：本机剪贴板内容（PasteButton 授权后）
 // - 发 `kdeconnect.clipboard.connect`：**索取**对端剪贴板（timestamp=0 保证对端一定回复）
 export class ClipboardPlugin extends PluginBase {
+  private lastReceivedContent: string = '';
+  private lastReceivedTime: number = 0;
+
   constructor() {
     super();
     this.displayName = 'Clipboard';
@@ -41,6 +44,8 @@ export class ClipboardPlugin extends PluginBase {
     try {
       const data: pasteboard.PasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, content);
       pasteboard.getSystemPasteboard().setDataSync(data);
+      this.lastReceivedContent = content;
+      this.lastReceivedTime = Date.now();
       this.notify('clipboard', `${content.length}`);
       this.log(`clipboard updated from peer (${content.length} chars)`);
     } catch (e) {
@@ -57,6 +62,10 @@ export class ClipboardPlugin extends PluginBase {
       const text: string = data.getPrimaryText();
       if (text.length === 0) {
         this.log('local clipboard empty, nothing sent');
+        return false;
+      }
+      if (text === this.lastReceivedContent && (Date.now() - this.lastReceivedTime) < 5000) {
+        this.log('clipboard echo suppressed (just received from peer)');
         return false;
       }
       const body: ClipboardBody = { content: text, timestamp: Date.now() };

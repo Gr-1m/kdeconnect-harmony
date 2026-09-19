@@ -1,5 +1,6 @@
 import { batteryInfo } from '@kit.BasicServicesKit';
 import { PluginBase } from './PluginBase';
+import { PluginEvent } from './PluginEvent';
 
 interface BatteryBody {
   currentCharge?: number;
@@ -57,7 +58,12 @@ export class BatteryPlugin extends PluginBase {
       return true;
     }
     const charging: boolean = b.isCharging ?? false;
-    this.notify('battery', `${charge}|${charging ? '1' : '0'}`);
+    const ev: PluginEvent = {
+      kind: 'battery',
+      batteryCharge: charge,
+      batteryCharging: charging
+    };
+    this.notifyEvent(ev);
     return true;
   }
 

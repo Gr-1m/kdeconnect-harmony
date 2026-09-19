@@ -21,6 +21,13 @@ export interface PluginEvent {
   mprisSnap?: MprisSnapshot;   // kind = 'mpris.playerUpdate'
   // kind = 'systemvolume.sinks'：对端输出设备的**全量快照**（幂等，可随时重推）
   svSinks?: SystemSinkUi[];
+  // kind = 'battery'：对端电量（结构化，不再 "85|1" 字符串打包）
+  batteryCharge?: number;
+  batteryCharging?: boolean;
+  // kind = 'runcommand.output'：命令执行结果（结构化，不再 "1|0|text" 字符串打包）
+  runcommandSuccess?: boolean;
+  runcommandExitCode?: number;
+  runcommandOutput?: string;
   // 标量/短文本载荷（由 PluginBase.notify 自动填充；语义与旧 data 字符串一致）
   text?: string;
 }
