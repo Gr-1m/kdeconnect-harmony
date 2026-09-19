@@ -130,6 +130,8 @@ export struct PayloadRow {
           }
         }
         .width('100%')
+        .onClick(() => {
+        })
       }
     }
     .width('100%')

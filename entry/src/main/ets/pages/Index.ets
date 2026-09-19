@@ -130,6 +130,7 @@ struct Index {
   @State isLandscape: boolean = false;
   // 并排侧栏模式：**仅横屏宽屏**（左侧栏常驻 30%）；竖屏（含平板竖屏）一律走汉堡 + 抽屉
   @State sideBySide: boolean = false;
+  @State immersiveSupported: boolean = false;
   @State connectedDevices: DeviceItem[] = [];
   @State discoveredDevices: DeviceItem[] = [];
   @State rememberedDevices: RememberedDevice[] = [];
@@ -1458,6 +1459,16 @@ struct Index {
 
   // 手动连接（可选功能）：host:port 直连，与发现列表「连接」同一条会话状态机
   private manualConnect(host: string, port: number): void {
+    if (host.length === 0) {
+      this.toastText('connect failed: empty host');
+      this.log('manual connect rejected: empty host');
+      return;
+    }
+    if (isNaN(port) || port <= 0 || port > 65535) {
+      this.toastText(`connect failed: invalid port ${port}`);
+      this.log(`manual connect rejected: invalid port ${port}`);
+      return;
+    }
     this.startSession('', `${host}:${port}`, host, port);
   }
 
@@ -2680,10 +2691,10 @@ struct Index {
   // 提供（官方推荐、自动按设备算力自适应）；卡片等非 TabBar 区域不在生效范围，走毛玻璃。
   private initImmersiveMaterial(): void {
     try {
-      const supported: boolean = uiMaterial.isImmersiveMaterialSupported();
-      console.info('KDC uiMaterial supported=' + supported);
+      this.immersiveSupported = uiMaterial.isImmersiveMaterialSupported();
+      console.info('KDC uiMaterial supported=' + this.immersiveSupported);
     } catch (e) {
-      // 环境不支持（如 QEMU 模拟器）时静默降级，不进屏幕日志
+      this.immersiveSupported = false;
       console.warn('KDC immersive material unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
     }
   }
@@ -3160,7 +3171,7 @@ struct Index {
       })
       // 抽屉：恢复毛玻璃，并换用更实的 drawer_bg（用户反馈去掉模糊后太透、文字看不清）
       .backgroundColor($r('app.color.drawer_bg'))
-      .backgroundBlurStyle(BlurStyle.BACKGROUND_THICK)
+      .backgroundBlurStyle(BlurStyle.BACKGROUND_THIN)
       .borderRadius({ topRight: 22, bottomRight: 22 })
       .border({ width: 1, color: $r('app.color.bar_border') })
       .alignItems(HorizontalAlign.Start)
@@ -3260,7 +3271,7 @@ struct Index {
                 discoveredDevices: this.discoveredShown(),
                 rememberedDevices: this.offlineKnownShown(),
                 rememberedAll: this.rememberedDevices,
-                immersive: false,
+                immersive: this.immersiveSupported,
                 sideBySide: this.sideBySide,
                 requestedPairIds: this.requestedPairIds,
                 batteryItems: this.batteryItems,
@@ -3313,7 +3324,7 @@ struct Index {
             Column() {
               FilesTab({
                     connectedCount: this.connectedDevices.length,
-                    immersive: false,
+                    immersive: this.immersiveSupported,
                     payloads: this.payloads,
                     onSavePayload: (p: PayloadTransfer): void => {
                       this.savePayload(p);
@@ -3355,7 +3366,7 @@ struct Index {
                 statusText: this.status,
                 themeMode: this.themeMode,
                 language: this.language,
-                immersive: false,
+                immersive: this.immersiveSupported,
                 onRenameDevice: (name: string): void => {
                   this.renameDevice(name);
                 },
@@ -3384,7 +3395,7 @@ struct Index {
             Column() {
                 LogsTab({
                   logStore: this.logStore,
-                  immersive: false
+                  immersive: this.immersiveSupported
                 })
             }
             .padding({ top: 12, bottom: 108 })
@@ -3530,7 +3541,7 @@ struct Index {
           .borderRadius(20)
           // 弹层不用毛玻璃（手机实测：BACKGROUND_THICK 在弹层上会让整屏重算背景模糊，
           // 叠上面板每秒重绘就把主线程拖死 → THREAD_BLOCK_3S/6S、点击无响应）。用更实的底色替代。
-          .backgroundColor('#F2111A36')
+          .backgroundColor($r('app.color.dialog_bg'))
           .border({ width: 1, color: $r('app.color.card_border') })
           .alignItems(HorizontalAlign.Center)
         }
@@ -3538,7 +3549,7 @@ struct Index {
         .height('100%')
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
-        .backgroundColor('#99000000')
+        .backgroundColor($r('app.color.dialog_mask'))
       }
 
       // 媒体控制面板（P2 方向 1，FEATURE_PLAN_MPRIS §3.3）：控电脑端播放器。
@@ -3841,7 +3852,7 @@ struct Index {
           .borderRadius(20)
           // 弹层不用毛玻璃（手机实测：BACKGROUND_THICK 在弹层上会让整屏重算背景模糊，
           // 叠上面板每秒重绘就把主线程拖死 → THREAD_BLOCK_3S/6S、点击无响应）。用更实的底色替代。
-          .backgroundColor('#F2111A36')
+          .backgroundColor($r('app.color.dialog_bg'))
           .border({ width: 1, color: $r('app.color.card_border') })
           .alignItems(HorizontalAlign.Center)
           // onClick 为同类型手势竞争（非冒泡）：卡片自身也绑一个空点击把空白区域的点击消费掉，
@@ -3852,7 +3863,7 @@ struct Index {
         .height('100%')
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
-        .backgroundColor('#99000000')
+        .backgroundColor($r('app.color.dialog_mask'))
         .onClick(() => {
           this.closeMprisDialog();
         })
@@ -3932,7 +3943,7 @@ struct Index {
           .borderRadius(20)
           // 弹层不用毛玻璃（手机实测：BACKGROUND_THICK 在弹层上会让整屏重算背景模糊，
           // 叠上面板每秒重绘就把主线程拖死 → THREAD_BLOCK_3S/6S、点击无响应）。用更实的底色替代。
-          .backgroundColor('#F2111A36')
+          .backgroundColor($r('app.color.dialog_bg'))
           .border({ width: 1, color: $r('app.color.card_border') })
           .alignItems(HorizontalAlign.Center)
           // 同媒体面板：卡片自身消费点击，只有点「卡外」的遮罩才关弹窗
@@ -3942,7 +3953,7 @@ struct Index {
         .height('100%')
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
-        .backgroundColor('#99000000')
+        .backgroundColor($r('app.color.dialog_mask'))
         .onClick(() => {
           this.runCommandDialogOpen = false;
         })
@@ -4020,7 +4031,7 @@ struct Index {
           .width('86%')
           .padding(20)
           .borderRadius(20)
-          .backgroundColor('#F2111A36')
+          .backgroundColor($r('app.color.dialog_bg'))
           .border({ width: 1, color: $r('app.color.card_border') })
           .alignItems(HorizontalAlign.Center)
           .onClick(() => {})
@@ -4029,7 +4040,7 @@ struct Index {
         .height('100%')
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
-        .backgroundColor('#99000000')
+        .backgroundColor($r('app.color.dialog_mask'))
         .onClick(() => {
           this.receivedDialogOpen = false;
         })
@@ -4089,7 +4100,7 @@ struct Index {
           .width('80%')
           .padding(20)
           .borderRadius(20)
-          .backgroundColor('#F2111A36')
+          .backgroundColor($r('app.color.dialog_bg'))
           .border({ width: 1, color: $r('app.color.card_border') })
           .alignItems(HorizontalAlign.Center)
           .onClick(() => {})
@@ -4098,7 +4109,7 @@ struct Index {
         .height('100%')
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
-        .backgroundColor('#99000000')
+        .backgroundColor($r('app.color.dialog_mask'))
         .onClick(() => {
           this.payloadDetailOpen = false;
         })
