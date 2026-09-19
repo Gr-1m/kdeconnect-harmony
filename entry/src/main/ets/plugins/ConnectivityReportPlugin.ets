@@ -39,6 +39,10 @@ export class ConnectivityReportPlugin extends PluginBase {
   }
 
   onCreate(): boolean {
+    if (this.timerId >= 0) {
+      clearInterval(this.timerId);
+      this.timerId = -1;
+    }
     this.sendReport(false);
     this.timerId = setInterval(() => {
       this.sendReport(true);

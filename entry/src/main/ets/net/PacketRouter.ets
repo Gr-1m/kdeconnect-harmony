@@ -9,6 +9,7 @@ import native from 'libkdeconnect_napi.so';
 // Android 参考（PairingHandler）：时钟偏差超 30 分钟则拒绝配对请求。
 const MAX_TIMESTAMP_DIFF_SECONDS = 1800;
 const REQUESTED_PEER_TIMEOUT_MS = 60000;
+const MAX_FRAME_BUFFER_BYTES = 1048576;
 
 // 核心包类型（由本层处理，不进插件）
 const PACKET_PAIR = 'kdeconnect.pair';
@@ -133,6 +134,11 @@ export class PacketRouter {
     }
     const prev: string = this.frameBuffers.get(deviceId) ?? '';
     const data: string = prev + raw;
+    if (data.length > MAX_FRAME_BUFFER_BYTES) {
+      this.logFn('frame buffer overflow for ' + deviceId + ': ' + data.length + ' bytes, discarding');
+      this.frameBuffers.delete(deviceId);
+      return;
+    }
     const lines: string[] = data.split('\n');
     const last: string | undefined = lines.pop();
     if (last !== undefined) {
@@ -182,6 +188,8 @@ export class PacketRouter {
         const now: number = Math.floor(Date.now() / 1000);
         if (Math.abs(ts - now) > MAX_TIMESTAMP_DIFF_SECONDS) {
           this.logFn('pair rejected: clock skew ' + (now - ts) + 's from ' + deviceId);
+          const reject: PairBody = { pair: false };
+          this.sendFrame(deviceId, PACKET_PAIR, reject);
           return;
         }
         if (this.requestedPeers.has(deviceId)) {

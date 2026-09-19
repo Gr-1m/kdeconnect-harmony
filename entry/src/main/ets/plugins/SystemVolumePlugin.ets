@@ -185,15 +185,18 @@ export class SystemVolumePlugin extends PluginBase {
       return false;
     }
     const p: number = pct < 0 ? 0 : (pct > 100 ? 100 : Math.round(pct));
-    s.volumeAbs = Math.round(p * s.maxVolume / 100);   // 乐观更新（对端随后会推回真实值）
-    // 与对端语义对齐：KDE 收到 volume 后会无条件 `setMuted(false)` ⇒ 本地静音态也要跟着清掉
-    // （否则 UI 会显示"静音中"而对端其实已经在出声）。
+    const oldVolumeAbs: number = s.volumeAbs;
+    const oldMuted: boolean = s.muted;
+    s.volumeAbs = Math.round(p * s.maxVolume / 100);
     s.muted = false;
     this.push();
-    // 只发 volume + name（Android sendVolume 同款）：**不带 enabled**（否则顺带切换默认输出）、
-    // **不带 muted**（避免与"清静音"语义打架）。
     const body: SysVolumeBodyDto = { name: s.name, volume: s.volumeAbs };
     const ok: boolean = this.send('kdeconnect.systemvolume.request', body);
+    if (!ok) {
+      s.volumeAbs = oldVolumeAbs;
+      s.muted = oldMuted;
+      this.push();
+    }
     this.log(ok ? `set volume sent: ${s.name} ${p}%` : `set volume failed: ${s.name} ${p}%`);
     return ok;
   }
@@ -204,12 +207,15 @@ export class SystemVolumePlugin extends PluginBase {
       this.log(`mute skipped: unknown sink ${name}`);
       return false;
     }
+    const oldMuted: boolean = s.muted;
     s.muted = !s.muted;
-    this.log(`mute toggle: ${s.name} local muted=${s.muted}`);
     this.push();
-    // 只发 muted + name（Android sendMute 同款；不需要带 volume，也不需要 enabled）。
     const body: SysVolumeBodyDto = { name: s.name, muted: s.muted };
     const ok: boolean = this.send('kdeconnect.systemvolume.request', body);
+    if (!ok) {
+      s.muted = oldMuted;
+      this.push();
+    }
     this.log(ok ? `mute -> ${s.muted} (${s.name})` : `mute send failed (${s.name})`);
     return ok;
   }
@@ -265,9 +271,11 @@ export class SystemVolumePlugin extends PluginBase {
   // 滑杆禁用），列表到达时被 applyList 整体替换 ⇒ 自愈。面板打开时会请求一次列表，因此这只是极短的瞬态。
   private applyIncrement(b: SysVolumeBodyDto): void {
     const name: string = b.name !== undefined ? b.name : '';
-    const s: SysSinkState | undefined = this.find(name);
+    let s: SysSinkState | undefined = this.find(name);
     if (s === undefined) {
-      return;   // 列表里没有这个 sink ⇒ 忽略（无名/未知 sink 无法操作，等列表到达）
+      s = new SysSinkState();
+      s.name = name;
+      this.sinks.push(s);
     }
     if (b.volume !== undefined) {
       s.volumeAbs = b.volume;
