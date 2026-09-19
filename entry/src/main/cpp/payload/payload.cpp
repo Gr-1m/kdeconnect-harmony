@@ -237,6 +237,7 @@ void PayloadManager::finishJobLocked(PayloadJob &job, const char *state,
         return;
     }
     job.finished = true;
+    job.finishedAtMs = host_->nowMs();   // 延迟回收的起算点（P2 泄漏修复）
     job.pending.clear();
     closeSocketsLocked(job);
     if (!job.send && job.spoolPath.size() > 0 &&
@@ -685,6 +686,20 @@ void PayloadManager::onTick(int64_t nowMs)
 {
     HoldTimer _hold("payload::onTick");
     std::lock_guard<std::mutex> lk(mu_);
+    // —— P2 泄漏修复（CodeArts MSG26 §1）：回收已终态的**发送**任务 ——
+    // 背景：jobs_ 的 erase 原本只在 settle() 内，而 settle() 明确拒绝 send 任务、cancel() 对 finished
+    // 亦提前返回 ⇒ **每发一个文件就永久泄漏一个 PayloadJob**（连带其 TlsEngine 与 peerCaDnDer）。
+    // 只在 onTick 清扫（绝不就地 erase）⇒ 不破坏任何 jobs_ 迭代路径的迭代器；仅回收 send 任务
+    // （receive 任务必须留到 settle() 由上层取走落盘结果）。
+    for (auto it = jobs_.begin(); it != jobs_.end();) {
+        PayloadJob &j = *it->second;
+        if (j.send && j.finished && j.finishedAtMs > 0 &&
+            nowMs - j.finishedAtMs >= PAYLOAD_JOB_REAP_MS) {
+            it = jobs_.erase(it);
+            continue;
+        }
+        ++it;
+    }
     for (auto &p : jobs_) {
         PayloadJob &job = *p.second;
         if (job.finished) {
@@ -741,6 +756,12 @@ void PayloadManager::onTick(int64_t nowMs)
                  job.lastMsg.c_str());
         }
     }
+}
+
+size_t PayloadManager::jobCount() const
+{
+    std::lock_guard<std::mutex> lk(mu_);
+    return jobs_.size();
 }
 
 void PayloadManager::onDeviceDown(const std::string &deviceId)

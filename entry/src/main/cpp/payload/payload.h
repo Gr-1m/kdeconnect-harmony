@@ -27,6 +27,12 @@ constexpr int64_t PAYLOAD_PROGRESS_INTERVAL_MS = 100; // 节流 ≤10Hz（WP1 �
 // 这里以「lastProgressMs 超过阈值无进展」判失败（AtomCode 全量排查 域5 P2-2/P2-3）。
 constexpr int64_t PAYLOAD_STALL_TIMEOUT_MS = 30000;
 
+// 已完成任务的回收延迟（P2 泄漏修复）：发送任务在终态事件派发后延迟这么久被回收。
+// 为什么能回收：终态之后的 cancel(id)（因 finished 提前返回）与 settle(id)（因 send 被拒）对
+// 发送任务**本就是 no-op** ⇒ 回收不影响任何外部 API 语义。
+// 为什么是"延迟"而非立即：① 给上层留出对终态事件的反应窗口；② 规避迭代器失效（清扫只在 onTick）。
+constexpr int64_t PAYLOAD_JOB_REAP_MS = 5000;
+
 // NetStack 实现的宿主钩子。payload 模块只依赖本接口（host 可测，CPP_GUIDE §2）。
 //
 // 锁序契约（P0-3 ABBA 防护，MSG57）：PayloadManager::mu_ 只保护本模块状态。
@@ -76,6 +82,7 @@ struct PayloadJob {
     std::vector<uint8_t> peerCaDnDer;
     bool started = false;
     bool finished = false;
+    int64_t finishedAtMs = 0;   // 终态时刻（host_->nowMs()）；仅用于延迟回收（见 PAYLOAD_JOB_REAP_MS）
     // 落盘进行中（settle 在锁外做文件 I/O 时置位）：阻止并发 settle，并让 finishJobLocked
     // 不再去动 spool（避免拷贝源在过程中被清理，见 PayloadManager::settle 注释）。
     bool settling = false;
@@ -108,6 +115,8 @@ public:
     void onReadable(int fd);
     void onWritable(int fd);
     void onTick(int64_t nowMs);
+    // 当前在册任务数（诊断/测试用）：配合 PAYLOAD_JOB_REAP_MS 可验证"发送任务终态后被回收"。
+    size_t jobCount() const;
     void onDeviceDown(const std::string &deviceId);
 
 private:
