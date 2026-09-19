@@ -304,6 +304,9 @@ uint64_t PayloadManager::startSend(const std::string &deviceId, const std::strin
         }
     }
 
+    // 诊断（DevEco MSG38：连续 payload 严格交替失败）：记录本次发送的监听端口与规模
+    deferLogf("I ", "[KDC-PAYLOAD] send listen: port=%u size=%lld dev=%s", bound,
+              (long long) total, deviceId.c_str());
     cJSON *root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "id", 0);
     cJSON_AddStringToObject(root, "type", type.c_str());
@@ -589,6 +592,8 @@ void PayloadManager::onReadable(int fd)
             return;
         }
         job.writeInterest.armed = true;   // S3：注册时已带 EPOLLOUT
+        deferLogf("I ", "[KDC-PAYLOAD] send accepted: id=%llu fd=%d handshake start",
+                  (unsigned long long) job.id, cfd);
         startHandshakeLocked(job);
         return;
     }
@@ -686,6 +691,13 @@ void PayloadManager::onTick(int64_t nowMs)
             continue;
         }
         if (job.deadlineMs > 0 && nowMs > job.deadlineMs) {
+            // 诊断（DevEco MSG38）：连续 payload 交替失败时，必须能一眼看出卡在哪一段
+            deferLogf("W ", "[KDC-PAYLOAD] timeout stage: id=%llu send=%d sockFd=%d listenFd=%d "
+                            "tls=%d hsDone=%d done=%lld/%lld dev=%s",
+                      (unsigned long long) job.id, job.send ? 1 : 0, job.sockFd, job.listenFd,
+                      job.tls != nullptr ? 1 : 0,
+                      (job.tls != nullptr && job.tls->handshakeDone()) ? 1 : 0,
+                      (long long) job.done, (long long) job.total, job.deviceId.c_str());
             failJobLocked(job, ETIMEDOUT, "payload handshake/accept timeout");
             continue;
         }

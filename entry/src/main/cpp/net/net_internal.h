@@ -67,49 +67,6 @@ inline std::string peerHostOf(int fd)
     return std::string(buf);
 }
 
-// —— S2（专项关闭条件）：锁内日志延迟打 ——
-// connMutex_ 临界区内不得直接调 hilog（I/O 与锁保护对象无关，标准化口径=「锁内零 I/O」）。
-// 本文件的网络线程是这些临界区的唯一写者，故用 thread_local 缓冲攒日志，
-// 由 DeferredLogFlush 的析构（锁已释放）统一打——沿用 WriteInterestGuard 的
-// 「先构造、晚析构」模式（声明顺序见 onConnectionReadable 注释）。
-inline thread_local std::string t_deferredLogs;
-// 仅当本线程存在 DeferredLogFlush 出口（网络线程的两个临界区入口）时才延迟；
-// 否则（如 JS 线程经 disconnect 等 API 持 connMutex_ 调 closeConnection）立即打——
-// 否则 JS 线程攒的日志永远等不到 flush，缓冲无限增长且日志丢失。
-inline thread_local bool t_flushArmed = false;
-
-inline void deferLogf(const char *level, const char *fmt, ...)
-{
-    char msg[512];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(msg, sizeof(msg), fmt, ap);
-    va_end(ap);
-    if (!t_flushArmed) {
-        OH_LOG_Print(LOG_APP, *level == 'E' ? LOG_ERROR : LOG_INFO, 0x0001, LOG_TAG,
-                     "%{public}s", msg);
-        return;
-    }
-    if (!t_deferredLogs.empty()) {
-        t_deferredLogs += '\n';
-    }
-    t_deferredLogs += level;
-    t_deferredLogs += msg;
-}
-
-// 构造点必须在 std::lock_guard 之前 ⇒ 析构时锁已释放，可安全打日志。
-struct DeferredLogFlush {
-    DeferredLogFlush() { t_flushArmed = true; }
-    ~DeferredLogFlush()
-    {
-        t_flushArmed = false;
-        if (!t_deferredLogs.empty()) {
-            OH_LOG_Print(LOG_APP, LOG_INFO, 0x0001, LOG_TAG, "%{public}s",
-                         t_deferredLogs.c_str());
-            t_deferredLogs.clear();
-        }
-    }
-};
 
 // 事件派发唯一收口。除转发外做两件事：
 //  ① 按类型普查（[KDC-EVENTS] 随 NETLOOP 行输出）——用于判断"JS 线程被事件回调占住"的规模；
