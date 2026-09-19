@@ -729,10 +729,9 @@ struct Index {
       return;
     }
     if (kind === 'runcommand.output') {
-      const parts: string[] = data.split('|');
-      const ok: boolean = parts.length > 0 && parts[0] === '1';
-      const code: string = parts.length > 1 ? parts[1] : '?';
-      const text: string = parts.length > 2 ? parts[2] : '';
+      const ok: boolean = ev.runcommandSuccess ?? false;
+      const code: number = ev.runcommandExitCode ?? -1;
+      const text: string = ev.runcommandOutput ?? '';
       const head: string = this.resText(ok
         ? $r('app.string.toast_run_cmd_ok').id : $r('app.string.toast_run_cmd_failed').id);
       this.toastText(text.length > 0 ? `${head} (exit=${code}): ${text}` : `${head} (exit=${code})`);
@@ -774,9 +773,8 @@ struct Index {
       this.log(`plugin event ${kind} from ${deviceId}`);
       return;
     }
-    const parts: string[] = data.split('|');
-    const charge: string = parts.length > 0 ? parts[0] : '?';
-    const charging: boolean = parts.length > 1 && parts[1] === '1';
+    const charge: number = ev.batteryCharge ?? -1;
+    const charging: boolean = ev.batteryCharging ?? false;
     const text: string = `${charge}%${charging ? ' ⚡' : ''}`;
     const exists: boolean = this.batteryItems.some((b: BatteryItem) => b.deviceId === deviceId);
     const item: BatteryItem = { deviceId: deviceId, text: text };
@@ -1233,7 +1231,7 @@ struct Index {
       };
       return next;
     });
-    if (this.trustedDevices.length !== before || true) {
+    if (this.trustedDevices.length !== before) {
       this.rememberedDevices = this.trustedDevices.map((t: TrustedDevice) => {
         const r: RememberedDevice = { id: t.id, name: t.name, paired: t.paired };
         return r;
