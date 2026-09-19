@@ -25,6 +25,8 @@ interface HistoryEntry {
 }
 
 export class PayloadHistory {
+  private static saveChain: Promise<void> = Promise.resolve();
+
   static async load(ctx: Context): Promise<PayloadTransfer[]> {
     try {
       const pref = await preferences.getPreferences(ctx, PREF_NAME);
@@ -55,53 +57,51 @@ export class PayloadHistory {
   }
 
   static async save(ctx: Context, items: PayloadTransfer[]): Promise<void> {
-    try {
-      const pref = await preferences.getPreferences(ctx, PREF_NAME);
-      // AtomCode P2 修复：**防御式合并**。调用方可能只传「刚完成的那几条」，
-      // 若直接据此重建整表，其余历史会被静默清空。这里先读回已有条目，
-      // 按 transferId 去重（新覆盖旧），传入的在前、旧条目随后补齐，再截断到 MAX_ENTRIES。
-      const existing: PayloadTransfer[] = await PayloadHistory.load(ctx);
-      const merged: PayloadTransfer[] = [];
-      for (const p of items) {
-        // 收发都入库（发送记录也要跨重启保留）
-        if (p.direction !== 'receive' && p.direction !== 'send') {
-          continue;
+    const run: () => Promise<void> = async (): Promise<void> => {
+      try {
+        const pref = await preferences.getPreferences(ctx, PREF_NAME);
+        const existing: PayloadTransfer[] = await PayloadHistory.load(ctx);
+        const merged: PayloadTransfer[] = [];
+        for (const p of items) {
+          if (p.direction !== 'receive' && p.direction !== 'send') {
+            continue;
+          }
+          if (merged.some((m: PayloadTransfer) => m.transferId === p.transferId)) {
+            continue;
+          }
+          merged.push(p);
         }
-        if (merged.some((m: PayloadTransfer) => m.transferId === p.transferId)) {
-          continue;
+        for (const e of existing) {
+          if (merged.some((m: PayloadTransfer) => m.transferId === e.transferId)) {
+            continue;
+          }
+          merged.push(e);
         }
-        merged.push(p);
+        const entries: HistoryEntry[] = [];
+        for (const p of merged) {
+          entries.push({
+            transferId: p.transferId,
+            deviceId: p.deviceId,
+            direction: p.direction,
+            state: p.state,
+            fileName: PayloadHistory.safeFileName(p.fileName, p.transferId),
+            size: p.size,
+            bytesDone: p.bytesDone,
+            filePath: p.filePath,
+            settled: p.settled,
+            timeMs: p.timeMs ?? 0
+          });
+          if (entries.length >= MAX_ENTRIES) {
+            break;
+          }
+        }
+        await pref.put(KEY, JSON.stringify(entries));
+        await pref.flush();
+      } catch (err) {
       }
-      for (const e of existing) {
-        if (merged.some((m: PayloadTransfer) => m.transferId === e.transferId)) {
-          continue;
-        }
-        merged.push(e);
-      }
-      const entries: HistoryEntry[] = [];
-      for (const p of merged) {
-      entries.push({
-        transferId: p.transferId,
-        deviceId: p.deviceId,
-        direction: p.direction,
-        state: p.state,
-          // P3-2：文件名来自对端 packet，落库前复验白名单（与 Index.sanitizeFileName 同规则）
-          fileName: PayloadHistory.safeFileName(p.fileName, p.transferId),
-        size: p.size,
-        bytesDone: p.bytesDone,
-        filePath: p.filePath,
-        settled: p.settled,
-        timeMs: p.timeMs ?? 0
-      });
-        if (entries.length >= MAX_ENTRIES) {
-          break;
-        }
-      }
-      await pref.put(KEY, JSON.stringify(entries));
-      await pref.flush();
-    } catch (err) {
-      // 落库失败不影响主流程（下次状态变化会再试）
-    }
+    };
+    PayloadHistory.saveChain = PayloadHistory.saveChain.then(run, run);
+    return PayloadHistory.saveChain;
   }
 
   // 文件名白名单（与 Index.ets 的 sanitizeFileName 同规则；此处独立一份避免跨层依赖）

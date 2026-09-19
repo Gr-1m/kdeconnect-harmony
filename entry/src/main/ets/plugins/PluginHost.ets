@@ -112,15 +112,15 @@ export class PluginHost {
 
   private static matches(proto: PluginBase, peerIncoming: string[], peerOutgoing: string[]): boolean {
     if (peerIncoming.length === 0 && peerOutgoing.length === 0) {
-      return true; // 对端未声明能力 → 视为全支持
+      return true;
     }
     for (const t of proto.outgoingPacketTypes) {
-      if (peerIncoming.length === 0 || peerIncoming.includes(t)) {
+      if (peerIncoming.includes(t)) {
         return true;
       }
     }
     for (const t of proto.supportedPacketTypes) {
-      if (peerOutgoing.length === 0 || peerOutgoing.includes(t)) {
+      if (peerOutgoing.includes(t)) {
         return true;
       }
     }

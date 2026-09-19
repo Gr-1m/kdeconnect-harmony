@@ -53,6 +53,11 @@ export class BatteryPlugin extends PluginBase {
     }
     const b: BatteryBody = body as BatteryBody;
     const charge: number = b.currentCharge ?? -1;
+    const thresholdEvent: number = b.thresholdEvent ?? 0;
+    if (thresholdEvent > 0) {
+      this.log(`battery threshold event ${thresholdEvent} from peer`);
+      this.notify('battery.threshold', `${thresholdEvent}`);
+    }
     if (charge < 0) {
       this.log('battery packet without currentCharge');
       return true;
