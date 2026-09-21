@@ -2067,20 +2067,10 @@ struct Index {
 
   // 文件名白名单清洗（CodeArts MSG58 §4）：native 的 settle() 只拦 ".."，
   // 这里再去掉路径分隔符/前导点、限长，避免写入意外路径或隐藏文件。
+  // P3-11：本方法与 PayloadHistory.safeFileName 是**同一套规则**（历史上各写了一份，存在漂移风险）。
+  // 现在只做**转发**，规则本体只保留一份（含控制字符过滤），保证"落库名"与"沙箱名"永远一致。
   private sanitizeFileName(raw: string, transferId: number): string {
-    let name: string = raw;
-    name = name.replace(new RegExp('/', 'g'), '_');
-    name = name.replace(new RegExp('\\\\', 'g'), '_');
-    while (name.startsWith('.')) {
-      name = name.substring(1);
-    }
-    if (name.length === 0) {
-      name = `transfer_${transferId}`;
-    }
-    if (name.length > 128) {
-      name = name.substring(0, 128);
-    }
-    return name;
+    return PayloadHistory.safeFileName(raw, transferId);
   }
 
   // 「查看已接收」弹窗的数据与展示辅助（文件页入口触发）

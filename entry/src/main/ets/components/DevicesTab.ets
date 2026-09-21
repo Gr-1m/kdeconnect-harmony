@@ -88,6 +88,15 @@ export struct DevicesTab {
   private areaChangeCount: number = 0;
   private paneAreaTimer: number = -1;
 
+  // P3-9：组件销毁时清理去抖 timer。旧实现只在**下一次** onPaneArea 触发时 clearTimeout
+  // ⇒ 组件被销毁后那个挂着的 timer 仍会跑一拍，回调里访问已不存在的状态。
+  aboutToDisappear(): void {
+    if (this.paneAreaTimer >= 0) {
+      clearTimeout(this.paneAreaTimer);
+      this.paneAreaTimer = -1;
+    }
+  }
+
   private onPaneArea(a: Area): void {
     const w: number = Number(a.width);
     if (!Number.isFinite(w) || w <= 0) {

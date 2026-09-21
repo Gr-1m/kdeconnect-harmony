@@ -106,10 +106,15 @@ export class PayloadHistory {
   }
 
   // 文件名白名单（与 Index.ets 的 sanitizeFileName 同规则；此处独立一份避免跨层依赖）
-  private static safeFileName(raw: string, transferId: number): string {
+  // 落库文件名白名单规则（**唯一实现**：Index.sanitizeFileName 只是本方法的转发 —— P3-11 收敛，避免两份规则漂移）。
+  // 规则：路径分隔符（/ \）与**控制字符**（U+0000–U+001F、U+007F）一律替换为 `_`；去掉**前导**点；
+  // 空名兜底 `transfer_<id>`；长度上限 128。
+  // 说明：控制字符不过滤会带来两类问题 —— ①文件名显示错乱/终端转义注入；②部分文件系统直接拒绝写入。
+  static safeFileName(raw: string, transferId: number): string {
     let name: string = raw;
     name = name.replace(new RegExp('/', 'g'), '_');
     name = name.replace(new RegExp('\\\\', 'g'), '_');
+    name = name.replace(new RegExp('[\\u0000-\\u001F\\u007F]', 'g'), '_');
     while (name.startsWith('.')) {
       name = name.substring(1);
     }

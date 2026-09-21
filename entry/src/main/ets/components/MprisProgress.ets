@@ -21,12 +21,22 @@ export struct MprisProgress {
   @State nowMs: number = 0;
   private timerId: number = -1;
   private dragging: boolean = false;
+  // P3-8：上一拍的播放态。用于识别"暂停 → 恢复"的边沿 —— 恢复的当拍必须先把 nowMs 对齐到当前时刻，
+  // 否则那一拍会用**暂停前**的 nowMs 去算 (nowMs - posAtMs)，进度会跳（甚至算出负值被夹成 0）。
+  private prevPlaying: boolean = false;
 
   aboutToAppear(): void {
     this.nowMs = Date.now();
     this.timerId = setInterval((): void => {
-      // 暂停时进度不前进 ⇒ 完全不写 @State（连本组件都不重建）
+      // 暂停时进度不前进 ⇒ **完全不写 @State**（连本组件都不重建），nowMs 也就"冻结"在暂停那一刻 ✓
       if (!this.isPlaying) {
+        this.prevPlaying = false;
+        return;
+      }
+      // 恢复播放的当拍：先对齐时钟再返回，避免用暂停期的陈旧 nowMs 算出一个跳变
+      if (!this.prevPlaying) {
+        this.prevPlaying = true;
+        this.nowMs = Date.now();
         return;
       }
       this.nowMs = Date.now();
