@@ -1,4 +1,4 @@
-# KDE-H Connect — ArkTS 标准化开发指导（v0.1）
+# KDE Connect（HarmonyOS）— ArkTS 标准化开发指导（v0.1）
 
 > 2026-09-12，DevEco Code（Win10，ArkTS 侧职能固定）起草。
 > 适用范围：**ArkTS 全部** —— Stage 模型、ArkUI（页面/导航/状态）、业务层、插件层、NAPI 接口 TS 侧封装、`Index.d.ts` 契约提案。C++ native 侧见 `devdocs/CPP_GUIDE.md`（zcode），流程事务（commit 时机/单测指导/CI 规格）听 CodeArts。
