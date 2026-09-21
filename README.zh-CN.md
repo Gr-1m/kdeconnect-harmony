@@ -130,7 +130,7 @@ kdeconnect-harmony/
 ├── tools/                    # sign-debug.sh, check-encoding.py, sync-revision.sh
 ├── devdocs/                  # 开发者指南 + BUG 排查分析
 ├── screenshots/              # 应用截图
-├── LICENSE                   # GPL-3.0
+├── LICENSE                   # GPL-2.0-or-later
 ```
 
 ## 协议兼容性
@@ -179,7 +179,8 @@ kdeconnect-harmony/
 
 ## 许可证
 
-GPL-3.0 — 与上游 KDE Connect 一致。见 [LICENSE](LICENSE)。
+GPL-2.0-or-later — 与上游 kdeconnect-android（GPL-2.0-only）与 kdeconnect-kde（GPL-2.0-or-later）兼容，
+可直接移植两端代码。见 [LICENSE](LICENSE)。（2026-09-19 由 GPL-3.0 变更）
 
 ## Agent 分工
 
