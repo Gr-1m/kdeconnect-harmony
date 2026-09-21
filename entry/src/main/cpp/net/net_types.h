@@ -19,6 +19,9 @@ constexpr size_t MAX_IDENTITY_PACKET_SIZE = 8192;
 constexpr size_t MAX_PACKET_SIZE = 32u * 1024u * 1024u;
 constexpr int PROTOCOL_VERSION = 8;
 constexpr int MAX_UNPAIRED_CONNECTIONS = 42;
+// P3（AtomCode 审计）：listen backlog 此前复用 MAX_UNPAIRED_CONNECTIONS ⇒ 语义巧合，
+// 拆出独立常量，避免将来调 42 时顺带改掉 backlog。
+constexpr int LISTEN_BACKLOG = 42;
 constexpr int IDENTITY_TIMEOUT_MS = 1000;
 constexpr int DISCOVERY_DEBOUNCE_MS = 500;
 // 同一设备重复 DeviceDiscovered 的事件级去重窗口（UDP 广播 + 对端拨入两条来源会重复告知；

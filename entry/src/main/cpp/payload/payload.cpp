@@ -424,6 +424,9 @@ uint64_t PayloadManager::startReceive(const std::string &deviceId, const std::st
     job->writeInterest.armed = true;   // S3：注册时已带 EPOLLOUT
     fdIndex_[job->sockFd] = job->id;
     job->deadlineMs = host_->nowMs() + PAYLOAD_ACCEPT_TIMEOUT_MS;
+    // 注（P3，AtomCode 审计）：本函数的**立即失败**路径（套接字/connect 等建不起来）会派发
+    // `failed` 而**从未派发 `started`** —— 这是合法序列，ArkTS 侧应按「无 started 的 failed」容忍
+    // （failed 事件自带 deviceId/transferId，不依赖先收到 started）。
     job->started = true;
     
     uint64_t id = job->id;

@@ -105,6 +105,9 @@ bool UdpDiscovery::broadcast()
                 char ip[INET_ADDRSTRLEN] = {0};
                 inet_ntop(AF_INET, &baddr.sin_addr, ip, sizeof(ip));
                 LOGI("udp directed broadcast to %s on %s", ip, ifa->ifa_name);
+            } else {
+                // P3：逐路径错误码（否则多路径失败时只剩最后一跳的 errno，会误导定性）
+                LOGE("udp directed broadcast on %s failed: %s", ifa->ifa_name, strerror(errno));
             }
         }
         freeifaddrs(ifaddr);
@@ -120,10 +123,14 @@ bool UdpDiscovery::broadcast()
     if (n > 0) {
         anySent = true;
         LOGI("udp global broadcast sent (%zu bytes)", identity.size());
+    } else {
+        LOGE("udp global broadcast failed: %s", strerror(errno));   // P3：逐路径错误码
     }
 
     if (!anySent) {
-        LOGE("udp broadcast: all attempts failed: %s", strerror(errno));
+        // P3（AtomCode 审计）：此处 errno 只反映**最后一次** sendto，多路径失败时会误导定性。
+        // 逐路径的错误码已在各次尝试处打印（见上方 attempt failed），摘要行不再冒充原因。
+        LOGE("udp broadcast: all attempts failed (per-path errno above)");
     }
     return anySent;
 }

@@ -77,10 +77,21 @@ ssize_t TcpConnection::readPlainFrame(std::string &out, size_t maxSize, int *err
     // 精确消费 frameLen 字节（数据已确认在内核缓冲，正常不会 EAGAIN）
     std::string frame(frameLen, '\0');
     size_t got = 0;
+    size_t eagainRetries = 0;
     while (got < frameLen) {
         ssize_t r = read(fd_, &frame[got], frameLen - got);
         if (r < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // P3（AtomCode 审计）：此处数据已由 MSG_PEEK 确认在内核缓冲，正常不会 EAGAIN；
+                // 但若真发生，反复 continue 会**自旋**。允许一次（应对极端调度抖动），第二次即
+                // 如实报错返回，交由上层的有界失败路径处理。
+                if (++eagainRetries > 1) {
+                    if (errOut != nullptr) *errOut = EAGAIN;
+                    LOGE("readPlainFrame fd=%d consume: EAGAIN twice, giving up (avoid spin)", fd_);
+                    return -1;
+                }
+                continue;
+            }
             LOGE("readPlainFrame fd=%d consume: %s", fd_, strerror(errno));
             return -1;
         }
@@ -189,10 +200,6 @@ ssize_t TcpConnection::fillTlsRx()
     std::vector<uint8_t> buf(16384);
     size_t added = 0;
     for (;;) {
-        if (rxBuf_.size() > MAX_PACKET_SIZE) {
-            LOGE("fillTlsRx fd=%d: rx buffer exceeds %zu bytes", fd_, MAX_PACKET_SIZE);
-            return -1;
-        }
         ssize_t n = tls_->read(buf);
         if (n < 0) {
             return -1;
@@ -203,6 +210,12 @@ ssize_t TcpConnection::fillTlsRx()
         rxBuf_.append(reinterpret_cast<const char *>(buf.data()),
                       static_cast<size_t>(n));
         added += static_cast<size_t>(n);
+        // P3（AtomCode 审计）：上限检查移到 append **之后** —— 此前在 append 前检查，单次 16KiB 读后
+        // 可能轻微越限、要等下一轮才判死（只是晚一拍，无危害）；现在当轮即判。
+        if (rxBuf_.size() > MAX_PACKET_SIZE) {
+            LOGE("fillTlsRx fd=%d: rx buffer exceeds %zu bytes", fd_, MAX_PACKET_SIZE);
+            return -1;
+        }
     }
     return static_cast<ssize_t>(added);
 }

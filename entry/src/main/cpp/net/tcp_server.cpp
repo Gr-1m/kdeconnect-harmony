@@ -30,7 +30,7 @@ bool TcpServer::listen(uint16_t port)
         addr.sin_addr.s_addr = htonl(INADDR_ANY);
         addr.sin_port = htons(p);
         if (bind(fd_, reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)) == 0) {
-            if (::listen(fd_, MAX_UNPAIRED_CONNECTIONS) == 0) {
+            if (::listen(fd_, LISTEN_BACKLOG) == 0) {   // P3：backlog 用独立常量
                 port_ = p;
                 LOGI("tcp listening on port %u", p);
                 return true;
