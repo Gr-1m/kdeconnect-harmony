@@ -10,7 +10,7 @@
 
 set -euo pipefail
 MODE="${1:-start}"
-BUNDLE_NAME="org.kde.kdeconnect.harmony"
+BUNDLE_NAME="org.kde.kdeconnect"
 MAIN_ABILITY="EntryAbility"
 
 case "$MODE" in

@@ -1,6 +1,6 @@
 {
   "app": {
-    "bundleName": "org.kde.kdeconnect.harmony",
+    "bundleName": "org.kde.kdeconnect",
     "vendor": "kde",
     "versionCode": 1,
     "versionName": "0.1.0",
