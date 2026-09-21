@@ -694,10 +694,22 @@ void PayloadManager::onTick(int64_t nowMs)
     // （receive 任务必须留到 settle() 由上层取走落盘结果）。
     for (auto it = jobs_.begin(); it != jobs_.end();) {
         PayloadJob &j = *it->second;
-        if (j.send && j.finished && j.finishedAtMs > 0 &&
-            nowMs - j.finishedAtMs >= PAYLOAD_JOB_REAP_MS) {
-            it = jobs_.erase(it);
-            continue;
+        if (j.finished && j.finishedAtMs > 0) {
+            const int64_t age = nowMs - j.finishedAtMs;
+            if (j.send && age >= PAYLOAD_JOB_REAP_MS) {
+                it = jobs_.erase(it);   // 发送任务：终态后短宽限即回收（无外部语义依赖）
+                continue;
+            }
+            // P2-B：接收任务保留给上层 settle（取走落盘结果）；超过 24h 仍未 settle 则兜底回收，
+            // 并顺手删掉 spool 半成品 —— 与启动时 purgeStaleSpool 的口径一致。
+            if (!j.send && age >= PAYLOAD_RECEIVE_KEEP_MS) {
+                if (!j.spoolPath.empty()) {
+                    ::unlink(j.spoolPath.c_str());
+                    j.spoolPath.clear();
+                }
+                it = jobs_.erase(it);
+                continue;
+            }
         }
         ++it;
     }

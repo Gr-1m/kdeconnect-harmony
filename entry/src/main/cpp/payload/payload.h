@@ -34,6 +34,12 @@ constexpr int64_t PAYLOAD_STALL_TIMEOUT_MS = 30000;
 // 为什么是"延迟"而非立即：① 给上层留出对终态事件的反应窗口；② 规避迭代器失效（清扫只在 onTick）。
 constexpr int64_t PAYLOAD_JOB_REAP_MS = 5000;
 
+// 接收任务的兜底回收窗口（P2-B，AtomCode 审计）：finished 的 receive 任务若上层**永不 settle**
+// （用户从未点保存），它会连 spool 一起一直驻留。24h 后兜底回收：同时删除 spool 半成品
+// —— 口径与**启动时**的 purgeStaleSpool 一致（那份数据跨重启本来就不保留）。
+// 注意：可持久的是 ArkTS 侧 PayloadHistory（记录列表），不是 spool 文件本身。
+constexpr int64_t PAYLOAD_RECEIVE_KEEP_MS = 24LL * 60 * 60 * 1000;
+
 // NetStack 实现的宿主钩子。payload 模块只依赖本接口（host 可测，CPP_GUIDE §2）。
 //
 // 锁序契约（P0-3 ABBA 防护，MSG57）：PayloadManager::mu_ 只保护本模块状态。

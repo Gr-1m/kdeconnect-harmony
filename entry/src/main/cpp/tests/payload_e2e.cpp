@@ -493,6 +493,9 @@ void payloadE2eSendReceive()
     const std::string dest = destDir + "/received.bin";
     CHECK(b.manager().settle(id, dest, true));
     CHECK_MSG(readFileEquals(dest, src), "落盘内容与源文件不一致");
+    // 注（P2-B）：24h 兜底回收只对"**从未 settle**"的接收任务生效；成功 settle 本身即 erase 任务
+    // （settle 内的 jobs_.erase）⇒ 要覆盖该分支需另传一次文件（成本高、价值低），故此处不设断言，
+    // 行为由 payload.cpp 的注释与提交说明记录。
 }
 
 // —————— 1b. 跨文件系统保存（spool 与目标不同挂载点）——————
