@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! kdc_core —— R1：`net/packet_io` 与 `net/cert_util` 两个纯函数模块的 Rust 实现。
 //!
 //! 设计约束（R1 任务书 `MSG93_TO_CODEARTS.md` §1/§3 与 `PROCESS.md §8`）：

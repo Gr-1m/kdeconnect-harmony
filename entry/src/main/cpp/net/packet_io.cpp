@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // R1（MSG93_TO_CODEARTS）：packet_io 的实现已迁移到 Rust（rust/kdc_core/src/packet.rs）。
 // 本文件只保留**薄 shim**：公开签名与语义逐字不变（net/packet_io.h 未改动，调用方零改动）。
 // 行为对照证据见 R1 报告：Rust 与迁移前 C++ 实现的 golden 输出逐行 diff 完全一致

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // 系统音量（kdeconnect.systemvolume）的 **UI 视图模型**（2026-09-18 用户要求「设备 tab 读 OutputDevice」）。
 //
 // 分工（2026-09-19 重构后固定，勿再把协议细节泄漏到 UI）：

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 import { radio } from '@kit.TelephonyKit';
 import { wifiManager } from '@kit.ConnectivityKit';
 import { connection } from '@kit.NetworkKit';

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 ﻿import { PayloadTransfer } from '../model/PayloadModels';
 
 // 单条 payload 传输行（文件页）。

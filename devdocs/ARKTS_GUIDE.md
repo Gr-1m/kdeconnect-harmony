@@ -157,7 +157,7 @@ UI 结构（对齐 iOS 端 Devices+Settings 两 Tab，鸿蒙扩展为四 Tab）�
 - **资源**：用户可见文案一律 `$r('app.string.*')`，base(en) + zh_CN **同改动成对更新**；勿用官方 KDE 图标（商标合规）。
 - **图标可用 sys.symbol（已核实，勿凭记忆猜）**：DevEco 内置 SDK 有一份完整的系统资源表 `sdk/.../ets-loader/sysResource.js`，其中 `symbol` 段是**可用的 `sys.symbol.*` 名单**（`grep '^        <name>: <id>'` 即可核对名字是否存在，比猜名字可靠）。已确认可用：`house / folder / gearshape / text_alignleft / computer / phone / display / paperplane / text_clipboard / location_up / bell / battery / screen_share / chevron_down / chevron_up / magnifyingglass / xmark / arrow_left / plus / person / checkmark / trash / link / wifi / gobackward`（另有 4000+ 条）。用法：`SymbolGlyph($r('sys.symbol.house')).fontSize(20).fontColor([要色1, 要色2])`。名字不存在时**不会编译报错、只是空白**，改图标后必须真机截图确认。<br>⚠️ 手绘图标（如 `hamburger` 的三条横线）继续保留：`line_horizontal_3` 等汉堡名**不存在**。
 - **命名**：文件 PascalCase（页面/组件）/ camelCase（工具）沿用现状；类 CamelCase；常量全大写；注释中文为主、标识符英文。
-- **风格**：LF 换行（`.editorconfig` 精神：4 空格缩进、文件末尾换行）；新增文件带 SPDX 头（`GPL-3.0-or-later`，仓库 LICENSE 口径，旧文件 `GPL-2.0-or-later` 随基线不动）。
+- **风格**：LF 换行（`.editorconfig` 精神：4 空格缩进、文件末尾换行）；新增文件带 SPDX 头（`GPL-2.0-or-later`，仓库 LICENSE 口径，2026-09-19 全仓由 GPL-3.0 统一变更）。
 
 ### 4.9 状态管理陷阱：ForEach 项「内容会变」时必须 @Observed + @ObjectLink
 

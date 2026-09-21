@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 import { MprisSnapshot } from '../model/MprisModels';
 import { SystemSinkUi } from '../model/SystemVolumeModels';
 

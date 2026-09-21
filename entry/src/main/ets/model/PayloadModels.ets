@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // payload 传输状态模型（AP-2，契约见 libkdeconnect_napi/Index.d.ts v2）
 export type PayloadDirection = 'send' | 'receive';
 

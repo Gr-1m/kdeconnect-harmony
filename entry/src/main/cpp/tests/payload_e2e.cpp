@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // WP-4 native 集成测试（host）：payload 通道端到端 + P0 回归。
 //
 // 覆盖（MSG57_TO_ZCODE P0-1/P0-2/P0-3）：

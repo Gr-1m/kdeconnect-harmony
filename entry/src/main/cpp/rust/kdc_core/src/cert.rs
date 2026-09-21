@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! `net/cert_util.cpp` 的逐函数等价 Rust 实现（R1 迁移，MSG93 §3）。
 //!
 //! 语义以现有 C++ 实现为唯一参照，逐行对齐：

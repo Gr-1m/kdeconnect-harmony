@@ -130,7 +130,7 @@ kdeconnect-harmony/
 ├── tools/                    # sign-debug.sh, check-encoding.py, sync-revision.sh
 ├── devdocs/                  # Developer guides + bugfix analysis
 ├── screenshots/              # App screenshots
-├── LICENSE                   # GPL-3.0
+├── LICENSE                   # GPL-2.0-or-later
 ```
 
 ## Protocol Compatibility
@@ -179,7 +179,8 @@ This project is developed across two machines on the same LAN, with file synchro
 
 ## License
 
-GPL-3.0 — same as upstream KDE Connect. See [LICENSE](LICENSE).
+GPL-2.0-or-later — compatible with upstream kdeconnect-android (GPL-2.0-only) and
+kdeconnect-kde (GPL-2.0-or-later), enabling direct code porting from both. See [LICENSE](LICENSE).
 
 ## Agent Division of Labour
 

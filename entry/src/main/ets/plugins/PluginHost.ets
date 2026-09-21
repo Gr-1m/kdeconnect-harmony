@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 import { PluginBase, SendFrameFn } from './PluginBase';
 import { PluginRegistry } from './PluginRegistry';
 import { PluginEvent } from './PluginEvent';

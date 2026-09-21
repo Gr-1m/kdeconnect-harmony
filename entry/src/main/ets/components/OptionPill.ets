@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // 可选中态选项按钮（设置页主题/语言共用）。
 // 为什么用子组件而不是 @Builder：@Builder 的值参数不变时可能跳过重建，
 // 导致"点击有效但高亮不跟随"；子组件的 @Prop 变化一定会触发重渲染。

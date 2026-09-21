@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 import { mprisTimeText } from '../model/MprisModels';
 
 // 批2 根治（CodeArts MSG18 放行 / ARKTS_PERF_ROADMAP §3）：

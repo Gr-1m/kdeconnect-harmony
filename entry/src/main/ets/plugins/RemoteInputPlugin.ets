@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 import { PluginBase } from './PluginBase';
 
 // 远程输入插件（kdeconnect.mousepad.request / .keyboardstate）——P1 只声明能力（MSG112 §4）：

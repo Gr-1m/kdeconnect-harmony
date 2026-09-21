@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 import { preferences } from '@kit.ArkData';
 import { Context } from '@kit.AbilityKit';
 import { PayloadTransfer, PayloadState } from '../model/PayloadModels';

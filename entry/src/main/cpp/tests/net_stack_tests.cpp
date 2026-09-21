@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // WP-4 native 集成测试（host，CI 可跑）：**连接失败的可解释性** + 有界握手。
 //
 // 背景（用户 UX 规格 #1/#2）：点「连接」后必须明确「连接成功」或「连接失败（找不到对应 IP 等）」。
