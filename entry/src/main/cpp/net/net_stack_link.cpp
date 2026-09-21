@@ -574,6 +574,29 @@ void NetStack::onConnectionReadable(int fd)
                     closeConnection(fd, "cert CN mismatch");
                     return;
                 }
+                // 钉扎（TOFU + 钉扎）同样必须早于 Connected：受信记录存在时叶证书必须逐字节一致。
+                // 由负路径用例 peerCertPinningMismatchIsRejected 发现——原实现只在 dispatchFrames
+                // 处理 identity 时比较 ⇒ 入向连接会先派发 Connected（UI 误报「已连接」）。
+                std::string trustedPem;
+                {
+                    std::lock_guard<std::mutex> tlk(trustMutex_);
+                    auto it = trustedCertPem_.find(conn.deviceId());
+                    if (it != trustedCertPem_.end()) {
+                        trustedPem = it->second;
+                    }
+                }
+                if (!trustedPem.empty() && conn.tlsEngine() != nullptr) {
+                    const std::vector<uint8_t> leaf = conn.tlsEngine()->peerLeafCertDer();
+                    const std::string trustedDer = pemToDer(trustedPem, "CERTIFICATE");
+                    if (leaf.empty() || std::string(leaf.begin(), leaf.end()) != trustedDer) {
+                        deferLogf("E ", "certificate mismatch for %s (pre-Connected, handshake)",
+                                  conn.deviceId().c_str());
+                        dispatchError(conn.deviceId(), EACCES,
+                                      "certificate mismatch (device re-pair required)");
+                        closeConnection(fd, "certificate mismatch");
+                        return;
+                    }
+                }
                 conn.markCnVerified();
             }
             if (conn.isIncoming() && !conn.connectedNotified()) {

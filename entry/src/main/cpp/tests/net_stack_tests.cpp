@@ -822,6 +822,46 @@ void peerCertCnMismatchIsRejected()
     ::waitpid(child, &status, 0);
 }
 
+// 安全负路径（AtomCode 审计建议②）：控制链路**证书钉扎** mismatch ⇒ 必须断链且不得派发 Connected。
+// 形态：把该 deviceId 的受信 PEM 预置成**另一份证书**（用本栈自己的证书冒充），再让真实对端连入。
+void peerCertPinningMismatchIsRejected()
+{
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    const char *kPeerId = "hosttest22222222222222222222222222";
+    // 预置错误的受信 PEM：用本栈自身证书冒充该设备（CN 与实际对端不同 ⇒ 钉扎必然不匹配）
+    netStack().setTrustedCertificate(kPeerId, netStack().getOwnCertificate());
+
+    const pid_t child = ::fork();
+    CHECK_MSG(child >= 0, "fork 失败");
+    if (child < 0) return;
+    if (child == 0) {
+        ::execl("/proc/self/exe", "kdc_net_tests", "--peer", "1745", nullptr);
+        ::_exit(127);
+    }
+    bool sawError = false;
+    bool sawConnected = false;
+    const int64_t deadline = nowMs() + 20000;
+    while (nowMs() < deadline && !sawError) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::lock_guard<std::mutex> lk(g_mu);
+        for (const NetEvent &e : g_events) {
+            if (e.type == EventType::Error && e.deviceId == kPeerId) {
+                sawError = true;
+                std::fprintf(stderr, "  [dbg] pinning rejected: msg=%s\n", e.errorMessage.c_str());
+            }
+            if (e.type == EventType::Connected && e.deviceId == kPeerId) {
+                sawConnected = true;
+            }
+        }
+    }
+    CHECK_MSG(sawError, "证书钉扎不一致未被拒绝（TOFU+钉扎语义回归）");
+    CHECK_MSG(!sawConnected, "钉扎不一致的设备仍被派发 Connected");
+    netStack().removeTrustedCertificate(kPeerId);   // 清理，避免污染后续用例
+    ::kill(child, SIGKILL);
+    int status = 0;
+    ::waitpid(child, &status, 0);
+}
+
 // —————— ④ 端口未知（0）的拨号：探测 + 缓存（DevEco 第五次报，2026-09-13）——————
 //
 // 载荷「已宣告但未启动」必须可收口（DevEco MSG22 回归，2026-09-17）：
@@ -971,7 +1011,7 @@ int main(int argc, char **argv)
         {"peerIdentityIsDispatchedAsPacket"},  {"sendPacketQueuesDuringHandshake"},
         {"portProbeFindsListener"},            {"dialUnknownPortProbesAndConnects"},
         {"announcedPayloadWithoutPortIsTerminal"}, {"payloadSurvivesLinkReplacement"},
-        {"deviceDownDispatchesPayloadTerminal"}, {"peerCertCnMismatchIsRejected"},
+        {"deviceDownDispatchesPayloadTerminal"}, {"peerCertCnMismatchIsRejected"}, {"peerCertPinningMismatchIsRejected"},
     };
     if (argc >= 2 && std::strcmp(argv[1], "--list") == 0) {
         for (const ListDef &n : kNames) {
@@ -1023,6 +1063,8 @@ int main(int argc, char **argv)
         {"payloadSurvivesLinkReplacement", payloadSurvivesLinkReplacement},
         {"deviceDownDispatchesPayloadTerminal", deviceDownDispatchesPayloadTerminal},
         {"peerCertCnMismatchIsRejected", peerCertCnMismatchIsRejected},
+        {"peerCertPinningMismatchIsRejected", peerCertPinningMismatchIsRejected},
+        {"peerCertPinningMismatchIsRejected", peerCertPinningMismatchIsRejected},
     };
     for (const CaseDef &c : kCases) {
         runCase(c.name, c.fn);

@@ -1,4 +1,5 @@
 #include "napi/napi_events.h"
+#include "../net/event_queue_stat.h"
 #include <chrono>
 
 #include <memory>
@@ -90,6 +91,11 @@ napi_value BuildEventObject(napi_env env, const NetEvent &event)
 // 由 ArkTS 主线程执行：把 NetEvent 对象交给用户回调。
 void CallJs(napi_env env, napi_value callback, void *context, void *data)
 {
+    // P2-A：事件已从 tsfn 队列取出 ⇒ 积压深度 -1（含下面 env/callback 为空的丢弃路径）。
+    // 用 fetch_sub 后按下限收敛，避免计数出现负数（只为可观测量，不影响事件语义）。
+    if (kdeconnect::eventQueueDepth().fetch_sub(1, std::memory_order_relaxed) <= 0) {
+        kdeconnect::eventQueueDepth().store(0, std::memory_order_relaxed);
+    }
     if (env == nullptr || callback == nullptr) {
         // env/callback 为空表示正在关闭，丢弃事件但必须释放 data。
         if (data != nullptr) {
@@ -158,7 +164,9 @@ void Emit(const NetEvent &event)
     }
     auto data = new std::unique_ptr<NetEvent>(std::make_unique<NetEvent>(event));
     // nonblocking：队列满时丢弃而非阻塞网络线程（queue 设为 0 不会满，防御性处理）。
+    kdeconnect::eventQueueDepth().fetch_add(1, std::memory_order_relaxed);   // P2-A：积压深度
     if (napi_call_threadsafe_function(tsfn, data, napi_tsfn_nonblocking) != napi_ok) {
+        kdeconnect::eventQueueDepth().fetch_sub(1, std::memory_order_relaxed);
         // 事件真的被丢了：此前是静默 delete，出问题时无从判断「未派发」还是「投递丢」。
         // （tsfn 队列长度为 0 = 不限，正常不该走到这里；留痕以便 DevEco MSG24 §2 类问题定性。）
         OH_LOG_Print(LOG_APP, LOG_WARN, 0x0001, "KDEConnect",

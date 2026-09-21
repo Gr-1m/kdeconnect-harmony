@@ -1,4 +1,5 @@
 #include "net_stack.h"
+#include "event_queue_stat.h"
 #include "net_internal.h"
 #include "net_stack.h"
 #include "udp_discovery.h"
@@ -138,7 +139,7 @@ void NetStack::eventLoop()
                  "txQueued=%{public}llu plainQueued=%{public}llu "
                  "ev[disc=%{public}llu lost=%{public}llu conn=%{public}llu disc2=%{public}llu "
                  "pkt=%{public}llu pair=%{public}llu err=%{public}llu xfer=%{public}llu] "
-                 "conn[in=%{public}llu out=%{public}llu hup=%{public}llu]",
+                 "conn[in=%{public}llu out=%{public}llu hup=%{public}llu] jsq=%{public}lld",
                  cpuMs, (unsigned long long) loopIters_.load(), (unsigned long long) epollWake_.load(),
                  (unsigned long long) eventsHandled_.load(), LOOP_TICK_MS, (long long) dtMs,
                  (unsigned long long) wakeByWakeFd_, (unsigned long long) wakeByUdp_,
@@ -151,7 +152,8 @@ void NetStack::eventLoop()
                  (unsigned long long) evCounts_[4].load(), (unsigned long long) evCounts_[5].load(),
                  (unsigned long long) evCounts_[6].load(), (unsigned long long) evCounts_[7].load(),
                  (unsigned long long) connIn_, (unsigned long long) connOut_,
-                 (unsigned long long) connHup_);
+                 (unsigned long long) connHup_,
+             (long long) kdeconnect::eventQueueDepth().load(std::memory_order_relaxed));
             maxTickHoldMs_ = 0;
             maxJsLockWaitMs_.store(0);
             lastStatsMs_ = now;
