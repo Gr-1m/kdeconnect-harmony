@@ -362,6 +362,10 @@
       "value": "发送失败"
     },
     {
+      "name": "toast_send_no_target",
+      "value": "请先在设备页选择要发送的设备"
+    },
+    {
       "name": "toast_send_batch_done",
       "value": "文件发送完成"
     },
