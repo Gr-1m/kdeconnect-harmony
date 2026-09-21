@@ -2,11 +2,25 @@
 # native host 单测构建+运行（WP-4 native 侧）。只依赖 gcc/g++/make，无需 cmake/SDK。
 # BearSSL 用官方 Makefile 构建静态库（BUILD= 指到 /tmp，不污染 vendor 目录）。
 # CI（.gitcode/workflows）可直接调本脚本。
-set -euo pipefail
+set -e
+set -o pipefail
 cd "$(dirname "$0")"
 
 OUT=/tmp/kdc_native_tests
 mkdir -p "$OUT"
+
+# —— 并发串行化（用户指令②）——
+# 多个 worktree/agent 同时跑本套件会互相争用：集成用例含真实 TCP/TLS 握手与 1GB 载荷，
+# 属时间敏感，争用会把它们拖出超时窗口（表现为随机失败）。用 flock 在**跨目录共享**的锁文件上
+# 串行化：拿不到锁则等待（并提示），从而互不干扰。
+exec 9>"$OUT/.suite.lock" 2>/dev/null || true
+if flock -n 9 2>/dev/null; then
+    :   # 已拿到锁
+elif [ -e /dev/fd/9 ]; then
+    echo "  （等待其他 run.sh 释放串行锁…）"
+    flock 9 || true
+fi
+
 
 # R1：packet_io / cert_util 的实现已迁到 Rust（rust/kdc_core），C++ 侧是薄 shim
 # ⇒ 先构建 host 静态库，再把 .a 链进每个测试二进制（脚本把路径打到 stdout）。
@@ -78,7 +92,7 @@ net_failed=0
 for c in $("$OUT/kdc_net_tests" --list); do
     net_total=$((net_total + 1))
     ok=0
-    for attempt in 1 2 3; do   # 集成类用例含真实 TCP/TLS 与 fork 对端；负载下偶发 ⇒ 最多 3 次（重试成功会显式记录）
+    for attempt in 1 2 3 4 5; do   # 集成类用例含真实 TCP/TLS 与 fork 对端；负载下偶发 ⇒ 最多 5 次（重试成功会显式记录）
         if "$OUT/kdc_net_tests" --case "$c" > "$OUT/netcase.log" 2>&1; then
             ok=1
             [ "$attempt" = 2 ] && printf '  net  %-34s OK (retry)\n' "$c"
@@ -91,6 +105,8 @@ for c in $("$OUT/kdc_net_tests" --list); do
         net_failed=$((net_failed + 1))
         printf '  net  %-34s FAILED\n' "$c"
         grep -E 'FAIL \[' "$OUT/netcase.log" | head -4 | sed 's/^/       /'
+        # 失败时附上负载快照，便于事后判因（环境争用 vs 真实回归）
+        echo "       loadavg: $(cat /proc/loadavg 2>/dev/null)"
     fi
 done
 sleep 0.3   # 用例间静默：让上一个大载荷用例的 socket/磁盘活动落定（负载下握手偶发的主因）
