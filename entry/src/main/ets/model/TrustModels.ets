@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // 信任设备存储模型（AP-3）。Preferences 中的持久化结构带 schemaVersion，
 // 供 AP-7（bundleName 改名）等未来迁移使用。
 // 说明：证书指纹/钉扎的判定在 native（WP-2），此处只存对端证书 PEM 与展示信息。

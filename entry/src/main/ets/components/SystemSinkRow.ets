@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 import { SystemSinkUi, sinkDisplayName } from '../model/SystemVolumeModels';
 
 // 「设备」tab 的单个输出设备行（系统音量 / OutputDevice）。

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 import { DeviceItem } from '../model/DeviceModels';
 
 // R1 拆分（REVIEW_ARKTS_MERGED 批2）：设备抽屉从 Index.ets 抽出为独立组件。

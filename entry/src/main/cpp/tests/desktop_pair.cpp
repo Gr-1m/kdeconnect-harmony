@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // 手动运行的 host 集成工具（不进 CI）：用**真实 native 全栈**（NetStack + TLS + payload）
 // 直连桌面 KDE，验证「手动连接 → identity → 配对 → 验证码 → 发文件」整条 native 链路。
 //

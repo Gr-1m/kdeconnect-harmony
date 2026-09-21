@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 #ifndef KDECONNECT_WRITE_INTEREST_H
 #define KDECONNECT_WRITE_INTEREST_H
 

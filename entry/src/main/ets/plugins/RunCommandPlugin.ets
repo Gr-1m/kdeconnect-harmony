@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 import { PluginBase } from './PluginBase';
 import { PluginEvent } from './PluginEvent';
 

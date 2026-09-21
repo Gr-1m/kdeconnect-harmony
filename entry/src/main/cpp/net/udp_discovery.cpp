@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 #include "udp_discovery.h"
 #include "packet_io.h"
 #include "net_log.h"

@@ -33,6 +33,8 @@
 
 ## 四、盘点口径备注
 
+- **「Android 有、iOS 无」的协议子类型**（对齐 Android 功能面时天然要覆盖，随宿主插件落地）：`kdeconnect.mousepad.echo` / `kdeconnect.mousepad.keyboardstate`（键盘回显与状态同步，remotekeyboard/mousereceiver 落地时需要）、`kdeconnect.share.request.update`（传输进度）、`kdeconnect.notification.action` / `notification.reply`（通知按钮/快捷回复，iOS 只读不回）；
+- **lockdevice 是纯协议层面「两端皆缺」的唯一完整功能插件**（+ mDNS 通道半缺，见 #11/#12）；
 - Android 的 `inputdevicesreceiver`/`remotekeyboardime` 属 #4/#6 的实现载体；`presenter` 同理；
 - iOS 未实现 sftp/contacts/remotekeyboard/findremotedevice/presenter/mprisreceiver——与桌面生态差异较大，**我方以 Android 功能面为对照基准**（更贴近双端互通场景）；
 - 常量三端一致约束（UDP 1716 / TCP 1716–1764 / payload ≥1739 / 单包 32MiB 等）见 AGENTS.md「跨端常量」——新插件落地时勿引入新常量漂移。

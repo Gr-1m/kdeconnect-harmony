@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 import { PluginBase } from './PluginBase';
 
 // 通知同步插件（kdeconnect.notification / .request）——P1 只声明能力（MSG112 §4）：

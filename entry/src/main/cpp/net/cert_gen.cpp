@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 #include "cert_gen.h"
 #include "cert_util.h"
 #include <cassert>

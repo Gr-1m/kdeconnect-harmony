@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 import { ConfigurationConstant, Context } from '@kit.AbilityKit';
 import { i18n } from '@kit.LocalizationKit';
 import deviceInfo from '@ohos.deviceInfo';

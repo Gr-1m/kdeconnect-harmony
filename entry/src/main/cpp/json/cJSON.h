@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
   Copyright (c) 2009-2017 Dave Gamble and cJSON contributors
 

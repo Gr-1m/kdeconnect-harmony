@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 #include "napi_exports.h"
 #include <chrono>
 #include "net_stack.h"

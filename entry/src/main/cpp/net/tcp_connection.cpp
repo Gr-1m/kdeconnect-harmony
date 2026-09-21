@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 #include "tcp_connection.h"
 #include "net_log.h"
 #include <sys/socket.h>

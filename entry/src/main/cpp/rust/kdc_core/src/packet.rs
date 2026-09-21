@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! `net/packet_io.cpp`（`kdeconnect::PacketIO` 纯函数部分）的 Rust 移植。
 //!
 //! 行为语义以现有 C++ 实现为**唯一参照**（`entry/src/main/cpp/net/packet_io.cpp`）：

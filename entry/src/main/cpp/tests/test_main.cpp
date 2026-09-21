@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // native host 单元测试（WP-4 native 侧，PROCESS.md §4 覆盖清单 / table-driven 风格）。
 //
 // 说明：CodeArts 建议的 doctest 为单头网络依赖（本机不可达且下载需用户授权），

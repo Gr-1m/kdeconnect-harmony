@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // R1（MSG93_TO_CODEARTS §4）：Rust 迁移后的 C++/Rust 边界胶水。
 //
 // 本头文件只做两件事：

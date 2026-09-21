@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // 插件基类（AP-4 / M2 地基）。
 // 设计对齐 Android Plugin.kt（docs/12 §一）：能力声明 + 生命周期 + 收包回调；
 // 但**注册表驱动**，不走 iOS 那种硬编码 switch（docs/12 的反面教材）。

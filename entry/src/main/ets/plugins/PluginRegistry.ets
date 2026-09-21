@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 import { PluginBase } from './PluginBase';
 
 // 插件注册表（AP-4）：能力 → 构造器 的 map。新增插件只需在此 register，

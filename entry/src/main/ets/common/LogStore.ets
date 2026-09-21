@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // 日志存储（批3 #1，CodeArts MSG18 放行 / ARKTS_PERF_ROADMAP §4）。
 //
 // 背景（实测债）：日志文本原来是**页面级 @State logText** ⇒ 每次合并刷新写一次 @State 就触发

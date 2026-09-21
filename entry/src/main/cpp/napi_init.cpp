@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 #include "napi/native_api.h"
 #include "hilog/log.h"
 #include "net/napi_exports.h"

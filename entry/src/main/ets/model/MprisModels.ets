@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // MPRIS 媒体控制数据模型（方向 1：手机作为控制方，控制电脑端播放器）。
 // 字段名/单位严格照 `kdeconnect-meta/schemas/`（经 MSG106 §3 转述）与
 // `devdocs/FEATURE_PLAN_MPRIS.md` §2；插件与 UI 共用同一份形状。

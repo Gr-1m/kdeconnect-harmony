@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 import native from 'libkdeconnect_napi.so';
 import { NetConfig, CertPair, NetEvent } from 'libkdeconnect_napi.so';
 import { util } from '@kit.ArkTS';
@@ -1227,28 +1228,13 @@ struct Index {
     } catch (e) {
       this.log('removeTrustedCertificate unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
     }
-    const before: number = this.trustedDevices.length;
-    this.trustedDevices = this.trustedDevices.map((t: TrustedDevice) => {
-      if (t.id !== deviceId) {
-        return t;
-      }
-      const next: TrustedDevice = {
-        id: t.id,
-        name: t.name,
-        certPem: t.certPem,
-        pairedAt: t.pairedAt,
-        paired: false
-      };
-      return next;
-    });
-    if (this.trustedDevices.length !== before) {
-      this.rememberedDevices = this.trustedDevices.map((t: TrustedDevice) => {
-        const r: RememberedDevice = { id: t.id, name: t.name, paired: t.paired };
-        return r;
-      });
-      this.persistTrust();
+      // 单一来源（修 AtomCode/用户实测「对端解除配对后本侧 UI 仍显示【已配对】」）：
+      // 旧实现这里**自己又实现了一遍**置配对态，且守卫写成 `trustedDevices.length !== before` ——
+      // `map()` 不改变数组长度 ⇒ 该分支**恒不执行** ⇒ `rememberedDevices`（行徽标真正读的数据）不更新、
+      // 也不持久化，连那行 `unpaired …` 日志都不打（与真机取证：两次对端 unpair、徽标仍为已配对、无该日志，完全吻合）。
+      // 现在统一走 `setPairedFlag()`：由它负责 trusted/remembered 同步 + 持久化 + 状态日志，消除这份重复实现。
+      this.setPairedFlag(deviceId, false);
       this.log(`unpaired ${deviceId} (kept in remembered list)`);
-    }
   }
 
   private handleEvent(event: NetEvent): void {
@@ -1431,14 +1417,25 @@ struct Index {
         } else {
           this.log(`error ${event.errorCode}: ${em}`);
         }
-        // 会话进行中报错 → 直接判定失败（提示只给错误码，明细已在日志里）
+        // 会话进行中报错的处理（修用户实测「电脑端还没接受，本侧就先弹『配对失败 5』」）：
+        // 旧条件写成了 `eid === '' || sessionDeviceId === '' || 相等` —— 前两项**放行**了
+        // 「native 的无设备错误」与「会话设备暂为空」两种情形 ⇒ **任何**与本次配对无关的瞬时错误
+        // （链路换代抖动、另一台设备的 TLS 读失败、无 deviceId 的传输层错误）都会把配对判失败，
+        // 而那时我们其实**正在等对端用户点接受**。
+        // 新规则（按"谁是权威信号"分层，不再一概而论）：
+        //   · 只认**本会话设备**的错误（eid 非空且 === sessionDeviceId）；
+        //   · `connecting`（技术握手阶段）→ 报错即失败 ✓（那里错误确实是结论）；
+        //   · `awaiting`/`prompt`（**等对端人操作**）→ 错误只记日志、**不判失败** ——
+        //     会话终局只由三个明确信号决定：对端拒绝（pair:false）／disconnected／PAIR_TIMEOUT_MS。
         const eid: string = event.deviceId ?? '';
-        if (eid === '' || this.sessionDeviceId === '' || this.sessionDeviceId === eid) {
+        const forThisSession: boolean = eid.length > 0 && this.sessionDeviceId.length > 0
+          && eid === this.sessionDeviceId;
+        if (forThisSession) {
           const code: number = event.errorCode ?? Index.ERR_OTHER;
           if (this.sessionState === 'connecting') {
             this.failConnect(em.length > 0 ? em : `error ${code}`, code);
           } else if (this.sessionState === 'awaiting' || this.sessionState === 'prompt') {
-            this.failPairing(em.length > 0 ? em : `error ${code}`, code);
+            this.log(`pairing session kept alive despite error (waiting for peer user): ${code} ${em}`);
           }
         }
         break;
@@ -2070,20 +2067,10 @@ struct Index {
 
   // 文件名白名单清洗（CodeArts MSG58 §4）：native 的 settle() 只拦 ".."，
   // 这里再去掉路径分隔符/前导点、限长，避免写入意外路径或隐藏文件。
+  // P3-11：本方法与 PayloadHistory.safeFileName 是**同一套规则**（历史上各写了一份，存在漂移风险）。
+  // 现在只做**转发**，规则本体只保留一份（含控制字符过滤），保证"落库名"与"沙箱名"永远一致。
   private sanitizeFileName(raw: string, transferId: number): string {
-    let name: string = raw;
-    name = name.replace(new RegExp('/', 'g'), '_');
-    name = name.replace(new RegExp('\\\\', 'g'), '_');
-    while (name.startsWith('.')) {
-      name = name.substring(1);
-    }
-    if (name.length === 0) {
-      name = `transfer_${transferId}`;
-    }
-    if (name.length > 128) {
-      name = name.substring(0, 128);
-    }
-    return name;
+    return PayloadHistory.safeFileName(raw, transferId);
   }
 
   // 「查看已接收」弹窗的数据与展示辅助（文件页入口触发）

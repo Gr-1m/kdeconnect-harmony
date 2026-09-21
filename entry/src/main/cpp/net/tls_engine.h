@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 #ifndef KDECONNECT_TLS_ENGINE_H
 #define KDECONNECT_TLS_ENGINE_H
 

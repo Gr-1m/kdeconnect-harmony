@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! C ABI 边界：C++ shim（`net/packet_io.cpp`、`net/cert_util.cpp`）经此调用 Rust 实现。
 //!
 //! # 内存约定（R1 任务书 §4.1，选「调用者分配 + 长度重试」）

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 #ifndef KDECONNECT_CERT_UTIL_H
 #define KDECONNECT_CERT_UTIL_H
 

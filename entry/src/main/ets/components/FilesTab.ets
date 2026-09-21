@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import { GlassCard } from './GlassCard';
 import { PayloadRow } from './PayloadRow';

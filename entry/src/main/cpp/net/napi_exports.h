@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 #ifndef KDECONNECT_NAPI_EXPORTS_H
 #define KDECONNECT_NAPI_EXPORTS_H
 

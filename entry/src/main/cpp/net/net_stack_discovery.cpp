@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 #include "net_stack.h"
 #include "event_queue_stat.h"
 #include "net_internal.h"
