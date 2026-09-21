@@ -92,14 +92,11 @@ const MAX_PICK_FILES: number = 9;
 interface SendJob {
   cachePath: string;
   fileName: string;
-  attempt: number;   // 已尝试次数（0 = 首次）；上限见 MAX_SEND_ATTEMPT
 }
 
-// native payload 错误码：握手/接受超时。实测特征（DevEco MSG38）：**紧跟一次成功传输之后立刻启动**的
-// payload 必然命中它（native 侧槽位 teardown 竞态，已上报 Omp）。这类失败值得重试，其它错误不重试。
-const PAYLOAD_ERR_HANDSHAKE_TIMEOUT: number = 110;
-// 单个文件最多重试次数（0 = 不重试）。取 1：够覆盖上面那个确定性竞态，又不会在真故障时无限刷包。
-const MAX_SEND_ATTEMPT: number = 1;
+// 注（CodeArts MSG45 §1 授权清理）：`code=110` 有界重试已按裁定 #15 撤除，它遗留下的
+// `SendJob.attempt` 字段与 `PAYLOAD_ERR_HANDSHAKE_TIMEOUT` / `MAX_SEND_ATTEMPT` 两个常量在此删除 ——
+// 避免"注释引用已不存在的常量"。若将来要恢复重试，依据见 DevEco MSG38（待 native 阶段诊断数据定位）。
 
 @Entry
 @Component
@@ -2488,15 +2485,37 @@ struct Index {
   //     **不用固定间隔 sleep** —— 那是时间猜测，无法保证"不并发抢 payload 通道"。
   //   · 沙箱副本名加 `send_<批次时间戳>_<序号>_` 前缀：避免同批次内**同名文件**互相覆盖，也避免
   //     覆盖上一个仍在流式传输中的文件。副本留在 cacheDir（应用缓存目录，系统可在空间紧张时回收）。
+  // 发送目标设备（**修复用户实测的「换了 win10dev 却发到 cachyos」**；CodeArts MSG45 §1 授权）：
+  // 旧实现写死 `connectedDevices[0]` = 永远第一台连接的设备，与用户选中的设备无关。
+  // 语义：发送卡片属于"当前选中设备"的详情页；文件页的发送也以选中设备为准。
+  // 只有"恰好一台在线"才允许无歧义地自动选它，其余**不猜**、提示用户先选设备。
+  private sendTargetDevice(): DeviceItem | undefined {
+    const id: string = this.selectedDeviceId;
+    if (id.length > 0) {
+      for (const d of this.connectedDevices) {
+        if (d.id === id) {
+          return d;
+        }
+      }
+    }
+    if (this.connectedDevices.length === 1) {
+      return this.connectedDevices[0];
+    }
+    return undefined;
+  }
+
   private async pickAndSendFile(): Promise<void> {
     if (this.connectedDevices.length === 0) {
       this.log('send file: no connected device');
       return;
     }
-    const target: DeviceItem = this.connectedDevices[0];
-    if (this.connectedDevices.length > 1) {
-      this.log(`send file: multiple devices, using ${target.name}`);
+    const target: DeviceItem | undefined = this.sendTargetDevice();
+    if (target === undefined) {
+      this.log(`send file: no unambiguous target (selected='${this.selectedDeviceId}' connected=${this.connectedDevices.length})`);
+      this.toastText(this.resText($r('app.string.toast_send_no_target').id));
+      return;
     }
+    this.log(`send file target: ${target.name} (${target.id.substring(0, 8)})`);
     const hostCtx: Context | undefined = this.getUIContext().getHostContext();
     if (hostCtx === undefined) {
       this.log('send file: no host context');
@@ -2563,7 +2582,7 @@ struct Index {
         }
       }
     }
-    const job: SendJob = { cachePath: cachePath, fileName: fileName, attempt: 0 };
+    const job: SendJob = { cachePath: cachePath, fileName: fileName };
     return job;
   }
 
@@ -2588,7 +2607,7 @@ struct Index {
       if (tid > 0) {
         this.sendBusyId = tid;
         this.sendInflightJob = job;
-        this.log(`send file #${tid}: ${job.fileName} (attempt=${job.attempt + 1}, queued=${this.sendQueue.length})`);
+        this.log(`send file #${tid}: ${job.fileName} (queued=${this.sendQueue.length})`);
         return;
       }
       this.log(`send file: sendPayload returned 0 (${job.fileName})`);
