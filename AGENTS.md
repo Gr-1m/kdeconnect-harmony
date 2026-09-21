@@ -1,4 +1,4 @@
-# KDE-H Connect 仓库级 AGENTS.md
+# KDE Connect 仓库级 AGENTS.md
 
 > **2026-09-12 迁移说明（zcode 落地）**：本文件自旧工作区拷入**仓库根**（新正本，Syncthing 双机可见；旧工作区已降级为只读参考）。阅读下文时按此映射：
 > - 「主开发对象 `kdeconnect-harmony-PreDev/`」→ **现在就是本仓库根**（重建后的工程直接位于仓库根：`entry/`、`AppScope/`、`tools/`…）；
@@ -12,7 +12,7 @@
 
 > 项目位置：本机 CachyOS 工作区（**2026-09-12 起为项目正本**）。此前曾短暂放在 libvirt 共享目录（Win10 VM 经 virtiofs 可见，内含 DevEco 专用副本）——**该位置已不再是项目位置，副本已于 2026-09-12 按用户决定整体删除**。QEMU 模拟器镜像/日志一直在宿主工作区。
 
-主开发对象 `kdeconnect-harmony-PreDev/`（OpenHarmony API 26 / Stage 模型 / ArkTS，bundleName `org.kde.kdeconnect.harmony`），其余子项目是协议规范与参考实现。本根目录**不是** git 仓库；`kdeconnect-meta` / `kdeconnect-android` / `kdeconnect-kde` 是独立 git 仓库（上游参考代码，通常只读）；**`kdeconnect-harmony-PreDev` 已是 git 仓库**（2026-09-12 初始化，分支 `master`），**中心仓库为 gitcode <https://gitcode.com/Gr1m/kdeconnect-harmony>**（**已同步：`dev/zcodeinit` 与 `main` 均已 push，2026-09-15 起**，见「双机协作」）。**本文件与仓库内 `kdeconnect-harmony-PreDev/AGENTS.md` 是同一份**（仓库版供 Win10 侧 agent 加载），改任一份必须同步另一份（提交需用户授权）。
+主开发对象 `kdeconnect-harmony-PreDev/`（OpenHarmony API 26 / Stage 模型 / ArkTS，bundleName `org.kde.kdeconnect`（2026-09-21 由 `org.kde.kdeconnect.harmony` 改名）），其余子项目是协议规范与参考实现。本根目录**不是** git 仓库；`kdeconnect-meta` / `kdeconnect-android` / `kdeconnect-kde` 是独立 git 仓库（上游参考代码，通常只读）；**`kdeconnect-harmony-PreDev` 已是 git 仓库**（2026-09-12 初始化，分支 `master`），**中心仓库为 gitcode <https://gitcode.com/Gr1m/kdeconnect-harmony>**（**已同步：`dev/zcodeinit` 与 `main` 均已 push，2026-09-15 起**，见「双机协作」）。**本文件与仓库内 `kdeconnect-harmony-PreDev/AGENTS.md` 是同一份**（仓库版供 Win10 侧 agent 加载），改任一份必须同步另一份（提交需用户授权）。
 
 ## 子项目与命令
 

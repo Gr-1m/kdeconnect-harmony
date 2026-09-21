@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# REUSE 合规校验：每个文件都必须能被解析出 SPDX 许可与版权信息。
+# 本地等价命令：pipx run reuse lint   （或 docker run --rm -v "$PWD:/data" fsfe/reuse:latest lint）
+name: reuse
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: REUSE lint
+        uses: fsfe/reuse-action@v5

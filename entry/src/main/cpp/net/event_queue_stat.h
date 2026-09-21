@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 #ifndef KDECONNECT_EVENT_QUEUE_STAT_H
 #define KDECONNECT_EVENT_QUEUE_STAT_H
 

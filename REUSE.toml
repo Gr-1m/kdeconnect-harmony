@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
+# SPDX-License-Identifier: CC0-1.0
+#
+# REUSE 配置（https://reuse.software/）。项目主许可 GPL-2.0-or-later；
+# 源文件优先用**文件头**的 SPDX 标识（cpp/**、rust/**、ets/** 等），
+# 本文件为其余文件（配置/资源/文档/构建脚本/vendored 代码）提供标注。
+version = 1
+
+# ── vendored 第三方代码（各自 MIT，见 LICENSES/MIT.txt）──
+[[annotations]]
+path = ["entry/src/main/cpp/bearssl/**", "entry/src/main/cpp/json/**"]
+precedence = "override"
+SPDX-FileCopyrightText = "2016 Thomas Pornin <pornin@bolet.org> (BearSSL) / 2009-2017 Dave Gamble and cJSON contributors (cJSON)"
+SPDX-License-Identifier = "MIT"
+
+# ── 其余全部文件：项目许可（GPL-2.0-or-later）──
+# 说明：带文件头 SPDX 的源文件由文件头决定，不受此条影响（REUSE 规范：文件头优先）。
+[[annotations]]
+path = ["**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 KDE Connect HarmonyOS contributors"
+SPDX-License-Identifier = "GPL-2.0-or-later"
+
+# ── 二进制资源（REUSE 要求显式声明 binary = true）──
+[[annotations]]
+path = ["**/*.png", "**/*.jpg", "**/*.jpeg", "**/*.webp", "**/*.gif", "**/*.ico", "**/*.ttf", "**/*.so", "**/*.a", "**/*.zip"]
+precedence = "aggregate"
+binary = true
+SPDX-FileCopyrightText = "2026 KDE Connect HarmonyOS contributors"
+SPDX-License-Identifier = "GPL-2.0-or-later"
