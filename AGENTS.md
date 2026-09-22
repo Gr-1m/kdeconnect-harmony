@@ -51,7 +51,7 @@ packet 以换行分隔的 JSON 字符串发送：`{"id", "type", "body", "versio
 
 ## 双机协作（gitcode 中心仓库 + 本机开发 / Win10 DevEco 验证，2026-09-12 起）
 
-- **中心仓库**：<https://gitcode.com/Gr1m/kdeconnect-harmony>（GPL-2.0-or-later，2026-09-19 由 GPL-3.0 变更）。**已同步（2026-09-15）**：`main` 与本机工程**同根**（初始提交 `8d6c639`），本机开发分支 `dev/zcodeinit` 已 push（首个 push 2026-09-15，`71c7b46..3c34001`），`main` 已推进到与 `dev/zcodeinit` 一致。开发仍在 `dev/zcodeinit`，**每次 push 需用户/CodeArts 明确授权**（CodeArts 掌握时机）。仓库范围**只有 `kdeconnect-harmony-PreDev/` 工程**（meta/android/kde 参考仓库与根 `docs/` 不入仓库）。
+- **中心仓库**：<https://gitcode.com/Gr1m/kdeconnect-harmony>（GPL-2.0-or-later，2026-09-19 由 GPL-3.0 变更）。**版权署名（2026-09-22 用户指令）**：**暂留占位** `SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors`（官方产品名 + 移植限定词 + 集体主体，**不落个人**）；**定稿前冻结、不来回改**；正式筹备 KDE 孵化 checklist 时再改为真实作者署名。**已同步（2026-09-15）**：`main` 与本机工程**同根**（初始提交 `8d6c639`），本机开发分支 `dev/zcodeinit` 已 push（首个 push 2026-09-15，`71c7b46..3c34001`），`main` 已推进到与 `dev/zcodeinit` 一致。开发仍在 `dev/zcodeinit`，**每次 push 需用户/CodeArts 明确授权**（CodeArts 掌握时机）。仓库范围**只有 `kdeconnect-harmony-PreDev/` 工程**（meta/android/kde 参考仓库与根 `docs/` 不入仓库）。
 - **GitHub 镜像（2026-09-15 建）**：<https://github.com/Gr-1m/kdeconnect-harmony>（GPL-2.0-or-later，2026-09-19 由 GPL-3.0 变更）。本机已配置第二远端 **`github`**（SSH；`~/.ssh/config` 需有 `github.com` → `IdentityFile ~/.ssh/github_ed25519`，否则报 `Permission denied (publickey)` —— 2026-09-15 踩过）。该仓库初始只是 `LICENSE` 空壳、与本机历史**无关**，已用 gitcode 侧历史**强推覆盖**（`git push --force github main:main`，`dev/zcodeinit` 一并新推；两分支与 gitcode 指向同一提交）。日常 push 仍走授权；两个远端内容应保持一致。
 - **本机 CachyOS** 为开发正本；**Win10**（LTSC 21H1，DevEco Studio 26.0.0.821）用 DevEco 构建、跑模拟器做验证。**同一文件不要两台机器同时改**。
 - 同步约定：改前先 pull、提交后 push；换行符：Win10 设 `core.autocrlf true`、本机设 `core.autocrlf input`，避免 CRLF diff 噪音。

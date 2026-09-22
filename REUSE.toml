@@ -1,6 +1,15 @@
 # SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 # SPDX-License-Identifier: CC0-1.0
 #
+#
+# ── 版权署名口径（2026-09-22，用户指令）──
+#   现状：**暂留占位**（不落个人）—— `SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors`
+#   理由：① 官方产品名 "KDE Connect"（旧占位名 "KDE-H Connect" 已废弃，不得写入版权声明）；
+#         ② 保留移植限定词 "HarmonyOS"（与仓名一致，不暗示 KDE 官方署名）；
+#         ③ 主体用集体词 "contributors"：本项目跨两机、多人+多 agent，**暂不嵌入个人姓名/邮箱**。
+#   **定稿时机**：等正式筹备 KDE 孵化 checklist 时（用户已提供联系邮箱，届时一并改为真实作者署名，
+#   上游惯例示例：`SPDX-FileCopyrightText: 2019 Nicolas Fella <nicolas.fella@gmx.de>`）。
+#   **冻结约定**：定稿前**不来回改**该字符串（避免两车道反复改动同一批文件）。
 # REUSE 配置（https://reuse.software/）。项目主许可 GPL-2.0-or-later；
 # 源文件优先用**文件头**的 SPDX 标识（cpp/**、rust/**、ets/** 等），
 # 本文件为其余文件（配置/资源/文档/构建脚本/vendored 代码）提供标注。
