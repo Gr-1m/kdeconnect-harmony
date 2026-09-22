@@ -19,9 +19,9 @@
 - `kdeconnect-meta/` — 协议规范（无应用代码）。`schemas/` 下每个 JSON Schema 定义一种 NetworkPacket 的 `body`；`protocol.md` 由 `schemas/schema2md.py` 生成。**改任何 schema 后必须在 `kdeconnect-meta/` 内 `make check` 确认同步**，重新生成用 `make`。
 - `kdeconnect-android/` — Android 参考（Kotlin/Java，minSdk 23 / targetSdk 37，CI 用 JDK 21）。构建+测试：`./gradlew assembleDebug lintDebug testDebugUnitTest`。
 - `kdeconnect-kde/` — 桌面参考（C++20 / Qt 6.7+ / KF 6.0+ / CMake）。上游对 AI 贡献有硬政策（不接受 AI 主导 MR、禁 unicode、不代写 MR 描述、不擅自 commit/push），改动前必须读其 `AGENTS.md` 与 `CONTRIBUTING.md`。
-- `kdeconnect-harmony-PreDev/` — 鸿蒙实现。构建 `hvigorw assembleHap`（本机 `hvigorw` 已在 PATH：`/opt/command-line-tools/bin`，**无本地 wrapper，不要 `./hvigorw`**）；依赖已装则跳过 `ohpm install`。本终端有网且项目目录可写，可在本终端构建；**安装到模拟器（hdc）建议在用户终端跑**。环境搭建与踩坑见该目录 `SETUP_NOTES.md`，模拟器调试见**工作区根目录** `EMULATOR_NOTES.md`。
+- `kdeconnect-harmony-PreDev/` — 鸿蒙实现。构建 `hvigorw assembleHap`（本机 `hvigorw` 已在 PATH：`/opt/command-line-tools/bin`，**无本地 wrapper，不要 `./hvigorw`**）；依赖已装则跳过 `ohpm install`。本终端有网且项目目录可写，可在本终端构建；**安装到模拟器（hdc）建议在用户终端跑**。环境搭建与踩坑的历史详版见 `devdocs/SETUP_NOTES.legacy.md`（2026-09-22 从旧工作区导入，**可能过时**），现行要旨见下文「鸿蒙构建要点」；模拟器调试见**工作区根目录** `EMULATOR_NOTES.md`。
 
-## 鸿蒙构建要点（勿回退，详见 SETUP_NOTES.md）
+## 鸿蒙构建要点（勿回退；**本节即权威**，历史详版见 `devdocs/SETUP_NOTES.legacy.md`）
 
 - `@ohos/hvigor*` 不在任何公开 registry，已软链到 `oh_modules/@ohos/`，**勿删、勿在 oh-package.json5 声明**。
 - `modelVersion` 必须 `"6.0.0"`；`compileSdkVersion` 等必须字符串 `"26.0.0"`；`deviceTypes` 用 `["default"]`（API 26 不支持 `"phone"`）。
