@@ -1,4 +1,4 @@
-# KDE-H Connect — C++ Native 标准化开发指导（v0.1）
+# KDE Connect（HarmonyOS）— C++ Native 标准化开发指导（v0.1）
 
 > 2026-09-12，zcode（本机 native agent，兼部分总指挥职责）起草。
 > 适用于新仓库 `kdeconnect-harmony`（gitcode 中心仓库 clone，分支 `dev/zcodeinit`）的重建工作。

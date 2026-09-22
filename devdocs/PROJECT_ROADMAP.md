@@ -121,6 +121,45 @@
 
 ---
 
+### 方向 F：双平台支持（OpenHarmony + HarmonyOS NEXT）
+
+**目标**：同一工程同时支持开源鸿蒙（OpenHarmony）和鸿蒙原生（HarmonyOS NEXT），各自上架对应应用商店
+
+**时机**：0.9 → 1.0 版本阶段（所有功能方向 A-E 完成后）
+
+**核心策略**：能力分层适配
+
+| 层 | 内容 | 说明 |
+|---|---|---|
+| 公共层 | 基础功能用 OpenHarmony 公共 API 实现 | 两平台都能跑 |
+| 增强层 | 鸿蒙7专属 API（沉浸光感等）通过运行时探测条件调用 | NEXT 上启用，OpenHarmony 上降级 |
+| 构建层 | DevEco Studio 分别构建两个目标产物 | 各自上架对应商店 |
+
+**关键适配点**：
+
+| API/特性 | HarmonyOS NEXT | OpenHarmony | 适配方式 |
+|---|---|---|---|
+| `@ohos.arkui.uiMaterial`（沉浸光感） | ✅ 可用 | ❌ 不存在 | `canIUse()` 探测 → 降级 `backgroundBlurStyle`（已有先例） |
+| 华为闭源系统组件 | ✅ 可用 | ❌ 不存在 | 条件编译 / 运行时探测 |
+| AppGallery 上架 | ✅ | ❌（走开放原子渠道） | 分别构建签名 |
+| 商用 SDK codelinter | ✅ | ❌（类型门禁） | 已知限制，lint 以编译期检查为准 |
+
+**上架渠道**：
+
+| 平台 | 渠道 |
+|---|---|
+| HarmonyOS NEXT | 华为 AppGallery |
+| OpenHarmony | 开放原子开源基金会分发渠道 |
+
+**前置条件**：
+- 方向 A-E 全部完成（功能稳定后再做平台适配）
+- 确认 OpenHarmony 公共 API 覆盖率（哪些 API 在 OpenHarmony 中缺失或行为不同）
+- 签名/构建流水线支持双产物输出
+
+**负责方**：DevEco（构建适配）+ CodeArts（API 兼容性审查）+ Omp（native 层兼容性确认）
+
+---
+
 ## 推荐排期
 
 | 阶段 | 内容 | 前置 |
@@ -129,6 +168,7 @@
 | **阶段 2** | 方向 A R1 拆分步骤 3-4（PairSession + PluginEventBus） | 阶段1验证通过 |
 | **阶段 3** | 方向 A R1 拆分步骤 5-8（MprisPanel + PayloadManager + Dialogs + Index 收尾） | 阶段2 |
 | **阶段 4** | 方向 B 远程输入 + 方向 C 通知读取 | 阶段3（UI 组件模式已稳定） |
+| **阶段 5**（0.9→1.0） | 方向 F 双平台支持（OpenHarmony + HarmonyOS NEXT） | 阶段4完成、功能稳定 |
 
 **并行**：方向 E 回归验证贯穿所有阶段；方向 D P3-5/6 随阶段 2-3 做。
 

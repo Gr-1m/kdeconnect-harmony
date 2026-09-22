@@ -2,15 +2,15 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "KDE-H Connect"
+      "value": "KDE Connect"
     },
     {
       "name": "EntryAbility_desc",
-      "value": "KDE-H Connect"
+      "value": "KDE Connect"
     },
     {
       "name": "EntryAbility_label",
-      "value": "KDE-H Connect"
+      "value": "KDE Connect"
     },
     {
       "name": "status_running",

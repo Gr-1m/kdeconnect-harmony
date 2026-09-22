@@ -768,6 +768,9 @@ struct Index {
     // 不会缺数据：打开面板时 svPrepare() 会主动 requestSinks()，该响应带着自己的 deviceId 回来。
     // （请求-响应同源：插件是"每设备一份实例"，响应只会从被请求的那台设备回来 —— Omp MSG27 §3 提醒点。）
     // 旧实现是 `"<vol>|<muted>"` 字符串打包 + 页面侧 split 解包，与批1 的类型化方向相反，已删除。
+    // P3-3（语义澄清，**零行为变更**）：`requestSinks()` 的**响应**与插件主动推送走的是**同一条事件通道**
+    // （都是 kind='systemvolume.sinks'，由 SystemVolumePlugin.push() 发出）⇒ 下面的单槽过滤对"响应"同样生效，
+    // 不存在"请求-响应串台"（插件本身是**每设备一份实例**，响应只会从被请求的那台设备回来）。
     if (kind === 'systemvolume.sinks') {
       if (deviceId !== this.mprisDeviceId) {
         return;

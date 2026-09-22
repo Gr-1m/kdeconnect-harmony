@@ -271,7 +271,7 @@ export struct SettingsTab {
         // 本机信息
         GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
           Column({ space: 12 }) {
-            this.infoRow($r('app.string.settings_app_name'), 'KDE-H Connect', false)
+            this.infoRow($r('app.string.settings_app_name'), 'KDE Connect', false)
             this.infoRow($r('app.string.settings_app_version'), this.appVersion(), false)
             this.infoRow($r('app.string.settings_device_id'), this.deviceId, true)
             this.infoRow($r('app.string.settings_protocol_version'), '8', false)

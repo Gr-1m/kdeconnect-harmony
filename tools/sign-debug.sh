@@ -27,7 +27,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SDK_LIB=/opt/ohos-sdk/26/toolchains/lib
 TOOL="$SDK_LIB/hap-sign-tool.jar"
 SIGN_DIR="$PROJECT_ROOT/sign"
-BUNDLE_NAME="org.kde.kdeconnect.harmony"
+BUNDLE_NAME="org.kde.kdeconnect"
 MAIN_ABILITY="EntryAbility"
 API_VERSION=26
 KS_PWD=123456
@@ -77,6 +77,11 @@ t["version-name"], t["version-code"] = vname, int(vcode)
 t["validity"] = {"not-before": now - 86400, "not-after": now + 730 * 86400}
 t["bundle-info"]["bundle-name"] = bundle
 t["debug-info"]["device-ids"] = [udid]
+# WRITE_IMAGEVIDEO 等受限开放权限是 system_core 级 ACL：debug 安装必须在
+# profile 的 allowed-acls 里声明，否则 install 报 9568289（grant request
+# permissions failed）。ACL 声明只对 debug profile 生效，与发布签名无涉。
+t["acls"] = {"allowed-acls": ["ohos.permission.WRITE_IMAGEVIDEO",
+                              "ohos.permission.WRITE_AUDIO"]}
 json.dump(t, open("profile-debug.json", "w"), indent=4)
 EOF
   java -jar "$TOOL" sign-profile -mode localSign \
