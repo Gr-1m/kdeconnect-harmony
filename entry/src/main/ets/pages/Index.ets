@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 import native from 'libkdeconnect_napi.so';
 import { NetConfig, CertPair, NetEvent } from 'libkdeconnect_napi.so';
@@ -1169,7 +1170,8 @@ struct Index {
       this.log('getPeerCertificate unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
     }
     if (exists) {
-      // 重新配对：把该条目重置为「已配对」（需求 3：解除配对时条目保留，重新配对成功后复用）
+      // 重新配对：条目保留、只刷新名称/证书。**paired 的置位不再内联写**（原来是 `paired: true`），
+      // 统一交给下面的 `setPairedFlag()` —— MSG50 §3 收敛：配对态有且只有一个写者。
       this.trustedDevices = this.trustedDevices.map((t: TrustedDevice) => {
         if (t.id !== deviceId) {
           return t;
@@ -1178,8 +1180,8 @@ struct Index {
           id: t.id,
           name: name.length > 0 ? name : t.name,
           certPem: peerCert.length > 0 ? peerCert : t.certPem,
-          pairedAt: Date.now(),
-          paired: true
+          pairedAt: t.pairedAt,
+          paired: t.paired
         };
         return next;
       });
@@ -1188,15 +1190,16 @@ struct Index {
         id: deviceId,
         name: name,
         certPem: peerCert,
-        pairedAt: Date.now(),
-        paired: true
+        pairedAt: 0,
+        paired: false
       };
       this.trustedDevices = this.trustedDevices.concat([entry]);
     }
-    this.rememberedDevices = this.trustedDevices.map((t: TrustedDevice) => {
-      const r: RememberedDevice = { id: t.id, name: t.name, paired: t.paired };
-      return r;
-    });
+    // ★ 单一写者：置「已配对」——由 setPairedFlag 负责 trusted↔remembered 同步 + 持久化 + 状态日志
+    //（新条目会被它补上 pairedAt；已是已配对则不重复刷时间戳，语义更稳）。
+    this.setPairedFlag(deviceId, true);
+    // 兜底持久化：setPairedFlag 在"本来就是已配对"时会提前返回，而上面名称/证书的刷新仍需落盘
+    //（persistTrust 幂等，故这里保留这一次调用是本方法唯一的持久化点）。
     this.persistTrust();
     this.syncSelectedDevice();
     // WP-2 钉扎：登记对端证书，后续连接强校验（证书不符 → error EACCES + 断链）
