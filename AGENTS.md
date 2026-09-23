@@ -77,3 +77,9 @@ QEMU 手机镜像跑在宿主（非真机、非 IDE）：镜像/日志放 `~/Wor
 ## 维护规则
 
 当项目结构、构建/测试命令、架构边界、开发约定，或本文件记录的其他事实发生变化时，必须在同一次改动中同步更新本文件。
+
+## KDE 孵化跟踪（2026-09-22 起）
+
+- 用户已与 KDE 官方社区正式沟通，命名采用官方品牌（显示名 KDE Connect、bundleName `org.kde.kdeconnect`）；
+- **孵化流程的推进与状态跟踪由 Atomcode 负责**：进度记录见 `devdocs/INCUBATION_STATUS.md`（含 checklist 勾选状态），流程要点见思源笔记 `/Dev/开源社区/KDE 项目孵化`；
+- 孵化关键里程碑（Invent 建仓/Incubation Request issue/担保人/Review/转正）发生变化时，必须同步更新 `devdocs/INCUBATION_STATUS.md` 并发 MSG 通知全员。
