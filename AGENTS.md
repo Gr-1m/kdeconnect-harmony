@@ -63,6 +63,16 @@ packet 以换行分隔的 JSON 字符串发送：`{"id", "type", "body", "versio
 
 ## 模拟器调试（ohemu，本机兜底路线）
 
+> **2026-09-23 实测（重要）**：工程现为 **`runtimeOS: "HarmonyOS"`**（`build-profile.json5` 两处），而 ohemu 是
+> **OpenHarmony** 镜像 ⇒ `Index.ets` 顶部**静态导入** `@kit.UIDesignKit`（HDS：`HdsTabs`/`hdsMaterial`）会让
+> **Index 模块加载失败**（hilog: `SyntaxError: '@hms:hds.hdsBaseComponent' does not provide an export name 'HdsTabsController'`），
+> 表现为**白屏**（app 进程在、native 不初始化）。**静态导入无法在运行期 catch** ⇒ 要在这台模拟器上跑 UI，
+> 必须先去掉/降级 HDS 依赖（实测：临时把 `HdsTabs` 换成标准 `Tabs` + 去掉 `barFloatingStyle` 后，
+> app **安装/启动/UI/原生栈全部正常**：`tcp listening` / `udp discovery init` / `native start ok` / `KDC-NETLOOP` 遥测可见）。
+> 另：**改名后签名无需重做材料** —— `tools/sign-debug.sh`（从 SDK 现生成 profile，含 debug `allowed-acls`）
+> 对 `org.kde.kdeconnect` 一次通过：`install bundle successfully.`；随后 `tools/launch-app.sh` 启动成功。
+> （本机 OpenHarmony 目标构建**不可行**：商用 CLT 拒绝该 SDK 布局 —— `The SDK management mode has changed.`）
+
 QEMU 手机镜像跑在宿主（非真机、非 IDE）：镜像/日志放 `~/WorkSpace2/`（勿散落在 `~` 顶层）。启动必须 `setsid nohup … < /dev/null &`（普通 `nohup &` 会被工具会话回收）；连接 `hdc tconn 127.0.0.1:5555` 后 `hdc list targets` 确认；日志 `~/WorkSpace2/ohemu.log`。全流程（含 Win10 VM 事故教训——根目录 `vm-HarmonyDev.xml` 即该 VM 的 libvirt 配置、`-phone` 与 `-2in1` 镜像差异）见工作区根目录 `EMULATOR_NOTES.md`。
 
 ## docs/ 参考资料（他机整理，引用需谨慎）
