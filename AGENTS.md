@@ -69,6 +69,12 @@ packet 以换行分隔的 JSON 字符串发送：`{"id", "type", "body", "versio
 > 表现为**白屏**（app 进程在、native 不初始化）。**静态导入无法在运行期 catch** ⇒ 要在这台模拟器上跑 UI，
 > 必须先去掉/降级 HDS 依赖（实测：临时把 `HdsTabs` 换成标准 `Tabs` + 去掉 `barFloatingStyle` 后，
 > app **安装/启动/UI/原生栈全部正常**：`tcp listening` / `udp discovery init` / `native start ok` / `KDC-NETLOOP` 遥测可见）。
+> **「HDS 双变体」不可用 target/sourceRoots 实现（2026-09-23 实证）**：hvigor 模块级 `targets[].source.sourceRoots`
+> 确实存在（schema 描述为"Stage 模型下指定 Ability 的**扩展**源代码目录"），但实测**追加语义、不能覆盖同名文件**
+> （在变体根放一个故意语法错的同名 `common/LogStore.ets`，用 `-p module=entry@ohosvariant` 构建**仍然成功** ⇒ 变体根未被采纳）。
+> => 真正的「HDS 在则用 / 不在则退」只有两条路：① **整棵 `ets/` 复制**成变体树（维护成本高，Index 每次改动都要同步）；
+> ② **hvigor 构建任务在 pre-build 做文件替换**（把 `tools/verify-on-ohemu.sh` 的替换自动化进构建，含构建系统风险）。
+> 二者都建议并入「方向 F 双平台支持」评估；当前以 `tools/verify-on-ohemu.sh` 作为可用替代（零构建风险，主线保留 HDS 观感）。
 > **一条命令在 ohemu 上跑 UI**：`tools/verify-on-ohemu.sh`（构建期降级 HDS + 构建/签名/安装/启动/截图/日志取证；`--revert` 还原；**降级态不可提交**——主线保留 HDS 观感）。
 > 另：**改名后签名无需重做材料** —— `tools/sign-debug.sh`（从 SDK 现生成 profile，含 debug `allowed-acls`）
 > 对 `org.kde.kdeconnect` 一次通过：`install bundle successfully.`；随后 `tools/launch-app.sh` 启动成功。
