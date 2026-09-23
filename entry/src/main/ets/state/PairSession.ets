@@ -43,6 +43,12 @@ export class PairSession {
   // 我方已发出配对请求、等待对端回请的设备（原 Index.requestedPairIds）。
   // 用于识别"双方同时发起"的 race：命中即回一个**不带 timestamp** 的接受帧。
   requestedPeers: string[] = [];
+  /**
+   * 本次会话固定时间戳（弹窗打开时确定）。
+   * **不变量**：弹窗展示的验证码与随后发出的请求帧必须用同一时间戳，否则对端按收到的 ts 算出的码不一致（v8 把 ts 并入摘要）。
+   * 0 表示「无弹窗」路径（如发现页直接请求）⇒ 发送时用当前时刻。
+   */
+  timestamp: number = 0;
 
   // ---------- 注入的副作用（状态机不碰 I/O）----------
   /** 发配对帧：withTimestamp=true 表示"发起请求"，false 表示"接受"（协议要求接受帧不带 timestamp） */
@@ -57,6 +63,14 @@ export class PairSession {
   };
   /** 用户可见提示（kind 供页面映射文案；code 为失败码；isError 决定样式）
    *  签名与 Index 既有的 `showNotice(kind, detail, isError, code)` 对齐 ⇒ 接线时可直接转发。 */
+  /**
+   * 页面提示出口。**kind 全集（勿拼错）**：
+   *  `connecting`     连接中（detail=目标地址）
+   *  `connected`      连接成功（detail=设备名）——由页面在收到 connected 事件时发（本类不重复发）
+   *  `connectFailed`  连接阶段失败（detail=错误码）
+   *  `pairFailed`     配对阶段失败（detail=错误码）
+   *  `paired`         配对成功
+   */
   onNotice: (kind: string, detail: string, isError: boolean, code: number) => void = () => {
   };
   /** 页面日志（保持与既有 KDC 日志同一出口） */
@@ -77,6 +91,8 @@ export class PairSession {
       return;
     }
     this.clearTimer();
+    // P3(AtomCode)：清掉该设备的旧挂起请求，避免后续对端请求被误判成「双方同时发起」(race) 假阳性。
+    this.requestedPeers = this.requestedPeers.filter((x: string) => x !== id);
     this.deviceId = id;
     // 与旧实现对齐：sessionName（用于提示文案，name 空则退化为 host:port 或"端口探测中"）
     const portText: string = port > 0 ? `${port}` : '端口探测中';
@@ -109,9 +125,8 @@ export class PairSession {
         this.requestedPeers.push(id);
       }
       this.deviceId = id;
-      if (this.stage === 'idle') {
-        this.stage = 'awaiting';
-      }
+      // 无条件进入 awaiting：调用方可能是 idle（发现页/详情页直接请求），也可能是 prompt（弹窗确认后发请求）。
+      this.stage = 'awaiting';
       this.peerRequested = false;
       this.arm(PAIR_TIMEOUT_MS, 'pair not confirmed', 'pair', ERR_TIMEOUT);
     }
@@ -119,27 +134,55 @@ export class PairSession {
     return ok;
   }
 
-  /** 用户在弹窗确认验证码 → 回接受帧（**不带 timestamp**：带了会被对端当成又一次请求） */
+  /**
+   * 用户在弹窗确认（两侧共用入口）：
+   *  - **对端发起**（peerRequested）→ 回接受帧 `{pair:true}`（**不带 timestamp**：带了会被对端当成又一次请求）；
+   *  - **本侧发起** → 发带 timestamp 的请求帧并进入 awaiting（timestamp 用弹窗打开时固定的那个，保证验证码一致）。
+   */
   confirm(): void {
     const id: string = this.deviceId;
     if (id.length === 0) {
       return;
     }
-    const ok: boolean = this.sendPair(id, true, false);
-    if (ok) {
-      this.succeed();
-    } else {
-      this.fail('accept send failed', ERR_SEND);
+    if (this.peerRequested) {
+      const ok: boolean = this.sendPair(id, true, false);
+      if (ok) {
+        this.succeed();
+      } else {
+        this.fail('accept send failed', ERR_SEND);
+      }
+      return;
     }
+    this.requestPair(id, this.timestamp);
   }
 
   /** 用户取消/拒绝 */
   cancel(): void {
     const id: string = this.deviceId;
-    if (id.length > 0) {
+    // 只在对端发起时回拒绝帧：本侧发起时用户只是收起弹窗，此刻**尚未发出任何请求帧**，
+    // 若也回 {pair:false} 会让对端凭空收到一次「被拒绝」（与拆分前行为不一致）。
+    if (id.length > 0 && this.peerRequested) {
       this.sendPair(id, false, false);
     }
     this.reset();
+  }
+
+  /**
+   * 打开配对确认弹窗（**本侧发起**的「行内配对」按钮用；对端发起走 onPeerPairRequest）。
+   * 固定本次会话的时间戳与验证码：`code` 由页面计算后传入（字段注释即如此约定），
+   * 之后 confirm() 发出的请求帧用**同一** timestamp，保证两端显示的验证码一致。
+   */
+  openPrompt(id: string, name: string, timestamp: number, code: string): void {
+    this.clearTimer();
+    this.deviceId = id;
+    if (name.length > 0) {
+      this.peerName = name;
+    }
+    this.peerRequested = false;
+    this.timestamp = timestamp;
+    this.code = code;
+    this.stage = 'prompt';
+    this.onLog(`pair confirm dialog opened for ${id} ts=${timestamp}`);
   }
 
   // ---------- 事件入口（页面 handleEvent 转发）----------
@@ -239,12 +282,19 @@ export class PairSession {
   }
 
   private succeed(): void {
+    // 幂等：接受帧路径上 router.acceptPair 已经回调过 onPeerPaired ⇒ 这里会被再次调用，不能重复触发 onPaired（否则重复提示）。
+    if (this.stage === 'idle') {
+      return;
+    }
     const id: string = this.deviceId;
     this.clearTimer();
     this.stage = 'idle';
     this.code = '';
     this.peerRequested = false;
-    this.requestedPeers = this.requestedPeers.filter((x: string) => x !== id);
+    this.timestamp = 0;
+    if (id.length > 0) {
+      this.requestedPeers = this.requestedPeers.filter((x: string) => x !== id);
+    }
     this.onLog(`pairing succeeded with ${id}`);
     if (id.length > 0) {
       this.onPaired(id);
@@ -258,6 +308,7 @@ export class PairSession {
     this.stage = 'idle';
     this.code = '';
     this.peerRequested = false;
+    this.timestamp = 0;
     if (id.length > 0) {
       this.requestedPeers = this.requestedPeers.filter((x: string) => x !== id);
     }
@@ -279,5 +330,6 @@ export class PairSession {
     this.deviceId = '';
     this.code = '';
     this.peerRequested = false;
+    this.timestamp = 0;
   }
 }
