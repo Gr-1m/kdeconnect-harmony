@@ -2,7 +2,7 @@
 
 > **2026-09-12 迁移说明（zcode 落地）**：本文件自旧工作区拷入**仓库根**（新正本，Syncthing 双机可见；旧工作区已降级为只读参考）。阅读下文时按此映射：
 > - 「主开发对象 `kdeconnect-harmony-PreDev/`」→ **现在就是本仓库根**（重建后的工程直接位于仓库根：`entry/`、`AppScope/`、`tools/`…）；
-> - 「中心仓库 gitcode 尚未同步 / 不 add remote」→ 本仓库已 clone 自 gitcode（remote origin 已配置，分支 `dev/zcodeinit`），**push 仍需用户明确授权**（CodeArts 掌握 commit/push 时机）；
+> - 「中心仓库 gitcode 尚未同步 / 不 add remote」→ 本仓库已 clone 自 gitcode（remote origin 已配置，分支 `dev/zcodeinit`），**提交/推送纪律（2026-09-23 用户指令更新）**：主线 `commit` 由 Omp 自主执行、**不再需要总指挥（CodeArts）授权**；`push` 由 Omp 在「合并/同步」时执行（保持两远端与 Win10 侧同步）；
 > - 「两机协作走共享目录/DevEco 副本」→ **已废弃**，改为 Syncthing 实时同步（机器本地产物以两侧 `.stignore` 排除）；
 > - 参考实现（`kdeconnect-meta/` 等）仍在旧工作区，Win10 不可达——需要查 schema/上游源码时请 Linux 侧 agent（zcode / CodeArts）代查。
 > C++ 侧规范见 `devdocs/CPP_GUIDE.md`；ArkTS 侧见 `devdocs/ARKTS_GUIDE.md`；工作流见 `devdocs/PROCESS.md`。
@@ -51,7 +51,7 @@ packet 以换行分隔的 JSON 字符串发送：`{"id", "type", "body", "versio
 
 ## 双机协作（gitcode 中心仓库 + 本机开发 / Win10 DevEco 验证，2026-09-12 起）
 
-- **中心仓库**：<https://gitcode.com/Gr1m/kdeconnect-harmony>（GPL-2.0-or-later，2026-09-19 由 GPL-3.0 变更）。**版权署名（2026-09-22 用户指令）**：**暂留占位** `SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors`（官方产品名 + 移植限定词 + 集体主体，**不落个人**）；**定稿前冻结、不来回改**；正式筹备 KDE 孵化 checklist 时再改为真实作者署名。**已同步（2026-09-15）**：`main` 与本机工程**同根**（初始提交 `8d6c639`），本机开发分支 `dev/zcodeinit` 已 push（首个 push 2026-09-15，`71c7b46..3c34001`），`main` 已推进到与 `dev/zcodeinit` 一致。开发仍在 `dev/zcodeinit`，**每次 push 需用户/CodeArts 明确授权**（CodeArts 掌握时机）。仓库范围**只有 `kdeconnect-harmony-PreDev/` 工程**（meta/android/kde 参考仓库与根 `docs/` 不入仓库）。
+- **中心仓库**：<https://gitcode.com/Gr1m/kdeconnect-harmony>（GPL-2.0-or-later，2026-09-19 由 GPL-3.0 变更）。**版权署名（2026-09-22 用户指令）**：**暂留占位** `SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors`（官方产品名 + 移植限定词 + 集体主体，**不落个人**）；**定稿前冻结、不来回改**；正式筹备 KDE 孵化 checklist 时再改为真实作者署名。**已同步（2026-09-15）**：`main` 与本机工程**同根**（初始提交 `8d6c639`），本机开发分支 `dev/zcodeinit` 已 push（首个 push 2026-09-15，`71c7b46..3c34001`），`main` 已推进到与 `dev/zcodeinit` 一致。开发仍在 `dev/zcodeinit`，**提交/推送纪律（2026-09-23 用户指令更新）**：`commit` 自主、无需 CodeArts 授权；`push` 由 Omp 在合并/同步时执行。**仍需先确认**的动作：回退/删除他人改动、跨车道合并、改他人在途文件。仓库范围**只有 `kdeconnect-harmony-PreDev/` 工程**（meta/android/kde 参考仓库与根 `docs/` 不入仓库）。
 - **GitHub 镜像（2026-09-15 建）**：<https://github.com/Gr-1m/kdeconnect-harmony>（GPL-2.0-or-later，2026-09-19 由 GPL-3.0 变更）。本机已配置第二远端 **`github`**（SSH；`~/.ssh/config` 需有 `github.com` → `IdentityFile ~/.ssh/github_ed25519`，否则报 `Permission denied (publickey)` —— 2026-09-15 踩过）。该仓库初始只是 `LICENSE` 空壳、与本机历史**无关**，已用 gitcode 侧历史**强推覆盖**（`git push --force github main:main`，`dev/zcodeinit` 一并新推；两分支与 gitcode 指向同一提交）。日常 push 仍走授权；两个远端内容应保持一致。
 - **本机 CachyOS** 为开发正本；**Win10**（LTSC 21H1，DevEco Studio 26.0.0.821）用 DevEco 构建、跑模拟器做验证。**同一文件不要两台机器同时改**。
 - 同步约定：改前先 pull、提交后 push；换行符：Win10 设 `core.autocrlf true`、本机设 `core.autocrlf input`，避免 CRLF diff 噪音。
@@ -93,7 +93,7 @@ QEMU 手机镜像跑在宿主（非真机、非 IDE）：镜像/日志放 `~/Wor
 6. **同一字符串/同一批文件不做"来回改"**：一旦冻结（如版权署名占位）就等统一时机一次性替换，
    避免两车道反复改动同一批文件。
 7. **分支方向与合并门禁**：只做"车道 → 主线"单向合并；主线**不**反向 merge 进车道。合并前后必须跑
-   `hvigorw assembleHap` 与 `entry/src/main/cpp/tests/run.sh`，通过后再 push（push 仍需用户/CodeArts 授权）。
+   `hvigorw assembleHap` 与 `entry/src/main/cpp/tests/run.sh`，通过后再 push（push 按「提交/推送纪律」执行：Omp 自主，用于保持同步）。
 
 ## 维护规则
 
