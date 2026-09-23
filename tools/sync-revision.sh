@@ -53,7 +53,7 @@ UPSTREAM="origin/$BRANCH"
 if git rev-parse --verify -q "$UPSTREAM" >/dev/null 2>&1; then
   AHEAD="$(git rev-list --count "$UPSTREAM..HEAD")"
   BEHIND="$(git rev-list --count "HEAD..$UPSTREAM")"
-  SYNC="\`$UPSTREAM\`：本地领先 $AHEAD / 落后 $BEHIND（**未经授权的 push 一律不做**）"
+  SYNC="\`$UPSTREAM\`：本地领先 $AHEAD / 落后 $BEHIND（同步由 Omp 按「提交/推送纪律」执行）"
 else
   SYNC="无远端跟踪分支（\`$UPSTREAM\` 不存在）"
 fi
