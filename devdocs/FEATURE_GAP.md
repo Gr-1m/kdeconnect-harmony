@@ -1,4 +1,4 @@
-# FEATURE_GAP.md — 功能差距盘点：Android/iOS 已实现 vs 鸿蒙端（KDE-H Connect）
+# FEATURE_GAP.md — 功能差距盘点：Android/iOS 已实现 vs 鸿蒙端（KDE Connect）
 
 > 2026-09-19。盘点人 Atomcode。方法：Android 插件目录全清单（26 项，`kdeconnect-android/src/main/java/org/kde/kdeconnect/plugins/`）逐项对照本项目 `entry/src/main/ets/plugins/`（15 个 .ets），方向（收/发）按各插件 `outgoingPacketTypes` 实核；iOS 支持度按 docs/11 功能点字典与 docs/12。**协议类型以 `kdeconnect-meta/schemas/` 为准，新增前先改 schema + `make check`。**
 

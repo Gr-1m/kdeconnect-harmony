@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { ConfigurationConstant, Context } from '@kit.AbilityKit';
 import { i18n } from '@kit.LocalizationKit';

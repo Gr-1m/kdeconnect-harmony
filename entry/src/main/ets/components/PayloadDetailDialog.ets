@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // 「文件详情」弹窗（**S6 第 1 步**：从 `Index.ets` 抽出的独立组件，2026-09-19）。
 //

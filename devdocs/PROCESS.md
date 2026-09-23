@@ -1,4 +1,4 @@
-# PROCESS.md — KDE-H Connect 工作流规范
+# PROCESS.md — KDE Connect 工作流规范
 
 > CodeArts（流程总指挥）起草，2026-09-12。
 > 适用于新仓库 `kdeconnect-harmony`（gitcode 中心仓库 clone，分支 `dev/zcodeinit`）。

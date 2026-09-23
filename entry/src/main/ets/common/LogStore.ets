@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // 日志存储（批3 #1，CodeArts MSG18 放行 / ARKTS_PERF_ROADMAP §4）。
 //
