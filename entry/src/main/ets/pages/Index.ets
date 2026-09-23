@@ -47,6 +47,7 @@ import { SettingsTab } from '../components/SettingsTab';
 import { LogsTab } from '../components/LogsTab';
 import { PairSession } from '../state/PairSession';
 import { PluginEventBus } from '../state/PluginEventBus';
+import hilog from '@ohos.hilog';
 
 // timestamp 仅 pair 请求需要（KDE pair 响应体只含 {"pair": false}）
 interface PairRequestBody {
@@ -428,6 +429,25 @@ struct Index {
       this.showNotice('paired', '', false);
     };
     this.pairSession.onUnpaired = (id: string): void => { this.handleUnpaired(id); };
+
+    // 阶段 2 步骤 4：插件事件路由装配（清单见 devdocs/PLUGIN_ROUTE_INVENTORY.md）。
+    // 兜底与拆分前的"其余 kind 只记日志"逐字一致 —— **绝不静默丢弃**。
+    this.eventBus.setLog((m: string): void => { this.log(m); });
+    this.eventBus.setFallback((id: string, ev: PluginEvent): void => {
+      this.log(`plugin event ${ev.kind} from ${id}`);
+    });
+    this.eventBus.on('runcommand.list', (id: string, ev: PluginEvent): void => { this.onRunCommandList(id, ev); });
+    this.eventBus.on('runcommand.output', (id: string, ev: PluginEvent): void => { this.onRunCommandOutput(id, ev); });
+    this.eventBus.on('clipboard.request', (id: string, ev: PluginEvent): void => { this.onClipboardRequest(id, ev); });
+    this.eventBus.on('mpris.playerList', (id: string, ev: PluginEvent): void => { this.onMprisPlayerList(id, ev); });
+    this.eventBus.on('mpris.playerUpdate', (id: string, ev: PluginEvent): void => { this.onMprisPlayerUpdate(id, ev); });
+    this.eventBus.on('systemvolume.sinks', (id: string, ev: PluginEvent): void => { this.onSystemVolumeSinks(id, ev); });
+    this.eventBus.on('battery', (id: string, ev: PluginEvent): void => { this.onBattery(id, ev); });
+    // 装配自检：注册数与清单一致（7）。**同时写 hilog**（页面 log() 只进 app 内 LogStore，机器不可见）
+    // ⇒ 漏注册/多注册可在 `hdc shell hilog` 里直接机检（devdocs/PLUGIN_ROUTE_INVENTORY.md §5）。
+    const routeCount: number = this.eventBus.kinds().length;
+    this.log(`plugin routes registered: ${routeCount}`);
+    hilog.info(0x0001, 'KDEConnectUI', 'plugin routes registered: %{public}d', routeCount);
     this.startNative();
     this.registerNetworkListener();
   }
@@ -756,68 +776,74 @@ struct Index {
   // 插件 → UI 事件（电量 / 远程命令 / 剪贴板索取等）
   // 批1 根治（CodeArts MSG16 授权）：插件事件改为**类型化对象**，不再 JSON.stringify/parse。
   // 结构化数据（MPRIS 列表/快照）直接读字段；标量事件读 ev.text（语义与旧 data 字符串一致）。
+  /**
+   * 插件事件**唯一入口**（阶段 2 步骤 4）：退化为一次路由分发。
+   * 各 kind 的处理器在装配期注册（见 aboutToAppear/initPluginRoutes）；未注册 kind 走 bus 兜底（只记日志，绝不静默丢弃）。
+   * 路由清单与不变量见 devdocs/PLUGIN_ROUTE_INVENTORY.md。
+   */
   private onPluginEvent(deviceId: string, ev: PluginEvent): void {
-    const kind: string = ev.kind;
+    this.eventBus.dispatch(deviceId, ev);
+  }
+
+  // ── 各 kind 的处理器（自 onPluginEvent 的内联分支原样搬出，行为零变更）──
+
+  private onRunCommandList(deviceId: string, ev: PluginEvent): void {
     const data: string = ev.text ?? '';
-    if (kind === 'runcommand.list') {
-      this.runCommandDeviceId = deviceId;
-      this.runCommands = this.commandsOf(deviceId);
-      this.log(`run command list <- ${deviceId} (${data})`);
+    this.runCommandDeviceId = deviceId;
+    this.runCommands = this.commandsOf(deviceId);
+    this.log(`run command list <- ${deviceId} (${data})`);
+  }
+
+  private onRunCommandOutput(deviceId: string, ev: PluginEvent): void {
+    // 嵌套 payload（裁定表 #6）：读 ev.runOutput 结构化字段
+    const ro: RunOutputPayload | undefined = ev.runOutput;
+    if (ro === undefined) {
       return;
     }
-    if (kind === 'runcommand.output') {
-      // 嵌套 payload（裁定表 #6）：读 ev.runOutput 结构化字段
-      const ro: RunOutputPayload | undefined = ev.runOutput;
-      if (ro === undefined) {
-        return;
-      }
-      const ok: boolean = ro.success;
-      const code: number = ro.exitCode;
-      const text: string = ro.text;
-      const head: string = this.resText(ok
-        ? $r('app.string.toast_run_cmd_ok').id : $r('app.string.toast_run_cmd_failed').id);
-      this.toastText(text.length > 0 ? `${head} (exit=${code}): ${text}` : `${head} (exit=${code})`);
-      this.log(`run command output <- ${deviceId}: success=${ok} exit=${code}`);
+    const ok: boolean = ro.success;
+    const code: number = ro.exitCode;
+    const text: string = ro.text;
+    const head: string = this.resText(ok
+      ? $r('app.string.toast_run_cmd_ok').id : $r('app.string.toast_run_cmd_failed').id);
+    this.toastText(text.length > 0 ? `${head} (exit=${code}): ${text}` : `${head} (exit=${code})`);
+    this.log(`run command output <- ${deviceId}: success=${ok} exit=${code}`);
+  }
+
+  private onClipboardRequest(deviceId: string, ev: PluginEvent): void {
+    // 对端索取本机剪贴板：三方应用无权读剪贴板，只能提示用户点「粘贴」按钮授权发送
+    this.toastText(this.resText($r('app.string.toast_clipboard_requested').id));
+    this.log(`clipboard requested by ${deviceId}`);
+  }
+
+  // 媒体控制（方向 1）：类型化对象直读，省掉每事件一次 stringify+parse
+  private onMprisPlayerList(deviceId: string, ev: PluginEvent): void {
+    this.setMprisList(deviceId, ev.mprisList ?? []);
+  }
+
+  private onMprisPlayerUpdate(deviceId: string, ev: PluginEvent): void {
+    const snap: MprisSnapshot | undefined = ev.mprisSnap;
+    if (snap !== undefined) {
+      this.setMprisSnapshot(deviceId, snap);
+    }
+  }
+
+  // 系统音量（kdeconnect.systemvolume）：插件推**整份行数组**（已换算成百分比），UI 只渲染。
+  // **单槽**（用户 2026-09-19 裁决 / CodeArts MSG21 §3）：面板一次只服务一台设备 ⇒ 只接受
+  // 当前面板设备的推送。别的设备推包不得改写它（否则正在看的面板会被刷空）。
+  // 不会缺数据：打开面板时 svPrepare() 会主动 requestSinks()，该响应带着自己的 deviceId 回来。
+  // （请求-响应同源：插件是"每设备一份实例"，响应只会从被请求的那台设备回来 —— Omp MSG27 §3 提醒点。）
+  // 旧实现是 `"<vol>|<muted>"` 字符串打包 + 页面侧 split 解包，与批1 的类型化方向相反，已删除。
+  // P3-3（语义澄清，**零行为变更**）：`requestSinks()` 的**响应**与插件主动推送走的是**同一条事件通道**
+  // （都是 kind='systemvolume.sinks'，由 SystemVolumePlugin.push() 发出）⇒ 下面的单槽过滤对"响应"同样生效，
+  // 不存在"请求-响应串台"（插件本身是**每设备一份实例**，响应只会从被请求的那台设备回来）。
+  private onSystemVolumeSinks(deviceId: string, ev: PluginEvent): void {
+    if (deviceId !== this.mprisDeviceId) {
       return;
     }
-    if (kind === 'clipboard.request') {
-      // 对端索取本机剪贴板：三方应用无权读剪贴板，只能提示用户点「粘贴」按钮授权发送
-      this.toastText(this.resText($r('app.string.toast_clipboard_requested').id));
-      this.log(`clipboard requested by ${deviceId}`);
-      return;
-    }
-    // 媒体控制（方向 1）：类型化对象直读，省掉每事件一次 stringify+parse
-    if (kind === 'mpris.playerList') {
-      this.setMprisList(deviceId, ev.mprisList ?? []);
-      return;
-    }
-    if (kind === 'mpris.playerUpdate') {
-      const snap: MprisSnapshot | undefined = ev.mprisSnap;
-      if (snap !== undefined) {
-        this.setMprisSnapshot(deviceId, snap);
-      }
-      return;
-    }
-    // 系统音量（kdeconnect.systemvolume）：插件推**整份行数组**（已换算成百分比），UI 只渲染。
-    // **单槽**（用户 2026-09-19 裁决 / CodeArts MSG21 §3）：面板一次只服务一台设备 ⇒ 只接受
-    // 当前面板设备的推送。别的设备推包不得改写它（否则正在看的面板会被刷空）。
-    // 不会缺数据：打开面板时 svPrepare() 会主动 requestSinks()，该响应带着自己的 deviceId 回来。
-    // （请求-响应同源：插件是"每设备一份实例"，响应只会从被请求的那台设备回来 —— Omp MSG27 §3 提醒点。）
-    // 旧实现是 `"<vol>|<muted>"` 字符串打包 + 页面侧 split 解包，与批1 的类型化方向相反，已删除。
-    // P3-3（语义澄清，**零行为变更**）：`requestSinks()` 的**响应**与插件主动推送走的是**同一条事件通道**
-    // （都是 kind='systemvolume.sinks'，由 SystemVolumePlugin.push() 发出）⇒ 下面的单槽过滤对"响应"同样生效，
-    // 不存在"请求-响应串台"（插件本身是**每设备一份实例**，响应只会从被请求的那台设备回来）。
-    if (kind === 'systemvolume.sinks') {
-      if (deviceId !== this.mprisDeviceId) {
-        return;
-      }
-      this.svSinks = ev.svSinks !== undefined ? ev.svSinks : [];
-      return;
-    }
-    if (kind !== 'battery') {
-      this.log(`plugin event ${kind} from ${deviceId}`);
-      return;
-    }
+    this.svSinks = ev.svSinks !== undefined ? ev.svSinks : [];
+  }
+
+  private onBattery(deviceId: string, ev: PluginEvent): void {
     // 嵌套 payload（裁定表 #6）：读 ev.battery 结构化字段
     const bp: BatteryPayload | undefined = ev.battery;
     if (bp === undefined) {
