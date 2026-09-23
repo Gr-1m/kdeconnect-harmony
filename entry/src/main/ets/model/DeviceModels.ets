@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // 设备列表数据模型（设备页三组共用）。记住的设备单独建模：AP-3 将扩展证书指纹等字段。
 

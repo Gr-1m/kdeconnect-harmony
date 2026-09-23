@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // 系统音量（kdeconnect.systemvolume）的 **UI 视图模型**（2026-09-18 用户要求「设备 tab 读 OutputDevice」）。
 //

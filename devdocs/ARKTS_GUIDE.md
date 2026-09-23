@@ -19,7 +19,7 @@
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| 工程骨架（AppScope/根构建配置/hvigor/module.json5/资源） | ✅ | 照 PreDev 快照逐文件移植；`app_name` 已改 **KDE-H Connect**（base+zh_CN），`bundleName` 开发期保持 `org.kde.kdeconnect.harmony`（用户裁决，上架前改，见 §3 AP-7） |
+| 工程骨架（AppScope/根构建配置/hvigor/module.json5/资源） | ✅ | 照 PreDev 快照逐文件移植；`app_name` 已改 **KDE Connect**（base+zh_CN），`bundleName` 开发期保持 `org.kde.kdeconnect`（用户裁决，上架前改，见 §3 AP-7） |
 | `ets/entryability/EntryAbility.ets` | ✅ | 原样（沉浸式全屏 + 安全区高度入 AppStorage） |
 | `ets/kdeconnect/NetworkPacket.ets` | ✅ | 原样（镜像 Android NetworkPacket，插件层基类依赖） |
 | `ets/net/PacketRouter.ets` | ✅ | 原样（帧切分 + pair/identity/ping 骨架处理；**自动接受配对是骨架行为**，AP-1 用配对确认 UI 替换） |
@@ -213,7 +213,7 @@ protocolVersion=8；UDP 1716；TCP 1716–1764；payload 端口 ≥1739；单包
 - 沉浸光感材质：`uiMaterial` 探测失败静默降级毛玻璃，勿写屏幕日志（QEMU 已知不支持）。
 - **ArkUI 组件成员命名坑**：子组件（`@Component`）成员名**不能与通用属性同名**（如 `direction`/`size`/`width`/`opacity`/`backgroundColor`），否则报「Property 'x' in type 'X' is not assignable to the same property in base type 'CustomComponent'」——用领域前缀（`payloadDirection`/`payloadSize`）。
 - **Win10 侧签名/装机（2026-09-13 新，方案 A 兼容）**：tracked `build-profile.json5` 的 `signingConfigs` 恒为 `[]`；本机改用**仓库外自签调试脚本** `C:\Users\<user>\.ohos\kdc-sign-win.ps1`（材料在 `C:\Users\<user>\.ohos\kdc-sign\`，机器本地不入库）：
-  - 关键技巧：SDK 的 `OpenHarmony.p12` 里带 **`openharmony application ca` 的私钥**，用 `hap-sign-tool generate-app-cert` 以该 CA 签发**自定义 subject 的叶证书**（本项目 `O=Gr1m, OU=Gr1m, CN=KDE-H Connect`），证书链仍是 leaf→App CA→Root CA，**设备照常信任**；团队名即证书 subject 的 O/OU。
+  - 关键技巧：SDK 的 `OpenHarmony.p12` 里带 **`openharmony application ca` 的私钥**，用 `hap-sign-tool generate-app-cert` 以该 CA 签发**自定义 subject 的叶证书**（本项目 `O=Gr1m, OU=Gr1m, CN=KDE Connect`），证书链仍是 leaf→App CA→Root CA，**设备照常信任**；团队名即证书 subject 的 O/OU。
   - 用法：`powershell -ExecutionPolicy Bypass -File kdc-sign-win.ps1 -Mode all`（`materials|sign-only|install|all`）；profile 的 `device-ids` 绑定目标设备 UDID（脚本自动取自 `hdc shell bm get --udid`），**换设备需重跑**。
   - 坑：`generate-app-cert` 要求 **subject 密钥与 CA 私钥在同一 keystore**（本方案用 SDK keystore 副本 `gr1m-work.p12` + `generate-keypair` 加入自己的密钥）；keytool 读不了这套老 p12 的私钥（改用 hap-sign-tool）；PowerShell 脚本里**不要用 `$pwd` 当密码变量**（= 当前目录自动变量）。
 - **ArkUI 状态刷新坑（易踩；"点击有效但高亮不跟随"的根因）**：`@Builder` 的**值参数变化不会触发刷新**（值传递语义）——选中态/进度等动态内容必须**在 Builder 内部直接读状态**（如 `this.themeMode === mode`），或只传 `id` 进去再在 Builder 内现读（如 `this.payloadOf(transferId)`）。`ForEach` 用稳定 key 时尤其明显：列表项不重建，传进去的旧值会一直显示旧值。

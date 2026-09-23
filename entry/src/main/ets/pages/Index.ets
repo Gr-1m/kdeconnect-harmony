@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 import native from 'libkdeconnect_napi.so';
 import { NetConfig, CertPair, NetEvent } from 'libkdeconnect_napi.so';
@@ -44,6 +45,8 @@ import { SystemSinkRow } from '../components/SystemSinkRow';
 import { FilesTab } from '../components/FilesTab';
 import { SettingsTab } from '../components/SettingsTab';
 import { LogsTab } from '../components/LogsTab';
+import { PairSession } from '../state/PairSession';
+import { PluginEventBus } from '../state/PluginEventBus';
 
 // timestamp 仅 pair 请求需要（KDE pair 响应体只含 {"pair": false}）
 interface PairRequestBody {
@@ -134,22 +137,13 @@ struct Index {
   @State connectedDevices: DeviceItem[] = [];
   @State discoveredDevices: DeviceItem[] = [];
   @State rememberedDevices: RememberedDevice[] = [];
-  // 本侧已发起、等待对端确认的设备
-  @State requestedPairIds: string[] = [];
-  // 连接/配对会话（用户 miaoshu.txt 需求 4）：
-  //   connecting = 连接中（**只有 toast，不弹模态**）
-  //   prompt     = 配对确认弹窗（本侧点已连接行「配对」发起，或对端发起；均显示验证码）
-  //   awaiting   = 已发配对帧，等对端确认
-  // 连接反馈统一走顶部 notice；配对反馈走弹窗 + 成功 notice。
-  @State sessionState: string = 'idle';
-  @State sessionDeviceId: string = '';
-  @State sessionName: string = '';
-  @State sessionTarget: string = '';
-  @State sessionTimestamp: number = 0;
-  // 弹窗里显示的验证码（进入 prompt 时算一次，避免渲染期调 native）
-  @State sessionCode: string = '';
-  // 对端先发起了配对请求（弹窗按钮为 拒绝/接受；否则为 取消/配对）
-  @State sessionPeerRequested: boolean = false;
+  // 连接/配对会话状态机（阶段 2 拆分 ⇒ state/PairSession.ets）：状态与副作用分离，本页只装配 + 转发 + 渲染。
+  //   stage: connecting=连接中（**只有 toast，不弹模态**）；prompt=配对确认弹窗（两侧共用，显示验证码）；
+  //          awaiting=已发配对帧，等对端确认
+  // 副作用（发包/连对端/提示/日志/配对态收敛）全部经下面注入的回调走页面既有实现。
+  @State pairSession: PairSession = new PairSession();
+  // 插件事件路由表（阶段 2 步骤 4，state/PluginEventBus.ets）：本批先加字段，装配在下一步。
+  private eventBus: PluginEventBus = new PluginEventBus();
   // 顶部临时提示（连接中/连接成功/连接失败/配对成功…）
   @State noticeKey: string = '';
   // 设备 Tab 分区（0 已连接 / 1 发现 / 2 记住 / 3 手动）：@Link 给 DevicesTab，
@@ -162,7 +156,6 @@ struct Index {
   @State drawerExpanded: boolean = false;
   // 抽屉里选中的设备：页面据此展示「设备信息 + 大按钮」（未选中时仍显示已连接列表）
   @State selectedDeviceId: string = '';
-  private sessionTimerId: number = -1;
   private noticeTimerId: number = -1;
   // 点击/发包限频（key = "设备:动作" → 上次触发时刻）。手机实测：卡片点太快会连发网络请求 +
   // 连开弹窗，叠加重渲染直接把主线程压死（THREAD_BLOCK_3S/6S → 点击无响应）。
@@ -374,13 +367,16 @@ struct Index {
     });
     const callbacks: RouterCallbacks = {
       onPairRequest: (id: string, ts: number): void => {
-        this.handlePairRequest(id, ts);
+        // 对端发起：交给状态机（内含"双方同时发起"race 检测）；验证码由页面算好写入（字段约定）。
+        this.pairSession.onPeerPairRequest(id, ts);
+        this.pairSession.code = this.computePairCode(id, ts);
       },
       onPaired: (id: string): void => {
-        this.handlePaired(id);
+        this.handlePaired(id);          // trust 落盘 + 证书钉扎 + 日志（UI/持久化职责留页面）
+        this.pairSession.onPeerPaired(id);   // 状态机收口（幂等：见 PairSession.succeed 的 idle 短路）
       },
       onUnpaired: (id: string): void => {
-        this.handleUnpaired(id);
+        this.pairSession.onPeerUnpaired(id);   // 内部 reset + 回调 onUnpaired ⇒ 唯一入口，勿在页面重复调用 handleUnpaired
       },
       onPeerCapabilities: (id: string, incoming: string[], outgoing: string[]): void => {
         this.loadPlugins(id, incoming, outgoing);
@@ -392,6 +388,46 @@ struct Index {
       (msg: string): void => {
         this.log(msg);
       }, callbacks);
+    // 阶段 2 接线：把会话状态机的副作用接回页面既有实现（状态机自身不碰 I/O/UI/持久化）。
+    this.pairSession.onLog = (m: string): void => { this.log(m); };
+    this.pairSession.onNotice = (kind: string, detail: string, isError: boolean, code: number): void => {
+      this.showNotice(kind, detail, isError, code);
+    };
+    // ★ 发包走 PacketRouter（不按 §3.6 用裸 native.sendPacket）：
+    //   router.acceptPair 会回调 onPaired ⇒ 页面 handlePaired 负责 trusted 登记与证书钉扎，绕开就丢 trust 落盘。
+    this.pairSession.sendPair = (id: string, pair: boolean, withTs: boolean): boolean => {
+      if (this.router === undefined) {
+        return false;
+      }
+      if (!pair) {
+        this.router.rejectPair(id);
+        return true;
+      }
+      if (withTs) {
+        // 用状态机里**固定**的时间戳（弹窗打开时确定）——保证与展示的验证码一致
+        return this.router.requestPair(id, this.pairSession.timestamp);
+      }
+      return this.router.acceptPair(id);
+    };
+    this.pairSession.connectToPeer = (id: string, name: string, host: string, port: number): boolean => {
+      try {
+        native.connectToPeer(host, port);
+        return true;
+      } catch (e) {
+        return false;
+      }
+    };
+    this.pairSession.onPaired = (id: string): void => {
+      this.setPairedFlag(id, true);          // ★ 单一写者（勿在此再内联写 paired）
+      // 旧 succeedSession() 的 UI 副作用：跳回「已连接设备」+ 选中该设备 + 清过期限频键 + 成功提示
+      this.deviceSection = 0;
+      if (id.length > 0) {
+        this.selectedDeviceId = id;
+        this.pruneActionGate();
+      }
+      this.showNotice('paired', '', false);
+    };
+    this.pairSession.onUnpaired = (id: string): void => { this.handleUnpaired(id); };
     this.startNative();
     this.registerNetworkListener();
   }
@@ -1100,15 +1136,6 @@ struct Index {
     return this.pluginHost.dispatch(deviceId, packetType, body);
   }
 
-  // AP-1：对端发起配对请求 → 弹确认框（不做任何自动接受）
-  // 对端发起配对请求 → 弹配对确认框（与「已连接行点配对」同一个弹窗，需求 4.3 统一）
-  private handlePairRequest(deviceId: string, timestamp: number): void {
-    if (deviceId === '') {
-      return;
-    }
-    this.openPairDialog(deviceId, this.displayNameOf(deviceId), true, timestamp);
-  }
-
   // 验证码由 native 计算（公钥 SPKI DER 排序拼接 + SHA256，ArkTS 无法做 ASN.1 解析）。
   // 无 TLS 链路/无对端证书时 native 返回空串 → UI 显示占位。
   private computePairCode(deviceId: string, timestamp: number): string {
@@ -1135,7 +1162,8 @@ struct Index {
     if (this.router === undefined) {
       return;
     }
-    this.openPairDialog(d.id, d.name, false, Math.floor(Date.now() / 1000));
+    const selfTs: number = Math.floor(Date.now() / 1000);
+    this.pairSession.openPrompt(d.id, d.name, selfTs, this.computePairCode(d.id, selfTs));
   }
 
   private displayNameOf(deviceId: string): string {
@@ -1159,7 +1187,6 @@ struct Index {
     if (deviceId === '') {
       return;
     }
-    this.requestedPairIds = this.requestedPairIds.filter((id: string) => id !== deviceId);
     const name: string = this.displayNameOf(deviceId);
     const exists: boolean = this.trustedDevices.some((t: TrustedDevice) => t.id === deviceId);
     let peerCert: string = '';
@@ -1169,7 +1196,8 @@ struct Index {
       this.log('getPeerCertificate unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
     }
     if (exists) {
-      // 重新配对：把该条目重置为「已配对」（需求 3：解除配对时条目保留，重新配对成功后复用）
+      // 重新配对：条目保留、只刷新名称/证书。**paired 的置位不再内联写**（原来是 `paired: true`），
+      // 统一交给下面的 `setPairedFlag()` —— MSG50 §3 收敛：配对态有且只有一个写者。
       this.trustedDevices = this.trustedDevices.map((t: TrustedDevice) => {
         if (t.id !== deviceId) {
           return t;
@@ -1178,8 +1206,8 @@ struct Index {
           id: t.id,
           name: name.length > 0 ? name : t.name,
           certPem: peerCert.length > 0 ? peerCert : t.certPem,
-          pairedAt: Date.now(),
-          paired: true
+          pairedAt: t.pairedAt,
+          paired: t.paired
         };
         return next;
       });
@@ -1188,15 +1216,16 @@ struct Index {
         id: deviceId,
         name: name,
         certPem: peerCert,
-        pairedAt: Date.now(),
-        paired: true
+        pairedAt: 0,
+        paired: false
       };
       this.trustedDevices = this.trustedDevices.concat([entry]);
     }
-    this.rememberedDevices = this.trustedDevices.map((t: TrustedDevice) => {
-      const r: RememberedDevice = { id: t.id, name: t.name, paired: t.paired };
-      return r;
-    });
+    // ★ 单一写者：置「已配对」——由 setPairedFlag 负责 trusted↔remembered 同步 + 持久化 + 状态日志
+    //（新条目会被它补上 pairedAt；已是已配对则不重复刷时间戳，语义更稳）。
+    this.setPairedFlag(deviceId, true);
+    // 兜底持久化：setPairedFlag 在"本来就是已配对"时会提前返回，而上面名称/证书的刷新仍需落盘
+    //（persistTrust 幂等，故这里保留这一次调用是本方法唯一的持久化点）。
     this.persistTrust();
     this.syncSelectedDevice();
     // WP-2 钉扎：登记对端证书，后续连接强校验（证书不符 → error EACCES + 断链）
@@ -1208,23 +1237,13 @@ struct Index {
       }
     }
     this.log(`paired with ${deviceId} (cert=${peerCert.length > 0 ? 'stored' : 'unavailable'})`);
-    // 会话命中该设备 → 配对成功：提示并自动跳回「已连接设备」
-    if (this.sessionDeviceId === deviceId && this.sessionState !== 'idle') {
-      this.succeedSession();
-      this.log('pair success -> switch to connected devices');
-    }
+    // 会话收口交给状态机（RouterCallbacks.onPaired 里已调 pairSession.onPeerPaired ⇒ 会走 onPaired 回调做 UI 副作用）
   }
 
   // 对端发 unpair {pair:false} 或本侧解除配对：
   // 需求 3（用户 miaoshu.txt）——**保留条目**（便于后续重新配对），只置 paired=false 并清钉扎。
   private handleUnpaired(deviceId: string): void {
-    this.requestedPairIds = this.requestedPairIds.filter((id: string) => id !== deviceId);
-    if (this.sessionDeviceId === deviceId && this.sessionState !== 'idle') {
-      this.clearSessionTimer();
-      this.sessionState = 'idle';
-      this.sessionCode = '';
-      this.sessionPeerRequested = false;
-    }
+    // 会话收口交给状态机（pairSession.onPeerUnpaired → reset → 回调这里）；本方法只做 trust/钉扎/日志。
     // WP-2：解除钉扎（native 侧不再强校验该设备证书）
     try {
       native.removeTrustedCertificate(deviceId);
@@ -1314,13 +1333,12 @@ struct Index {
             this.log(`plugins loaded for ${cid} with unknown caps (fallback)`);
           }
           // ④ 本侧发起连接的反馈（手动连接时发起前不知道 deviceId，这里按会话状态收口）
-          if (this.sessionState === 'connecting'
-            && (this.sessionDeviceId === cid || this.sessionDeviceId === '')) {
-            this.clearSessionTimer();
-            this.sessionDeviceId = cid;
-            this.sessionName = event.deviceName ?? this.sessionName;
-            this.sessionState = 'idle';
-            this.showNotice('connected', event.deviceName ?? this.sessionName, false);
+          //    状态迁移交给状态机；**提示是 UI 职责**，仍在页面发（与拆分前逐字一致）。
+          if (this.pairSession.stage === 'connecting'
+            && (this.pairSession.deviceId === cid || this.pairSession.deviceId === '')) {
+            const shownName: string = event.deviceName ?? this.pairSession.peerName;
+            this.pairSession.onConnected(cid);
+            this.showNotice('connected', shownName, false);
             this.log(`connected ${cid} -> notice 连接成功`);
           }
         }
@@ -1334,8 +1352,7 @@ struct Index {
         this.failInflightReceives(did, 'disconnected');
         this.connectedDevices = this.connectedDevices.filter((d: DeviceItem) => d.id !== did);
         this.batteryItems = this.batteryItems.filter((b: BatteryItem) => b.deviceId !== did);
-        // 断链即清「等待确认」态（否则行上会残留"等待确认"徽标）
-        this.requestedPairIds = this.requestedPairIds.filter((x: string) => x !== did);
+        // 断链即清「等待确认」态（否则行上会残留"等待确认"徽标）——由状态机 onDisconnected 统一处理
         // AP-4：断链卸载该设备插件（onDestroy 必达）
         this.pluginHost?.unloadForDevice(did);
         // 媒体面板清账（P2，MSG132 §2）：丢该设备的面板镜像并关面板
@@ -1344,14 +1361,8 @@ struct Index {
         // P3（AtomCode 评审条件 / CodeArts MSG21 §2）：断链必须**清空发送队列**，
         // 否则残留任务会在设备重连后自动开传（用户并未再操作，属可见的错误行为）。
         this.forgetSendQueue(did);
-        // 会话中的设备断链 → 连接/配对失败
-        if (did !== '' && this.sessionDeviceId === did) {
-          if (this.sessionState === 'connecting') {
-            this.failConnect('disconnected', Index.ERR_DISCONNECTED);
-          } else if (this.sessionState === 'awaiting' || this.sessionState === 'prompt') {
-            this.failPairing('disconnected', Index.ERR_DISCONNECTED);
-          }
-        }
+        // 会话中的设备断链 → 连接/配对失败（状态机内建；终局三信号之一）
+        this.pairSession.onDisconnected(did);
         this.syncSelectedDevice();
         this.log(`disconnected ${event.deviceId}`);
         break;
@@ -1430,17 +1441,8 @@ struct Index {
         //   · `connecting`（技术握手阶段）→ 报错即失败 ✓（那里错误确实是结论）；
         //   · `awaiting`/`prompt`（**等对端人操作**）→ 错误只记日志、**不判失败** ——
         //     会话终局只由三个明确信号决定：对端拒绝（pair:false）／disconnected／PAIR_TIMEOUT_MS。
-        const eid: string = event.deviceId ?? '';
-        const forThisSession: boolean = eid.length > 0 && this.sessionDeviceId.length > 0
-          && eid === this.sessionDeviceId;
-        if (forThisSession) {
-          const code: number = event.errorCode ?? Index.ERR_OTHER;
-          if (this.sessionState === 'connecting') {
-            this.failConnect(em.length > 0 ? em : `error ${code}`, code);
-          } else if (this.sessionState === 'awaiting' || this.sessionState === 'prompt') {
-            this.log(`pairing session kept alive despite error (waiting for peer user): ${code} ${em}`);
-          }
-        }
+        // 会话报错：状态机内建「只认本会话设备 + awaiting/prompt 期间无关错误不判失败」（真机坑固化，勿在外层重复判断）
+        this.pairSession.onError(event.deviceId ?? '', event.errorCode ?? 0, em);
         break;
       }
       default:
@@ -1478,7 +1480,7 @@ struct Index {
       this.log(`manual connect rejected: invalid port ${port}`);
       return;
     }
-    this.startSession('', `${host}:${port}`, host, port);
+    this.pairSession.start('', `${host}:${port}`, host, port);
   }
 
   // ---- 连接/配对会话 ----
@@ -1488,155 +1490,6 @@ struct Index {
   }
 
   // 失败码（上线口径：提示只给错误码，明细进日志）
-  private static readonly ERR_TIMEOUT: number = 1;
-  private static readonly ERR_DISCONNECTED: number = 2;
-  private static readonly ERR_SEND: number = 3;
-  private static readonly ERR_ADDRESS: number = 4;
-  private static readonly ERR_OTHER: number = 0;
-
-  private clearSessionTimer(): void {
-    if (this.sessionTimerId !== -1) {
-      clearTimeout(this.sessionTimerId);
-      this.sessionTimerId = -1;
-    }
-  }
-
-  // stage: 'connect' → 连接超时；'pair' → 配对超时
-  private armSessionTimer(ms: number, reason: string, stage: string, code: number): void {
-    this.clearSessionTimer();
-    this.sessionTimerId = setTimeout((): void => {
-      this.sessionTimerId = -1;
-      if (stage === 'pair') {
-        this.failPairing(reason, code);
-      } else {
-        this.failConnect(reason, code);
-      }
-    }, ms);
-  }
-
-  // 统一入口（需求 4.1/4.2）：**不弹模态**，只给提示；设备连上后自然出现在「已连接设备」
-  private startSession(id: string, name: string, host: string, port: number): void {
-    if (this.sessionState === 'connecting') {
-      this.log(`session busy (connecting), ignore ${host}:${port}`);
-      return;
-    }
-    // port === 0 = 端口未知（native 只被对端拨入过时拿不到 tcpPort：KDE 只在 UDP 广播里带它）。
-    // 交给 native 自己按 1716–1764 探测（connectToPeer(host, 0)），不要再判 no address。
-    if (host === '') {
-      this.failConnect('no address', Index.ERR_ADDRESS);
-      return;
-    }
-    const portText: string = port > 0 ? `${port}` : '端口探测中';
-    this.clearSessionTimer();
-    this.sessionDeviceId = id;
-    this.sessionName = name.length > 0 ? name : `${host}:${portText}`;
-    this.sessionTarget = port > 0 ? `${host}:${port}` : host;
-    this.sessionState = 'connecting';
-    this.log(`connect ${this.sessionTarget}${port > 0 ? '' : ' (port unknown, native probe)'}`);
-    this.showNotice('connecting', this.sessionTarget, false, 0);
-    try {
-      native.connectToPeer(host, port);
-    } catch (e) {
-      this.failConnect('connectToPeer failed: ' + (e instanceof Error ? e.message : 'unknown'), Index.ERR_OTHER);
-      return;
-    }
-    this.armSessionTimer(CONNECT_TIMEOUT_MS, 'connect timeout', 'connect', Index.ERR_TIMEOUT);
-  }
-
-  // 连接失败（需求 4.1 + 上线口径）：UI 只给错误码，明细写日志
-  private failConnect(reason: string, code: number): void {
-    this.clearSessionTimer();
-    this.sessionState = 'idle';
-    this.showNotice('failed', `${code}`, true);
-    this.log(`connect failed: ${reason} (code=${code})`);
-  }
-
-  // 打开配对确认弹窗（需求 4.3：配对统一在「已连接设备」里点「配对」，弹窗显示验证码）
-  private openPairDialog(deviceId: string, name: string, peerRequested: boolean, timestamp: number): void {
-    this.clearSessionTimer();
-    this.sessionDeviceId = deviceId;
-    if (name.length > 0) {
-      this.sessionName = name;
-    }
-    this.sessionPeerRequested = peerRequested;
-    this.sessionTimestamp = timestamp;
-    this.sessionCode = this.computePairCode(deviceId, timestamp);
-    this.sessionState = 'prompt';
-    this.noticeKey = '';
-    this.log(peerRequested
-      ? `pair confirm dialog (peer requested, ts=${timestamp})`
-      : `pair confirm dialog opened for ${deviceId}`);
-  }
-
-  // 弹窗确认：对端先请求 → 发接受帧（不带 timestamp）；本侧发起 → 发带 timestamp 的请求
-  private confirmPairInSession(): void {
-    const id: string = this.sessionDeviceId;
-    if (id === '' || this.router === undefined) {
-      return;
-    }
-    if (this.sessionPeerRequested) {
-      this.router.acceptPair(id);
-      this.sessionState = 'idle';
-      this.sessionCode = '';
-      return;
-    }
-    if (!this.sendPairRequest(id)) {
-      this.sessionState = 'idle';
-      this.sessionCode = '';
-      this.showNotice('pairFailed', `${Index.ERR_SEND}`, true);
-      this.log('pairing failed: pair request not sent (code=3)');
-      return;
-    }
-    this.sessionState = 'awaiting';
-    this.armSessionTimer(PAIR_TIMEOUT_MS, 'pair not confirmed', 'pair', Index.ERR_TIMEOUT);
-  }
-
-  // 弹窗取消/拒绝：本侧发起 → 仅收起弹窗；对端请求 → 回 {pair:false}
-  private cancelPairDialog(): void {
-    const id: string = this.sessionDeviceId;
-    const wasPeerRequest: boolean = this.sessionPeerRequested;
-    this.clearSessionTimer();
-    this.sessionState = 'idle';
-    this.sessionCode = '';
-    this.sessionPeerRequested = false;
-    if (id !== '') {
-      this.requestedPairIds = this.requestedPairIds.filter((x: string) => x !== id);
-      if (wasPeerRequest && this.router !== undefined) {
-        this.router.rejectPair(id);
-        this.log(`pairing rejected: ${id}`);
-        return;
-      }
-    }
-    this.log('pair dialog cancelled by user');
-  }
-
-  // 发 pair:true 并记录本侧等待态。返回是否真的发出。
-  private sendPairRequest(deviceId: string): boolean {
-    if (this.router === undefined) {
-      return false;
-    }
-    const ok: boolean = this.router.requestPair(deviceId, this.sessionTimestamp);
-    if (ok && !this.requestedPairIds.includes(deviceId)) {
-      this.requestedPairIds = this.requestedPairIds.concat([deviceId]);
-    }
-    return ok;
-  }
-
-  // 配对失败/超时：**同时把该设备的配对态置为未配对**（用户实测反馈：
-  // 对端拒绝或超时后仍显示「已配对」是错误的）——状态必须反映真实结果。
-  private failPairing(reason: string, code: number): void {
-    this.clearSessionTimer();
-    const id: string = this.sessionDeviceId;
-    this.sessionState = 'idle';
-    this.sessionCode = '';
-    this.sessionPeerRequested = false;
-    if (id !== '') {
-      this.requestedPairIds = this.requestedPairIds.filter((x: string) => x !== id);
-      this.setPairedFlag(id, false);
-    }
-    this.showNotice('pairFailed', `${code}`, true);
-    this.log(`pairing failed: ${reason} (code=${code})${id !== '' ? ' (' + id + ')' : ''}`);
-  }
 
   // 更新某设备的配对态（同时刷新记住列表 + 持久化）
   private setPairedFlag(deviceId: string, paired: boolean): void {
@@ -1664,24 +1517,6 @@ struct Index {
     });
     this.persistTrust();
     this.log(`state: ${deviceId} paired=${paired}`);
-  }
-
-  // 成功：提示 + 自动跳回「已连接设备」
-  private succeedSession(): void {
-    this.clearSessionTimer();
-    const id: string = this.sessionDeviceId;
-    this.sessionState = 'idle';
-    this.sessionCode = '';
-    this.sessionPeerRequested = false;
-    this.deviceSection = 0;
-    if (id !== '') {
-      // 配对成功后顺带选中该设备 → 直接落到它的「功能页」（设备信息 + 大按钮），
-      // 不再依赖用户之前是否在抽屉里选过设备
-      this.selectedDeviceId = id;
-      this.pruneActionGate();   // P2-1①：选设备时清过期限频键
-      this.requestedPairIds = this.requestedPairIds.filter((x: string) => x !== id);
-    }
-    this.showNotice('paired', '', false);
   }
 
   // 提示（需求 4.1/4.2 + 用户反馈）：用**系统 toast**（底部居中、系统层级）；
@@ -2933,7 +2768,7 @@ struct Index {
       discoveredList: this.discoveredShown(),
       rememberedCount: this.offlineKnownShown().length,
       selectedDeviceId: this.selectedDeviceId,
-      requestedPairIds: this.requestedPairIds,
+      requestedPairIds: this.pairSession.requestedPeers,
       deviceSection: this.deviceSection,
       drawerExpanded: this.drawerExpanded,
       onClose: (): void => {
@@ -3047,7 +2882,7 @@ struct Index {
                 rememberedAll: this.rememberedDevices,
                 immersive: this.immersiveSupported,
                 sideBySide: this.sideBySide,
-                requestedPairIds: this.requestedPairIds,
+                requestedPairIds: this.pairSession.requestedPeers,
                 batteryItems: this.batteryItems,
                 deviceSection: this.deviceSection,
                 onUnpairDevice: (d: DeviceItem): void => {
@@ -3233,23 +3068,23 @@ struct Index {
 
       // 配对确认弹窗（需求 4.3）：本侧点已连接行「配对」或对端发起时都走这里；
       // 显示验证码，两端核对一致后确认 → 配对成功
-      if (this.sessionState === 'prompt' || this.sessionState === 'awaiting') {
+      if (this.pairSession.stage === 'prompt' || this.pairSession.stage === 'awaiting') {
         Column() {
           Column({ space: 14 }) {
-            Text(this.sessionPeerRequested
+            Text(this.pairSession.peerRequested
               ? $r('app.string.pair_dialog_title')
               : $r('app.string.pair_dialog_title_outgoing'))
               .fontSize(16)
               .fontWeight(FontWeight.Bold)
               .fontColor($r('app.color.text_primary'))
-            Text(this.sessionName)
+            Text(this.pairSession.peerName)
               .fontSize(14)
               .fontColor($r('app.color.text_secondary'))
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
             // 设备 ID 在弹窗里核对（列表里只显示 IP:端口，用户 2026-09-14）
-            if (this.sessionDeviceId.length > 0) {
-              Text(`${this.resText($r('app.string.settings_device_id').id)}: ${this.sessionDeviceId}`)
+            if (this.pairSession.deviceId.length > 0) {
+              Text(`${this.resText($r('app.string.settings_device_id').id)}: ${this.pairSession.deviceId}`)
                 .fontSize(11)
                 .fontColor($r('app.color.text_muted'))
                 .fontFamily('monospace')
@@ -3260,12 +3095,12 @@ struct Index {
               Text($r('app.string.pair_dialog_code_label'))
                 .fontSize(12)
                 .fontColor($r('app.color.text_muted'))
-              Text(this.sessionCode.length > 0 ? this.sessionCode : '-- -- -- --')
+              Text(this.pairSession.code.length > 0 ? this.pairSession.code : '-- -- -- --')
                 .fontSize(28)
                 .fontWeight(FontWeight.Bold)
                 .fontColor($r('app.color.accent_text'))
                 .fontFamily('monospace')
-              if (this.sessionCode.length === 0) {
+              if (this.pairSession.code.length === 0) {
                 Text($r('app.string.pair_code_unavailable'))
                   .fontSize(10)
                   .fontColor($r('app.color.text_muted'))
@@ -3275,7 +3110,7 @@ struct Index {
               .fontSize(12)
               .fontColor($r('app.color.text_secondary'))
               .textAlign(TextAlign.Center)
-            if (this.sessionState === 'awaiting') {
+            if (this.pairSession.stage === 'awaiting') {
               Text($r('app.string.pair_waiting'))
                 .fontSize(12)
                 .fontColor($r('app.color.accent_text'))
@@ -3286,7 +3121,7 @@ struct Index {
                 .textAlign(TextAlign.Center)
             }
             Row({ space: 10 }) {
-              Button(this.sessionPeerRequested ? $r('app.string.pair_reject') : $r('app.string.action_cancel'))
+              Button(this.pairSession.peerRequested ? $r('app.string.pair_reject') : $r('app.string.action_cancel'))
                 .layoutWeight(1)
                 .height(42)
                 .fontSize(14)
@@ -3294,17 +3129,17 @@ struct Index {
                 .fontColor($r('app.color.danger_text'))
                 .borderRadius(12)
                 .onClick(() => {
-                  this.cancelPairDialog();
+                  this.pairSession.cancel();
                 })
-              if (this.sessionState === 'prompt') {
-                Button(this.sessionPeerRequested ? $r('app.string.pair_accept') : $r('app.string.pair_action'))
+              if (this.pairSession.stage === 'prompt') {
+                Button(this.pairSession.peerRequested ? $r('app.string.pair_accept') : $r('app.string.pair_action'))
                   .layoutWeight(1)
                   .height(42)
                   .fontSize(14)
                   .backgroundColor($r('app.color.accent'))
                   .borderRadius(12)
                   .onClick(() => {
-                    this.confirmPairInSession();
+                    this.pairSession.confirm();
                   })
               }
             }

@@ -1,7 +1,7 @@
 {
   "name": "entry",
   "version": "1.0.0",
-  "description": "KDE-H Connect entry module",
+  "description": "KDE Connect (HarmonyOS) entry module",
   "main": "",
   "author": "",
   "license": "GPL-2.0-or-later",

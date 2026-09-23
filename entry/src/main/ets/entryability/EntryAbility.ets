@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';

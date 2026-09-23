@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Packet 路由层：从 packetReceived 事件的原始数据中切分 NetworkPacket 帧，
 // 处理核心握手包（kdeconnect.pair / identity），其余 packet 交给插件宿主（AP-4）。
