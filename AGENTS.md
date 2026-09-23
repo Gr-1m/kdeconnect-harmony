@@ -69,6 +69,7 @@ packet 以换行分隔的 JSON 字符串发送：`{"id", "type", "body", "versio
 > 表现为**白屏**（app 进程在、native 不初始化）。**静态导入无法在运行期 catch** ⇒ 要在这台模拟器上跑 UI，
 > 必须先去掉/降级 HDS 依赖（实测：临时把 `HdsTabs` 换成标准 `Tabs` + 去掉 `barFloatingStyle` 后，
 > app **安装/启动/UI/原生栈全部正常**：`tcp listening` / `udp discovery init` / `native start ok` / `KDC-NETLOOP` 遥测可见）。
+> **一条命令在 ohemu 上跑 UI**：`tools/verify-on-ohemu.sh`（构建期降级 HDS + 构建/签名/安装/启动/截图/日志取证；`--revert` 还原；**降级态不可提交**——主线保留 HDS 观感）。
 > 另：**改名后签名无需重做材料** —— `tools/sign-debug.sh`（从 SDK 现生成 profile，含 debug `allowed-acls`）
 > 对 `org.kde.kdeconnect` 一次通过：`install bundle successfully.`；随后 `tools/launch-app.sh` 启动成功。
 > （本机 OpenHarmony 目标构建**不可行**：商用 CLT 拒绝该 SDK 布局 —— `The SDK management mode has changed.`）
