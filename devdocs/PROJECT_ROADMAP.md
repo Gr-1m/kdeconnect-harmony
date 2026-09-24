@@ -4,11 +4,13 @@
 
 ## 当前状态
 
-- 分支 `refactor/arkts-codearts`，提交 `9acf8c0`，工作区干净
-- 三方合并已完成：批1（6项）+ 批2逻辑层（9项）+ 批2 UI层（7项）+ 合并修正（15项裁定）= **37 项缺陷修复**
-- Index.ets 从 4156 行降至 3844 行（抽出了 DrawerOverlay + PayloadDetailDialog）
+- 分支 `main`（= `dev/zcodeinit` = `refactor/arkts-codearts`），提交 `38024be`，工作区干净
+- 阶段 1 + 阶段 2 已完成：P3 修复 + 回归验证 + PairSession + PluginEventBus + Index.ets 接线 + 路由装配
+- Index.ets 当前 **3714 行**（目标 < 1500 行）
+- 已抽出：DrawerOverlay(304) + PayloadDetailDialog(103) + PairSession(335) + PluginEventBus(83)
 - RemoteInputPlugin / NotificationPlugin 仍为 P1 占位骨架（21 行，只声明 caps）
 - MprisPlugin 已完整实现方向1（控制方），方向2（被控方）未做
+- 版本号 0.2.0，KDE 官方命名对齐（bundleName `org.kde.kdeconnect`）
 
 ## 五个推进方向
 
@@ -16,20 +18,38 @@
 
 **目标**：3844 行 → < 1500 行，拆为领域组件 + 状态模块
 
-**拆分计划**（按依赖顺序）：
+**拆分计划**（基于 2026-09-24 Index.ets 结构分析，3714 行 → 目标 < 1500 行）：
 
-| 步骤 | 抽出内容 | 目标文件 | 行数估算 | 依赖 |
+| 步骤 | 状态 | 抽出内容 | 目标文件 | 行数估算 |
 |---|---|---|---|---|
-| 1 | ✅ DrawerOverlay | components/DrawerOverlay.ets | 304 | 已完成 |
-| 2 | ✅ PayloadDetailDialog | components/PayloadDetailDialog.ets | 103 | 已完成 |
-| 3 | 配对会话状态机 | state/PairSession.ets | ~200 | 无 |
-| 4 | 插件事件总线 | state/PluginEventBus.ets | ~150 | 无 |
-| 5 | MprisPanel（媒体面板） | components/MprisPanel.ets | ~300 | 步骤4 |
-| 6 | PayloadManager（文件传输管理） | state/PayloadManager.ets | ~250 | 步骤4 |
-| 7 | 各弹窗（配对确认/远程命令/已接收） | components/*Dialog.ets | ~200 | 步骤3/4 |
-| 8 | Index 收尾（只剩页面骨架+组件装配） | pages/Index.ets | ~800 | 步骤3-7 |
+| 1 | ✅ | DrawerOverlay | components/DrawerOverlay.ets | 304 |
+| 2 | ✅ | PayloadDetailDialog | components/PayloadDetailDialog.ets | 103 |
+| 3 | ✅ | PairSession（配对会话状态机） | state/PairSession.ets | 335 |
+| 4 | ✅ | PluginEventBus（插件事件路由表） | state/PluginEventBus.ets | 83 |
+| **5** | **待做** | **批次1：低风险独立模块**（4 项，~350 行） | | |
+| 5a | | PairConfirmDialog（配对确认弹窗 UI） | components/PairConfirmDialog.ets | ~92 |
+| 5b | | RunCommandDialog（远程命令弹窗 UI + runCommand 方法） | components/RunCommandDialog.ets | ~106 |
+| 5c | | NotificationHelper（日志/通知工具方法） | common/NotificationHelper.ets | ~86 |
+| 5d | | NetworkWatcher（网络监听副作用模块） | common/NetworkWatcher.ets | ~68 |
+| **6** | **待做** | **批次2：大块领域模块**（2 项，~1413 行） | | |
+| 6a | | MprisController + MprisDialog（28 方法 + 313 行 UI） | state/MprisController.ets + components/MprisDialog.ets | ~599 |
+| 6b | | PayloadController + ReceivedFilesDialog（27 方法 + 84 行 UI） | state/PayloadController.ets + components/ReceivedFilesDialog.ets | ~814 |
+| **7** | **待做** | **批次3：中等耦合模块**（2 项，~176 行） | | |
+| 7a | | SettingsController（设置/主题/语言） | state/SettingsController.ets | ~79 |
+| 7b | | PluginEventHandlers（10 个事件处理方法） | state/PluginEventHandlers.ets | ~97 |
+| **8** | **待做** | **批次4：高耦合核心模块**（2 项，~611 行） | | |
+| 8a | | DeviceController（handleEvent + 配对/信任/派生列表） | state/DeviceController.ets | ~466 |
+| 8b | | DeviceActionController（卡片交互 + 设备动作分发） | state/DeviceActionController.ets | ~145 |
+| **9** | **待做** | **Index 收尾**（页面骨架 + 组件装配 + 回调注入） | pages/Index.ets | ~620-800 |
 
-**风险**：@State 下沉到组件需改 @Observed/@ObjectLink，可能触发 ArkTS 装饰器兼容性问题（已有 LogStore/SystemSinkUi 成功先例）
+**总提取 ~2552 行，Index.ets 保留 ~620-800 行**（远低于 1500 行目标）
+
+**批次策略**：每批完成后跑 `assembleHap` 验证构建通过，再进入下一批。批次内各项独立可并行。
+
+**风险**：
+- @State 下沉到组件需改 @Observed/@ObjectLink，可能触发 ArkTS 装饰器兼容性问题（已有 LogStore/SystemSinkUi 成功先例）
+- 批次4 DeviceController 的 `handleEvent` 是核心枢纽，与几乎所有模块耦合——最后做，且可能需要拆成更小的子模块
+- MPRIS/Payload 方法数量多（28/27 个），与插件实例交互深——需仔细设计注入接口
 
 **负责方**：DevEco（ArkTS + UI）
 
@@ -164,11 +184,11 @@
 
 | 阶段 | 内容 | 前置 |
 |---|---|---|
-| **阶段 1** | 方向 D 低风险项（P3-1/3/7/8/9/10/11）+ 方向 E 回归验证 | 无 |
-| **阶段 2** | 方向 A R1 拆分步骤 3-4（PairSession + PluginEventBus） | 阶段1验证通过 |
-| **阶段 3** | 方向 A R1 拆分步骤 5-8（MprisPanel + PayloadManager + Dialogs + Index 收尾） | 阶段2 |
-| **阶段 4** | 方向 B 远程输入 + 方向 C 通知读取 | 阶段3（UI 组件模式已稳定） |
-| **阶段 5**（0.9→1.0） | 方向 F 双平台支持（OpenHarmony + HarmonyOS NEXT） | 阶段4完成、功能稳定 |
+| **阶段 1** | ✅ 完成 | 方向 D 低风险项（P3-1/3/7/8/9/10/11）+ 方向 E 回归验证 | 无 |
+| **阶段 2** | ✅ 完成 | 方向 A R1 拆分步骤 3-4（PairSession + PluginEventBus + 接线 + 路由装配） | 阶段1验证通过 |
+| **阶段 3** | **进行中** | 方向 A R1 拆分步骤 5-9（10 个提取区域，4 批次，Index.ets 3714→<1500） | 阶段2 |
+| **阶段 4** | | 方向 B 远程输入 + 方向 C 通知读取 | 阶段3（UI 组件模式已稳定） |
+| **阶段 5**（0.9→1.0） | | 方向 F 双平台支持（OpenHarmony + HarmonyOS NEXT） | 阶段4完成、功能稳定 |
 
 **并行**：方向 E 回归验证贯穿所有阶段；方向 D P3-5/6 随阶段 2-3 做。
 
