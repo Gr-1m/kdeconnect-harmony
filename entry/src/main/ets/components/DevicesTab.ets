@@ -203,9 +203,11 @@ export struct DevicesTab {
       .layoutWeight(1)
 
       if (connected) {
-        Text($r('app.string.remembered_hint'))
+        // 已连接行徽章按实际配对态渲染（评审 P2-3：无条件显示「已配对」会把
+        // 已连接未配对设备错标——与 connectedRow/isPaired 逻辑对齐）
+        Text(this.isPaired(d.id) ? $r('app.string.remembered_hint') : $r('app.string.remembered_unpaired'))
           .fontSize(9)
-          .fontColor($r('app.color.dot_remembered'))
+          .fontColor(this.isPaired(d.id) ? $r('app.color.dot_remembered') : $r('app.color.text_muted'))
           .padding({ left: 6, right: 6, top: 2, bottom: 2 })
           .borderRadius(999)
           .backgroundColor($r('app.color.chip_bg'))
