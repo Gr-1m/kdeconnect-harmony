@@ -256,6 +256,47 @@ bool jsGetDouble(napi_env env, napi_value v, double &out)
     return napi_get_value_double(env, v, &out) == napi_ok;
 }
 
+// —— 位置参数版严格取参（与 F1 同约定；修 AtomCode P3「静默吞参」）——
+// 旧行为：类型不符/缺参 ⇒ 静默回落 0/空串，JS 侧看不到任何提示（例如 sendPayload 参数写错会"静默不发"）。
+// 新行为：抛 TypeError（JS 侧立刻可见），调用方随后照常返回默认值。
+static void throwArgError(napi_env env, const char *fn, size_t index, const char *want)
+{
+    char msg[192];
+    std::snprintf(msg, sizeof(msg), "%s: 第 %zu 个参数缺失或类型错误（需要 %s）", fn, index + 1, want);
+    napi_throw_type_error(env, "EINVAL", msg);
+}
+
+static bool requireArgc(napi_env env, const char *fn, size_t argc, size_t want)
+{
+    if (argc >= want) {
+        return true;
+    }
+    char msg[160];
+    std::snprintf(msg, sizeof(msg), "%s: 需要 %zu 个参数，实际收到 %zu", fn, want, argc);
+    napi_throw_type_error(env, "EINVAL", msg);
+    return false;
+}
+
+static bool jsGetStringStrict(napi_env env, const char *fn, size_t index, napi_value v, std::string &out)
+{
+    napi_valuetype t = napi_undefined;
+    if (napi_typeof(env, v, &t) != napi_ok || t != napi_string || !jsGetString(env, v, out)) {
+        throwArgError(env, fn, index, "string");
+        return false;
+    }
+    return true;
+}
+
+static bool jsGetDoubleStrict(napi_env env, const char *fn, size_t index, napi_value v, double &out)
+{
+    napi_valuetype t = napi_undefined;
+    if (napi_typeof(env, v, &t) != napi_ok || t != napi_number || !jsGetDouble(env, v, out)) {
+        throwArgError(env, fn, index, "number");
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 napi_value JsSendPayload(napi_env env, napi_callback_info info)
@@ -265,10 +306,12 @@ napi_value JsSendPayload(napi_env env, napi_callback_info info)
     napi_value args[4] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     double result = 0;
-    if (argc >= 4) {
+    if (requireArgc(env, "sendPayload", argc, 4)) {
         std::string deviceId, type, body, path;
-        if (jsGetString(env, args[0], deviceId) && jsGetString(env, args[1], type) &&
-            jsGetString(env, args[2], body) && jsGetString(env, args[3], path)) {
+        if (jsGetStringStrict(env, "sendPayload", 0, args[0], deviceId) &&
+            jsGetStringStrict(env, "sendPayload", 1, args[1], type) &&
+            jsGetStringStrict(env, "sendPayload", 2, args[2], body) &&
+            jsGetStringStrict(env, "sendPayload", 3, args[3], path)) {
             result = static_cast<double>(
                 netStack().sendPayload(deviceId, type, body, path));
         }
@@ -287,7 +330,9 @@ napi_value JsKeepPayload(napi_env env, napi_callback_info info)
     double id = 0;
     std::string dest;
     bool ok = false;
-    if (argc >= 2 && jsGetDouble(env, args[0], id) && jsGetString(env, args[1], dest)) {
+    if (requireArgc(env, "keepPayload", argc, 2) &&
+        jsGetDoubleStrict(env, "keepPayload", 0, args[0], id) &&
+        jsGetStringStrict(env, "keepPayload", 1, args[1], dest)) {
         ok = netStack().payloadSettle(static_cast<uint64_t>(id), dest, true);
     }
     napi_value out = nullptr;
@@ -303,7 +348,8 @@ napi_value JsDiscardPayload(napi_env env, napi_callback_info info)
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     double id = 0;
     bool ok = false;
-    if (argc >= 1 && jsGetDouble(env, args[0], id)) {
+    if (requireArgc(env, "discardPayload", argc, 1) &&
+        jsGetDoubleStrict(env, "discardPayload", 0, args[0], id)) {
         ok = netStack().payloadSettle(static_cast<uint64_t>(id), std::string(), false);
     }
     napi_value out = nullptr;
@@ -318,7 +364,8 @@ napi_value JsCancelPayload(napi_env env, napi_callback_info info)
     napi_value args[1] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     double id = 0;
-    if (argc >= 1 && jsGetDouble(env, args[0], id)) {
+    if (requireArgc(env, "cancelPayload", argc, 1) &&
+        jsGetDoubleStrict(env, "cancelPayload", 0, args[0], id)) {
         netStack().payloadCancel(static_cast<uint64_t>(id));
     }
     napi_value out = nullptr;
@@ -333,7 +380,7 @@ napi_value JsSetCapabilities(napi_env env, napi_callback_info info)
     size_t argc = 2;
     napi_value args[2] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc >= 2) {
+    if (requireArgc(env, "setCapabilities", argc, 2)) {
         std::vector<std::string> caps[2];
         bool ok = true;
         for (int i = 0; i < 2 && ok; ++i) {
@@ -349,7 +396,7 @@ napi_value JsSetCapabilities(napi_env env, napi_callback_info info)
                     break;
                 }
                 std::string cap;
-                if (!jsGetString(env, item, cap)) {
+                if (!jsGetStringStrict(env, "setCapabilities", k, item, cap)) {
                     ok = false;
                     break;
                 }
@@ -372,9 +419,9 @@ napi_value JsGetPeerCertificate(napi_env env, napi_callback_info info)
     napi_value args[1] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     std::string pem;
-    if (argc >= 1) {
+    if (requireArgc(env, "getPeerCertificate", argc, 1)) {
         std::string deviceId;
-        if (jsGetString(env, args[0], deviceId)) {
+        if (jsGetStringStrict(env, "getPeerCertificate", 0, args[0], deviceId)) {
             pem = netStack().getPeerCertificate(deviceId);
         }
     }
@@ -390,10 +437,11 @@ napi_value JsGetPairVerificationCode(napi_env env, napi_callback_info info)
     napi_value args[2] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     std::string code;
-    if (argc >= 2) {
+    if (requireArgc(env, "getPairVerificationCode", argc, 2)) {
         std::string deviceId;
         double ts = 0;
-        if (jsGetString(env, args[0], deviceId) && jsGetDouble(env, args[1], ts)) {
+        if (jsGetStringStrict(env, "getPairVerificationCode", 0, args[0], deviceId) &&
+            jsGetDoubleStrict(env, "getPairVerificationCode", 1, args[1], ts)) {
             code = netStack().getPairVerificationCode(deviceId,
                                                       static_cast<int64_t>(ts));
         }
@@ -419,9 +467,10 @@ napi_value JsSetTrustedCertificate(napi_env env, napi_callback_info info)
     size_t argc = 2;
     napi_value args[2] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc >= 2) {
+    if (requireArgc(env, "setTrustedCertificate", argc, 2)) {
         std::string deviceId, pem;
-        if (jsGetString(env, args[0], deviceId) && jsGetString(env, args[1], pem)) {
+        if (jsGetStringStrict(env, "setTrustedCertificate", 0, args[0], deviceId) &&
+            jsGetStringStrict(env, "setTrustedCertificate", 1, args[1], pem)) {
             netStack().setTrustedCertificate(deviceId, pem);
         }
     }
@@ -436,9 +485,9 @@ napi_value JsRemoveTrustedCertificate(napi_env env, napi_callback_info info)
     size_t argc = 1;
     napi_value args[1] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc >= 1) {
+    if (requireArgc(env, "removeTrustedCertificate", argc, 1)) {
         std::string deviceId;
-        if (jsGetString(env, args[0], deviceId)) {
+        if (jsGetStringStrict(env, "removeTrustedCertificate", 0, args[0], deviceId)) {
             netStack().removeTrustedCertificate(deviceId);
         }
     }
