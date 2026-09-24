@@ -15,19 +15,19 @@
 - 位置：`.stignore:1-17`（现文件已无 `.git` 行）。
 - 事实：AGENTS.md「共享目录的版本标记（2026-09-14 起）」明确 **`.git` 不同步**（Syncthing 搬不动活着的 git 仓库，会产生冲突副本、破坏单写者不变式）；PROCESS.md §9.3 也把 `.git` 列为 `.stignore` 独有排除项。当前文件删除了唯一强制该约束的机制。
 - 失效模式：下一轮 Syncthing 同步即开始传播 `.git/`，`.git` 内出现 `*.sync-conflict-*`，甚至两机并发写 refs/index 损坏历史——正是 2026-09-13 事故同类。
-- **整改**：立即在 `.stignore` 恢复 `.git` 一行（两端各配，本文件不同步）。⚠️ 若 Win10 侧 Syncthing 已跑过至少一轮，先检查 Win10 侧 `.git` 是否已出现冲突副本，由用户裁决处理。
+- **整改**：~~立即在 `.stignore` 恢复 `.git` 一行~~ **✅ 已修复（2026-09-22 用户授权，`.git` 已恢复为第 2 行）**。⚠️ 若 Win10 侧 Syncthing 已跑过至少一轮，先检查 Win10 侧 `.git` 是否已出现冲突副本，由用户裁决处理。
 
 ### P2-3 / P3-4 侧栏已连接行徽章恒显「已配对」（UI 状态错报）
 
 - 位置：`entry/src/main/ets/components/DevicesTab.ets:205-211`（`sideDeviceRow` 的 `if (connected)` 分支）。
 - 事实：该分支无条件渲染 `$r('app.string.remembered_hint')`，而该资源值为「已配对」/ "Paired"（base/zh_CN string.json 已核实）。但本改动集的三态模型明确允许「已连接未配对」设备停留在已连接列表——同一 diff 里 `discoveredRow`/`connectedRow` 都用 `isPaired(d.id)` 区分 `remembered_hint`/`remembered_unpaired`，唯独侧栏漏了。这正是本改动集声称修复的「对端解除配对后本侧仍显示已配对」同类 bug。
-- **整改**：`if (connected)` 分支按 `this.isPaired(d.id)` 条件渲染：已配对用 `remembered_hint`，未配对用 `remembered_unpaired`（与主区行逻辑对齐）；或新增 `connected_hint` 资源做中性「已连接」chip（需 base+zh_CN 各加一条）。
+- **整改**：~~`if (connected)` 分支按 `this.isPaired(d.id)` 条件渲染~~ **✅ 已修复（2026-09-22）**：已改为条件渲染 `remembered_hint`/`remembered_unpaired`（fontColor 同步区分 `dot_remembered`/`text_muted`），与 connectedRow 逻辑对齐；中性「已连接」chip（`connected_hint`）降为可选优化。待 Win10 侧下次构建验证。
 
 ### P3-5 新 payload NAPI 导出静默吞参（与 F1 约定不一致）
 
 - 位置：`entry/src/main/cpp/net/napi_exports.cpp:261-279`（`JsSendPayload`/`JsKeepPayload`/`JsDiscardPayload`/`JsCancelPayload`/`JsSetCapabilities` 等）。
 - 事实：本改动集在 `napiGetString`/`napiGetInt` 中确立了「取参失败 → 抛 TypeError，JS 侧立即可见」的 F1 约定，但 WP-1b 新导出在参数缺失/类型不符时静默返回 `0`/`false`（如 `if (argc >= 4) {…}` 无 else 抛错分支）。后果：JS 侧参数写错会被吞成「sendPayload 返回 0」，发送队列丢文件时无法区分「对端拒绝」与「调用方传参错误」。
-- **整改（一致性改进，非阻塞）**：复用 `throwFieldTypeError`/`napiGetString` helper，失败路径至少补 `napi_throw_type_error`。
+- **整改**：~~复用 `throwFieldTypeError`/`napiGetString` helper~~ **✅ 已修复（2026-09-22，ZCode 侧同步落地，经本机核实）**：新增 `requireArgc`/`jsGetStringStrict`/`jsGetDoubleStrict`，全部 9 个导出（sendPayload/keepPayload/discardPayload/cancelPayload/setCapabilities/getPeerCertificate/getPairVerificationCode/setTrustedCertificate/removeTrustedCertificate）失败路径均抛 TypeError，覆盖超出评审建议范围。
 
 ## 3. 与参考端的核对结论（抽样）
 
