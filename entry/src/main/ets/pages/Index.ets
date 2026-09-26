@@ -12,7 +12,7 @@ import uiMaterial from '@ohos.arkui.uiMaterial';
 import deviceInfo from '@ohos.deviceInfo';
 import { PacketRouter, RouterCallbacks } from '../net/PacketRouter';
 import { PluginBase } from '../plugins/PluginBase';
-import { PluginEvent, BatteryPayload, RunOutputPayload } from '../plugins/PluginEvent';
+import { PluginEvent } from '../plugins/PluginEvent';
 import { PluginRegistry } from '../plugins/PluginRegistry';
 import { PluginHost } from '../plugins/PluginHost';
 import { PingPlugin } from '../plugins/PingPlugin';
@@ -49,6 +49,8 @@ import { PairSession } from '../state/PairSession';
 import { PluginEventBus } from '../state/PluginEventBus';
 import { MprisController } from '../state/MprisController';
 import { PayloadController, SendJob } from '../state/PayloadController';
+import { SettingsController, SettingEntry } from '../state/SettingsController';
+import { PluginEventHandlers } from '../state/PluginEventHandlers';
 import hilog from '@ohos.hilog';
 
 // timestamp 仅 pair 请求需要（KDE pair 响应体只含 {"pair": false}）
@@ -67,14 +69,6 @@ interface PairRequestPacket {
 interface TabDef {
   label: ResourceStr;
 }
-
-// 设置项持久化条目（统一按字符串存 Preferences）
-interface SettingEntry {
-  key: string;
-  value: string;
-}
-
-const DEFAULT_DEVICE_NAME: string = 'kdeconnect-harmony';
 
 // 连接/配对会话超时（毫秒）：TCP+TLS 建连 20s；配对请求等对端确认 45s
 // （对端 KDE PairingHandler::pairingTimeoutMsec 也是 30s：本侧必须留更长，
@@ -110,12 +104,7 @@ struct Index {
   // 5s 保险丝兜底（日志区分 fired by event / fired by timeout）。仅逻辑，不改视觉。
   @State cardBusyKey: string = '';
   private cardBusyTimer: number = -1;
-  @State deviceName: string = DEFAULT_DEVICE_NAME;
-  // 系统设备名称（只读展示 + 设置页「使用系统名称」）
-  @State systemName: string = '';
-  @State themeMode: number = THEME_FOLLOW_SYSTEM;
-  @State language: string = LANG_SYSTEM;
-  // 宽屏（平板/折叠展开）判定：>=600vp 走常驻侧栏，否则走抽屉式侧栏
+  @State settingsController: SettingsController = new SettingsController();
   @State isWide: boolean = false;
   // 横屏判定（宽 > 高）
   @State isLandscape: boolean = false;
@@ -151,15 +140,12 @@ struct Index {
   // 音量 Slider 的「用户是否真在拖」标志（已随 MprisDialog 下沉，页面不再持有）
   // 插件推来的展示项（目前：电量）
   @State batteryItems: BatteryItem[] = [];
-  // 对端（kdeconnect.runcommand）下发的预设命令列表：只保存当前设备的，供「远程命令」弹窗展示
   @State runCommands: RunCommandEntry[] = [];
   @State runCommandDeviceId: string = '';
-  // 远程命令弹窗显隐
   @State runCommandDialogOpen: boolean = false;
-  // 媒体控制领域控制器（阶段 3 批次 2 ⇒ state/MprisController.ets）
   @State mprisController: MprisController = new MprisController();
-  // 文件传输领域控制器（阶段 3 批次 2 ⇒ state/PayloadController.ets）
   @State payloadController: PayloadController = new PayloadController();
+  private pluginHandlers: PluginEventHandlers = new PluginEventHandlers();
   // 状态栏 / 导航栏安全区高度（EntryAbility 写入，单位 px）
   @StorageProp('statusBarHeightPx') statusBarHeightPx: number = 0;
   @StorageProp('navBarHeightPx') navBarHeightPx: number = 0;
@@ -230,13 +216,13 @@ struct Index {
       certPem = String(await pref.get('certPem', ''));
       keyPem = String(await pref.get('keyPem', ''));
       // 设备名称：用户改过就用用户的；没改过 → 读**系统设备名称**（设置→关于本机→设备名称，回退市场名/型号）
-      this.deviceName = String(await pref.get('deviceName', ''));
-      this.systemName = systemDeviceName(ctx);
-      if (this.deviceName.length === 0) {
-        this.deviceName = this.systemName;
+      this.settingsController.deviceName = String(await pref.get('deviceName', ''));
+      this.settingsController.systemName = systemDeviceName(ctx);
+      if (this.settingsController.deviceName.length === 0) {
+        this.settingsController.deviceName = this.settingsController.systemName;
       }
-      this.themeMode = parseInt(String(await pref.get('themeMode', '0')), 10) || THEME_FOLLOW_SYSTEM;
-      this.language = String(await pref.get('language', LANG_SYSTEM));
+      this.settingsController.themeMode = parseInt(String(await pref.get('themeMode', '0')), 10) || THEME_FOLLOW_SYSTEM;
+      this.settingsController.language = String(await pref.get('language', LANG_SYSTEM));
       // AP-3：信任设备（含旧的 rememberedDevices 一次性迁移）
       this.trustedDevices = await TrustStore.load(ctx);
       this.rememberedDevices = this.trustedDevices.map((t: TrustedDevice) => {
@@ -266,7 +252,7 @@ struct Index {
     }
     // 设置读取完成后再应用（否则 onPageShow 可能早于读取完成，把默认值当成当前值应用 → 表现为"重开恢复默认"）
     this.settingsLoaded = true;
-    console.info(`KDC settings loaded: deviceName=${this.deviceName} themeMode=${this.themeMode} language=${this.language}`);
+    console.info(`KDC settings loaded: deviceName=${this.settingsController.deviceName} themeMode=${this.settingsController.themeMode} language=${this.settingsController.language}`);
     this.applySettingsIfReady();
 
     if (deviceId.length < 32 || certPem === '' || keyPem === '') {
@@ -335,7 +321,7 @@ struct Index {
       onPluginPacket: (id: string, packetType: string, body: Object): boolean =>
         this.dispatchPluginPacket(id, packetType, body)
     };
-    this.router = new PacketRouter(this.deviceId, this.deviceName, 'phone',
+    this.router = new PacketRouter(this.deviceId, this.settingsController.deviceName, 'phone',
       (msg: string): void => {
         this.notify.log(msg);
       }, callbacks);
@@ -386,13 +372,13 @@ struct Index {
     this.eventBus.setFallback((id: string, ev: PluginEvent): void => {
       this.notify.log(`plugin event ${ev.kind} from ${id}`);
     });
-    this.eventBus.on('runcommand.list', (id: string, ev: PluginEvent): void => { this.onRunCommandList(id, ev); });
-    this.eventBus.on('runcommand.output', (id: string, ev: PluginEvent): void => { this.onRunCommandOutput(id, ev); });
-    this.eventBus.on('clipboard.request', (id: string, ev: PluginEvent): void => { this.onClipboardRequest(id, ev); });
+    this.eventBus.on('runcommand.list', (id: string, ev: PluginEvent): void => { this.pluginHandlers.onRunCommandList(id, ev); });
+    this.eventBus.on('runcommand.output', (id: string, ev: PluginEvent): void => { this.pluginHandlers.onRunCommandOutput(id, ev); });
+    this.eventBus.on('clipboard.request', (id: string, ev: PluginEvent): void => { this.pluginHandlers.onClipboardRequest(id, ev); });
     this.eventBus.on('mpris.playerList', (id: string, ev: PluginEvent): void => { this.onMprisPlayerList(id, ev); });
     this.eventBus.on('mpris.playerUpdate', (id: string, ev: PluginEvent): void => { this.onMprisPlayerUpdate(id, ev); });
     this.eventBus.on('systemvolume.sinks', (id: string, ev: PluginEvent): void => { this.onSystemVolumeSinks(id, ev); });
-    this.eventBus.on('battery', (id: string, ev: PluginEvent): void => { this.onBattery(id, ev); });
+    this.eventBus.on('battery', (id: string, ev: PluginEvent): void => { this.pluginHandlers.onBattery(id, ev); });
 
     // 阶段 3 批次 1 装配（步骤 5c/5d）：把页面能力注入抽出的模块（模块自身不碰 Context/UI/native）。
     // 5c NotificationHelper：日志与提示文案在模块里，页面只提供"必须有 Context/UI 才能做"的四件事。
@@ -445,6 +431,47 @@ struct Index {
     this.payloadController.persistHistory = (history: PayloadTransfer[]): Promise<void> => this.persistPayloadHistory(history);
     this.payloadController.clearPersistedHistory = (): Promise<void> => this.clearPayloadHistory();
     this.payloadController.connectedDeviceIds = (): string[] => this.connectedDevices.map((d: DeviceItem) => d.id);
+    // 阶段 3 批次 3 装配：SettingsController + PluginEventHandlers 注入
+    this.settingsController.log = (m: string): void => { this.notify.log(m); };
+    this.settingsController.persistEntries = (entries: SettingEntry[]): Promise<void> => this.persistSettings(entries);
+    this.settingsController.applyColorMode = (mode: number): void => {
+      try {
+        const hostCtx: Context | undefined = this.getUIContext().getHostContext();
+        if (hostCtx !== undefined) {
+          hostCtx.getApplicationContext().setColorMode(colorModeOf(mode));
+        }
+      } catch (e) {
+        this.notify.log('setColorMode failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      }
+    };
+    this.settingsController.applyLang = (lang: string): void => {
+      try {
+        const hostCtx: Context | undefined = this.getUIContext().getHostContext();
+        if (hostCtx !== undefined) {
+          hostCtx.getApplicationContext().setLanguage(languageOf(lang));
+        }
+      } catch (e) {
+        this.notify.log('setLanguage failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      }
+    };
+    this.settingsController.getSystemName = (): string => systemDeviceName(this.getUIContext().getHostContext());
+    this.settingsController.restartNative = (): void => {
+      try {
+        native.stop();
+      } catch (e) {
+      }
+      this.startNative();
+    };
+    this.pluginHandlers.log = (m: string): void => { this.notify.log(m); };
+    this.pluginHandlers.toast = (m: string): void => { this.notify.toast(m); };
+    this.pluginHandlers.resText = (resId: number): string => this.notify.resText(resId);
+    this.pluginHandlers.commandsOf = (deviceId: string): RunCommandEntry[] => this.commandsOf(deviceId);
+    this.pluginHandlers.setRunCommandState = (deviceId: string, commands: RunCommandEntry[]): void => {
+      this.runCommandDeviceId = deviceId;
+      this.runCommands = commands;
+    };
+    this.pluginHandlers.setBatteryItems = (items: BatteryItem[]): void => { this.batteryItems = items; };
+    this.pluginHandlers.getBatteryItems = (): BatteryItem[] => this.batteryItems;
     // 装配自检：注册数与清单一致（7）。**同时写 hilog**（页面 log() 只进 app 内 LogStore，机器不可见）
     // ⇒ 漏注册/多注册可在 `hdc shell hilog` 里直接机检（devdocs/PLUGIN_ROUTE_INVENTORY.md §5）。
     const routeCount: number = this.eventBus.kinds().length;
@@ -506,8 +533,8 @@ struct Index {
     // 启动时它紧跟首帧之后（实测 +1.23s）执行，会与 native 的建链首批发包叠在同一时间窗内。
     // 延后一拍（首帧后再 300ms）执行，把这段开销从"首屏可交互前的窗口"里挪出去。
     setTimeout((): void => {
-      this.applyTheme(this.themeMode, false);
-      this.applyLanguage(this.language, false);
+      this.settingsController.applyTheme(this.settingsController.themeMode, false);
+      this.settingsController.applyLanguage(this.settingsController.language, false);
     }, 300);
   }
 
@@ -576,7 +603,7 @@ struct Index {
     try {
       const cfg: NetConfig = {
         deviceId: this.deviceId,
-        deviceName: this.deviceName,
+        deviceName: this.settingsController.deviceName,
         deviceType: this.peerDeviceType(),
         certPem: this.certPem,
         keyPem: this.keyPem,
@@ -614,7 +641,6 @@ struct Index {
     }
   }
 
-  // 解析持久化的已配对设备列表（JSON 数组 [{id, name}]）
   private async persistSettings(entries: SettingEntry[]): Promise<void> {
     try {
       const hostCtx: Context | undefined = this.getUIContext().getHostContext();
@@ -638,63 +664,6 @@ struct Index {
       return;
     }
     await TrustStore.save(hostCtx, this.trustedDevices);
-  }
-
-  // 自定义设备名：持久化并重启 native 栈，使 identity 广播/握手使用新名称（deviceId/证书不变）
-  private renameDevice(name: string): void {
-    if (name.length === 0 || name === this.deviceName) {
-      return;
-    }
-    this.deviceName = name;
-    const nameEntries: SettingEntry[] = [{ key: 'deviceName', value: name }];
-    this.persistSettings(nameEntries);
-    this.notify.log(`rename device -> ${name} (restart native)`);
-    try {
-      native.stop();
-    } catch (e) {
-      // ignore
-    }
-    this.startNative();
-  }
-
-  // 设置页「使用系统名称」：把设备名恢复为系统设备名称（重新读取一次，避免系统名被改过）
-  private useSystemDeviceName(): void {
-    const name: string = systemDeviceName(this.getUIContext().getHostContext());
-    this.systemName = name;
-    this.notify.log(`use system device name: ${name}`);
-    this.renameDevice(name);
-  }
-
-  private applyTheme(mode: number, persist: boolean): void {
-    this.themeMode = mode;
-    try {
-      const hostCtx: Context | undefined = this.getUIContext().getHostContext();
-      if (hostCtx !== undefined) {
-        hostCtx.getApplicationContext().setColorMode(colorModeOf(mode));
-      }
-    } catch (e) {
-      this.notify.log('setColorMode failed: ' + (e instanceof Error ? e.message : 'unknown'));
-    }
-    if (persist) {
-      const themeEntries: SettingEntry[] = [{ key: 'themeMode', value: `${mode}` }];
-      this.persistSettings(themeEntries);
-    }
-  }
-
-  private applyLanguage(language: string, persist: boolean): void {
-    this.language = language;
-    try {
-      const hostCtx: Context | undefined = this.getUIContext().getHostContext();
-      if (hostCtx !== undefined) {
-        hostCtx.getApplicationContext().setLanguage(languageOf(language));
-      }
-    } catch (e) {
-      this.notify.log('setLanguage failed: ' + (e instanceof Error ? e.message : 'unknown'));
-    }
-    if (persist) {
-      const langEntries: SettingEntry[] = [{ key: 'language', value: language }];
-      this.persistSettings(langEntries);
-    }
   }
 
   // 触发一次 UDP identity 广播（native 未导出该符号时静默降级，不写屏幕日志）
@@ -732,36 +701,6 @@ struct Index {
     this.eventBus.dispatch(deviceId, ev);
   }
 
-  // ── 各 kind 的处理器（自 onPluginEvent 的内联分支原样搬出，行为零变更）──
-
-  private onRunCommandList(deviceId: string, ev: PluginEvent): void {
-    const data: string = ev.text ?? '';
-    this.runCommandDeviceId = deviceId;
-    this.runCommands = this.commandsOf(deviceId);
-    this.notify.log(`run command list <- ${deviceId} (${data})`);
-  }
-
-  private onRunCommandOutput(deviceId: string, ev: PluginEvent): void {
-    // 嵌套 payload（裁定表 #6）：读 ev.runOutput 结构化字段
-    const ro: RunOutputPayload | undefined = ev.runOutput;
-    if (ro === undefined) {
-      return;
-    }
-    const ok: boolean = ro.success;
-    const code: number = ro.exitCode;
-    const text: string = ro.text;
-    const head: string = this.notify.resText(ok
-      ? $r('app.string.toast_run_cmd_ok').id : $r('app.string.toast_run_cmd_failed').id);
-    this.notify.toast(text.length > 0 ? `${head} (exit=${code}): ${text}` : `${head} (exit=${code})`);
-    this.notify.log(`run command output <- ${deviceId}: success=${ok} exit=${code}`);
-  }
-
-  private onClipboardRequest(deviceId: string, ev: PluginEvent): void {
-    // 对端索取本机剪贴板：三方应用无权读剪贴板，只能提示用户点「粘贴」按钮授权发送
-    this.notify.toast(this.notify.resText($r('app.string.toast_clipboard_requested').id));
-    this.notify.log(`clipboard requested by ${deviceId}`);
-  }
-
   // 媒体控制（方向 1）：类型化对象直读，省掉每事件一次 stringify+parse
   private onMprisPlayerList(deviceId: string, ev: PluginEvent): void {
     this.mprisController.setList(deviceId, ev.mprisList ?? []);
@@ -782,25 +721,6 @@ struct Index {
     }
     this.mprisController.svSinks = ev.svSinks !== undefined ? ev.svSinks : [];
     this.mprisController.svDeviceId = deviceId;
-  }
-
-  private onBattery(deviceId: string, ev: PluginEvent): void {
-    // 嵌套 payload（裁定表 #6）：读 ev.battery 结构化字段
-    const bp: BatteryPayload | undefined = ev.battery;
-    if (bp === undefined) {
-      return;
-    }
-    const charge: number = bp.charge;
-    const charging: boolean = bp.charging;
-    const text: string = `${charge}%${charging ? ' ⚡' : ''}`;
-    const exists: boolean = this.batteryItems.some((b: BatteryItem) => b.deviceId === deviceId);
-    const item: BatteryItem = { deviceId: deviceId, text: text };
-    if (exists) {
-      this.batteryItems = this.batteryItems.map((b: BatteryItem) => b.deviceId === deviceId ? item : b);
-    } else {
-      this.batteryItems = this.batteryItems.concat([item]);
-    }
-    this.notify.log(`battery ${text} <- ${deviceId}`);
   }
 
   // 取某设备已收到的预设命令列表（命令由 RunCommandPlugin 实例持有）
@@ -1300,7 +1220,7 @@ struct Index {
       // 注：`kdeconnect.findmyphone.request` 在 KDE 桌面端不弹通知（用户实测），故不再由按钮发送。
       for (const p of list) {
         if (p instanceof PingPlugin) {
-          const ok: boolean = p.sendPing(this.deviceName);
+          const ok: boolean = p.sendPing(this.settingsController.deviceName);
           this.notify.toast(this.notify.resText(ok
             ? $r('app.string.toast_find_device_sent').id
             : $r('app.string.toast_find_device_failed').id));
@@ -2027,23 +1947,23 @@ struct Index {
             Column() {
               SettingsTab({
                 deviceId: this.deviceId,
-                deviceName: this.deviceName,
-                systemName: this.systemName,
+                deviceName: this.settingsController.deviceName,
+                systemName: this.settingsController.systemName,
                 statusText: this.status,
-                themeMode: this.themeMode,
-                language: this.language,
+                themeMode: this.settingsController.themeMode,
+                language: this.settingsController.language,
                 immersive: this.immersiveSupported,
                 onRenameDevice: (name: string): void => {
-                  this.renameDevice(name);
+                  this.settingsController.renameDevice(name);
                 },
                 onUseSystemName: (): void => {
-                  this.useSystemDeviceName();
+                  this.settingsController.useSystemDeviceName();
                 },
                 onThemeChange: (mode: number): void => {
-                  this.applyTheme(mode, true);
+                  this.settingsController.applyTheme(mode, true);
                 },
                 onLanguageChange: (lang: string): void => {
-                  this.applyLanguage(lang, true);
+                  this.settingsController.applyLanguage(lang, true);
                 }
               })
             }
