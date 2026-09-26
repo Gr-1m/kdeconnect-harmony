@@ -36,8 +36,8 @@
 
 ## 4. 局限（如实声明）
 
-- code_review 深度评审 4 维度中 **correctness / tests_contracts 已完成**，**security / performance 两维度工具执行失败未跑完**；后续可在改动收敛后（如 commit 前）对这两个维度补跑一轮。
-- 评审基于 diff 与定点核实（.stignore、DevicesTab、string.json 已逐一读源确认），未运行构建。
+- code_review 深度评审 4 维度分两轮完成：首轮（全量 64 文件，deep）完成 **correctness / tests_contracts**；补跑（2026-09-22，缩小至 cpp+ets 代码目录 46 文件，deep）完成 **security / performance，0 问题**。全部 4 维均已覆盖。
+- 评审基于 diff 与定点核实（.stignore、DevicesTab、string.json、napi_exports.cpp 已逐一读源确认），未运行构建。
 
 ## 5. 处置建议（给 CodeArts 裁决）
 
