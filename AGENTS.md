@@ -69,6 +69,7 @@ packet 以换行分隔的 JSON 字符串发送：`{"id", "type", "body", "versio
 > 表现为**白屏**（app 进程在、native 不初始化）。**静态导入无法在运行期 catch** ⇒ 要在这台模拟器上跑 UI，
 > 必须先去掉/降级 HDS 依赖（实测：临时把 `HdsTabs` 换成标准 `Tabs` + 去掉 `barFloatingStyle` 后，
 > app **安装/启动/UI/原生栈全部正常**：`tcp listening` / `udp discovery init` / `native start ok` / `KDC-NETLOOP` 遥测可见）。
+> **ohemu 上无法做「点击级」UI 验证（2026-09-26 实测）**：镜像内**没有 `uinput`**（`which uinput` 为空）⇒ 只能 `snapshot_display` 取**首屏**截图，不能模拟点按/滑动。=> 依赖交互的验收（切页签、弹窗、toast）在 ohemu 上**不可自动化**，须由人在真机/模拟器上确认，或在有对端设备的场景下走真机回归；提交前请勿把"截图"当作交互类验证的证据。
 > **「HDS 双变体」不可用 target/sourceRoots 实现（2026-09-23 实证）**：hvigor 模块级 `targets[].source.sourceRoots`
 > 确实存在（schema 描述为"Stage 模型下指定 Ability 的**扩展**源代码目录"），但实测**追加语义、不能覆盖同名文件**
 > （在变体根放一个故意语法错的同名 `common/LogStore.ets`，用 `-p module=entry@ohosvariant` 构建**仍然成功** ⇒ 变体根未被采纳）。
