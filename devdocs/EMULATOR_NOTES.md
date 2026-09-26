@@ -1,4 +1,21 @@
 > **【导入说明 2026-09-26】** 本文件原为**工作区根目录**的机器本地笔记（不在仓库内），而 `AGENTS.md` 三处引用它
+
+## 0. ⚠️ 操作纪律（2026-09-26 实测踩到，务必遵守）
+
+`tools/verify-on-ohemu.sh` 会在**同一个文件**（`entry/src/main/ets/pages/Index.ets`）上做两件事：
+① 施加 HDS 降级（否则 ohemu 白屏）；② 若你在其上再叠加自己的实验改动，两者**处于同一文件**。
+
+**因此：`git checkout -- entry/src/main/ets/pages/Index.ets` 会同时抹掉"你的实验改动"和"HDS 降级"** ⇒
+重装后 HDS 静态导入回来了 ⇒ **白屏**（2026-09-26 实际发生）。
+
+**正确顺序**（每次实验收尾都照此）：
+1. `git checkout -- entry/src/main/ets/pages/Index.ets`（清掉一切工作区改动，回到主线）；
+2. **再跑一次** `tools/verify-on-ohemu.sh`（它会重新降级 + 构建 + 签名 + 装机 + 启动）⇒ 设备上得到一个**可正常运行**的版本；
+3. 若只是想装"主线原始行为"的包（例如做 A/B 对照），步骤 2 直接完成，**不要**再叠加实验改动。
+
+> 判据：白屏时 hilog 必有 `SyntaxError: '@hms:hds.hdsBaseComponent' does not provide an export name 'HdsTabsController'`；
+> 正常时应有 `plugin routes registered: 7` + `native start`。
+
 > ⇒ 引用悬挂。现导入仓库 `devdocs/EMULATOR_NOTES.md`，让两台机器与后续 agent 都可见。
 >
 > **适用范围**：ohemu（OpenHarmony QEMU）模拟器的启动/连接/调试流程与历史事故记录。
