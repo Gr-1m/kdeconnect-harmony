@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# native 侧回归门禁：C++ host 单测套件（含 Rust 静态库链接）+ Rust 单元测试。
+# 仅需 gcc/g++/make 与 Rust，**不需要** OHOS 工具链 ⇒ 可在通用 CI runner 上跑。
+# 本地等价：cd entry/src/main/cpp/tests && ./run.sh ；cd entry/src/main/cpp/rust/kdc_core && cargo test
+name: native-tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust 单元测试（kdc_core）
+        run: cargo test --manifest-path entry/src/main/cpp/rust/kdc_core/Cargo.toml
+      - name: C++ host 单测套件（含 Rust 静态库链接 + BearSSL 构建）
+        run: cd entry/src/main/cpp/tests && ./run.sh
