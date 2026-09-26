@@ -27,27 +27,28 @@ import { MprisPlugin } from '../plugins/MprisPlugin';
 import { RemoteInputPlugin } from '../plugins/RemoteInputPlugin';
 import { NotificationPlugin } from '../plugins/NotificationPlugin';
 import { DeviceItem, RememberedDevice, BatteryItem } from '../model/DeviceModels';
-import { MprisItem, MprisSnapshot, emptyMprisItem, mprisPlayerText } from '../model/MprisModels';
-import { SystemSinkUi } from '../model/SystemVolumeModels';
-import { PayloadTransfer, PayloadDirection, PayloadState } from '../model/PayloadModels';
+import { PayloadTransfer } from '../model/PayloadModels';
+import { MprisSnapshot } from '../model/MprisModels';
 import { TrustedDevice } from '../model/TrustModels';
 import { TrustStore } from '../common/TrustStore';
 import { PayloadHistory } from '../common/PayloadHistory';
 import { PayloadDetailDialog } from '../components/PayloadDetailDialog';
 import { PairConfirmDialog } from '../components/PairConfirmDialog';
 import { RunCommandDialog } from '../components/RunCommandDialog';
+import { MprisDialog } from '../components/MprisDialog';
+import { ReceivedFilesDialog } from '../components/ReceivedFilesDialog';
 import { NotificationHelper } from '../common/NotificationHelper';
 import { NetworkWatcher } from '../common/NetworkWatcher';
 import { colorModeOf, languageOf, LANG_SYSTEM, THEME_FOLLOW_SYSTEM, systemDeviceName } from '../common/AppSettings';
 import { DevicesTab } from '../components/DevicesTab';
 import { DrawerOverlay } from '../components/DrawerOverlay';
-import { MprisProgress } from '../components/MprisProgress';
-import { SystemSinkRow } from '../components/SystemSinkRow';
 import { FilesTab } from '../components/FilesTab';
 import { SettingsTab } from '../components/SettingsTab';
 import { LogsTab } from '../components/LogsTab';
 import { PairSession } from '../state/PairSession';
 import { PluginEventBus } from '../state/PluginEventBus';
+import { MprisController } from '../state/MprisController';
+import { PayloadController, SendJob } from '../state/PayloadController';
 import hilog from '@ohos.hilog';
 
 // timestamp 仅 pair 请求需要（KDE pair 响应体只含 {"pair": false}）
@@ -73,11 +74,6 @@ interface SettingEntry {
   value: string;
 }
 
-// 发送文件时的 share.request body
-interface SendShareBody {
-  filename: string;
-}
-
 const DEFAULT_DEVICE_NAME: string = 'kdeconnect-harmony';
 
 // 连接/配对会话超时（毫秒）：TCP+TLS 建连 20s；配对请求等对端确认 45s
@@ -91,12 +87,6 @@ const DRAWER_DEVICE_CAP: number = 2;
 const DRAWER_WIDTH_LIMIT: ConstraintSizeOptions = { maxWidth: 360 };
 // 一次最多选几个文件发送（用户 2026-09-18 拍板改为多选；上限取值与系统文件选择器常见上限一致）
 const MAX_PICK_FILES: number = 9;
-
-// 多选发送的单个任务（文件已复制进沙箱，等队列轮到它）
-interface SendJob {
-  cachePath: string;
-  fileName: string;
-}
 
 // 注（CodeArts MSG45 §1 授权清理）：`code=110` 有界重试已按裁定 #15 撤除，它遗留下的
 // `SendJob.attempt` 字段与 `PAYLOAD_ERR_HANDSHAKE_TIMEOUT` / `MAX_SEND_ATTEMPT` 两个常量在此删除 ——
@@ -158,24 +148,7 @@ struct Index {
   // 点击/发包限频（key = "设备:动作" → 上次触发时刻）。手机实测：卡片点太快会连发网络请求 +
   // 连开弹窗，叠加重渲染直接把主线程压死（THREAD_BLOCK_3S/6S → 点击无响应）。
   private actionGateMs: Map<string, number> = new Map();
-  // 音量 Slider 的「用户是否真在拖」标志。
-  // 实测坑：Slider 的 onChange 在**程序性**改 value/max 时也会回调（面板刚打开时 length 从 -1
-  // 变成真实值 ⇒ 回调被当成 Click/End）→ 误发设置请求。
-  // 因此只有先收到 Begin（真拖动才会发）的这一次才算用户操作。
-  // （进度条的同类 gate 已随批2 下沉进 MprisProgress 组件内部。）
-  private mprisVolDragging: boolean = false;
-  // AP-2 payload 传输（接收/发送进度与处置状态）
-  @State payloads: PayloadTransfer[] = [];
-  // 多选发送队列（CodeArts MSG19 §3：**串行**、不并发抢 payload 通道）。
-  // 为什么不是"固定间隔 sleep"：那是时间猜测——链路/对端一慢就仍会并发撞通道。
-  // 这里改成「上一个 payload 到达终态事件后再发下一个」，与 native 的完成语义对齐（事件驱动）。
-  // 依赖：native 为每个 payload 派发终态事件（P3-2 已登记跟踪；若漏派，队列会停在这一批）。
-  private sendQueue: SendJob[] = [];
-  private sendBusyId: number = -1;   // 正在传输的 transferId（-1 = 空闲）
-  private sendInflightJob: SendJob | undefined = undefined;  // 上面那个 transferId 对应的任务（结算用）
-  private sendTarget: string = '';   // 本批次目标设备
-  private sendOkCount: number = 0;   // 本批次**成功完成**的文件数（在终态里结算，不在下发时计数）
-  private sendTotal: number = 0;     // 本批次总数（>0 表示批次进行中）
+  // 音量 Slider 的「用户是否真在拖」标志（已随 MprisDialog 下沉，页面不再持有）
   // 插件推来的展示项（目前：电量）
   @State batteryItems: BatteryItem[] = [];
   // 对端（kdeconnect.runcommand）下发的预设命令列表：只保存当前设备的，供「远程命令」弹窗展示
@@ -183,23 +156,10 @@ struct Index {
   @State runCommandDeviceId: string = '';
   // 远程命令弹窗显隐
   @State runCommandDialogOpen: boolean = false;
-  // 文件页「查看已接收」弹窗（只读列表，展示本次会话收到的文件及其状态）
-  @State receivedDialogOpen: boolean = false;
-  // 已接收文件历史（跨重启保留；只存终态记录，见 common/PayloadHistory.ets）
-  @State receivedHistory: PayloadTransfer[] = [];
-  // 「文件详情」弹窗（点击文件行打开）：显示属性 + 另存为/丢弃/取消
-  @State payloadDetailOpen: boolean = false;
-  @State payloadDetailId: number = 0;
-  // 对端音频输出设备（kdeconnect.systemvolume 的**全量快照**，刻度已换算成百分比）：
-  // 由 SystemVolumePlugin 推来，UI 只渲染（见 components/SystemSinkRow.ets）。
-  @State svSinks: SystemSinkUi[] = [];
-  @State svDeviceId: string = '';        // 上面快照属于哪台设备（防切换面板时串数据）
-  // 媒体面板的两个 tab（用户 2026-09-18 要求）：0=媒体（播放器控制）1=设备（OutputDevice 列表）
-  @State mprisTab: number = 0;
-  // 媒体控制面板（方向 1：手机控电脑端播放器）：按设备镜像对端播放器状态
-  @State mprisItems: MprisItem[] = [];
-  @State mprisDeviceId: string = '';
-  @State mprisDialogOpen: boolean = false;
+  // 媒体控制领域控制器（阶段 3 批次 2 ⇒ state/MprisController.ets）
+  @State mprisController: MprisController = new MprisController();
+  // 文件传输领域控制器（阶段 3 批次 2 ⇒ state/PayloadController.ets）
+  @State payloadController: PayloadController = new PayloadController();
   // 状态栏 / 导航栏安全区高度（EntryAbility 写入，单位 px）
   @StorageProp('statusBarHeightPx') statusBarHeightPx: number = 0;
   @StorageProp('navBarHeightPx') navBarHeightPx: number = 0;
@@ -248,12 +208,12 @@ struct Index {
       const pref = await preferences.getPreferences(ctx, 'kdeconnect');
       deviceId = String(await pref.get('deviceId', ''));
       // 已接收文件历史：跨重启保留（与应用设置同一个 Preferences 库）
-      this.receivedHistory = await PayloadHistory.load(ctx);
+      this.payloadController.history = await PayloadHistory.load(ctx);
       // 回灌到 payloads：文件页的「历史记录」分区直接读 payloads，不回灌则重启后历史为空
       // （2026-09-17 用户实测「历史文件只有一条」——发送记录既没入库也没回灌）。
       // 注意：历史条目一律置 settled=true —— 它们是**已结束**的旧记录，spool 早被清理，
       // 否则会被归到「收到的文件（待处置）」并诱使用户点「保存」而必然失败。
-      this.payloads = this.receivedHistory.map((h: PayloadTransfer): PayloadTransfer => {
+      this.payloadController.payloads = this.payloadController.history.map((h: PayloadTransfer): PayloadTransfer => {
         const settledHist: PayloadTransfer = {
           transferId: h.transferId,
           deviceId: h.deviceId,
@@ -468,6 +428,23 @@ struct Index {
     this.netWatcher.triggerBroadcast = (): void => {
       this.triggerDiscoveryBroadcast();
     };
+    // 阶段 3 批次 2 装配：MprisController + PayloadController 注入
+    this.mprisController.log = (m: string): void => { this.notify.log(m); };
+    this.mprisController.toast = (m: string): void => { this.notify.toast(m); };
+    this.mprisController.resText = (resId: number): string => this.notify.resText(resId);
+    this.mprisController.actionGate = (key: string, ms: number): boolean => this.actionGate(key, ms);
+    this.mprisController.pluginsFor = (deviceId: string): PluginBase[] =>
+      this.pluginHost === undefined ? [] : this.pluginHost.pluginsFor(deviceId);
+    this.payloadController.log = (m: string): void => { this.notify.log(m); };
+    this.payloadController.toast = (m: string): void => { this.notify.toast(m); };
+    this.payloadController.resText = (resId: number): string => this.notify.resText(resId);
+    this.payloadController.hostFilesDir = (): string => this.ensureKdcDir();
+    this.payloadController.pickSaveTarget = (name: string): Promise<string> => this.pickSaveTarget(name);
+    this.payloadController.pickDownloadTarget = (name: string): Promise<string> => this.pickDownloadTarget(name);
+    this.payloadController.requestWritePermission = (fileName: string): Promise<boolean> => this.ensureWritePermission(fileName);
+    this.payloadController.persistHistory = (history: PayloadTransfer[]): Promise<void> => this.persistPayloadHistory(history);
+    this.payloadController.clearPersistedHistory = (): Promise<void> => this.clearPayloadHistory();
+    this.payloadController.connectedDeviceIds = (): string[] => this.connectedDevices.map((d: DeviceItem) => d.id);
     // 装配自检：注册数与清单一致（7）。**同时写 hilog**（页面 log() 只进 app 内 LogStore，机器不可见）
     // ⇒ 漏注册/多注册可在 `hdc shell hilog` 里直接机检（devdocs/PLUGIN_ROUTE_INVENTORY.md §5）。
     const routeCount: number = this.eventBus.kinds().length;
@@ -787,30 +764,24 @@ struct Index {
 
   // 媒体控制（方向 1）：类型化对象直读，省掉每事件一次 stringify+parse
   private onMprisPlayerList(deviceId: string, ev: PluginEvent): void {
-    this.setMprisList(deviceId, ev.mprisList ?? []);
+    this.mprisController.setList(deviceId, ev.mprisList ?? []);
   }
 
   private onMprisPlayerUpdate(deviceId: string, ev: PluginEvent): void {
     const snap: MprisSnapshot | undefined = ev.mprisSnap;
     if (snap !== undefined) {
-      this.setMprisSnapshot(deviceId, snap);
+      this.mprisController.setSnapshot(deviceId, snap);
     }
   }
 
-  // 系统音量（kdeconnect.systemvolume）：插件推**整份行数组**（已换算成百分比），UI 只渲染。
-  // **单槽**（用户 2026-09-19 裁决 / CodeArts MSG21 §3）：面板一次只服务一台设备 ⇒ 只接受
-  // 当前面板设备的推送。别的设备推包不得改写它（否则正在看的面板会被刷空）。
-  // 不会缺数据：打开面板时 svPrepare() 会主动 requestSinks()，该响应带着自己的 deviceId 回来。
-  // （请求-响应同源：插件是"每设备一份实例"，响应只会从被请求的那台设备回来 —— Omp MSG27 §3 提醒点。）
-  // 旧实现是 `"<vol>|<muted>"` 字符串打包 + 页面侧 split 解包，与批1 的类型化方向相反，已删除。
-  // P3-3（语义澄清，**零行为变更**）：`requestSinks()` 的**响应**与插件主动推送走的是**同一条事件通道**
-  // （都是 kind='systemvolume.sinks'，由 SystemVolumePlugin.push() 发出）⇒ 下面的单槽过滤对"响应"同样生效，
-  // 不存在"请求-响应串台"（插件本身是**每设备一份实例**，响应只会从被请求的那台设备回来）。
+  // 系统音量（kdeconnect.systemvolume）：插件推整份行数组（已换算成百分比），UI 只渲染。
+  // 单槽过滤（用户 2026-09-19 裁决）：面板一次只服务一台设备。
   private onSystemVolumeSinks(deviceId: string, ev: PluginEvent): void {
-    if (deviceId !== this.mprisDeviceId) {
+    if (deviceId !== this.mprisController.deviceId) {
       return;
     }
-    this.svSinks = ev.svSinks !== undefined ? ev.svSinks : [];
+    this.mprisController.svSinks = ev.svSinks !== undefined ? ev.svSinks : [];
+    this.mprisController.svDeviceId = deviceId;
   }
 
   private onBattery(deviceId: string, ev: PluginEvent): void {
@@ -841,287 +812,6 @@ struct Index {
       }
     }
     return [];
-  }
-
-  // ========== 媒体控制（方向 1：手机控电脑端播放器，FEATURE_PLAN_MPRIS §3）==========
-  // 当前是否正为该设备打开媒体面板（决定要不要把插件事件写进 @State）
-  private isMprisPanelFor(deviceId: string): boolean {
-    return this.mprisDialogOpen && this.mprisDeviceId === deviceId;
-  }
-
-  // 按设备镜像对端播放器状态：@State mprisItems（对齐 batteryItems 的写法）
-  private mprisItemOf(deviceId: string): MprisItem {
-    for (const m of this.mprisItems) {
-      if (m.deviceId === deviceId) {
-        return m;
-      }
-    }
-    return emptyMprisItem(deviceId);
-  }
-
-  private putMpris(next: MprisItem): void {
-    const exists: boolean = this.mprisItems.some((m: MprisItem) => m.deviceId === next.deviceId);
-    if (exists) {
-      this.mprisItems = this.mprisItems.map((m: MprisItem) => m.deviceId === next.deviceId ? next : m);
-    } else {
-      this.mprisItems = this.mprisItems.concat([next]);
-    }
-  }
-
-  private setMprisList(deviceId: string, list: string[]): void {
-    // 前后台分离（用户建议）：面板没开就不写 @State —— 对端会周期推播放器状态，
-    // 关着面板还写会白白触发整页重渲染。面板打开时用 MprisPlugin.item() 重新播种，不会丢数据。
-    if (!this.isMprisPanelFor(deviceId)) {
-      return;
-    }
-    const cur: MprisItem = this.mprisItemOf(deviceId);
-    const next: MprisItem = {
-      deviceId: cur.deviceId,
-      playerList: list,
-      currentPlayer: cur.currentPlayer,
-      gotAny: true,
-      snapshot: cur.snapshot
-    };
-    this.putMpris(next);
-  }
-
-  private setMprisSnapshot(deviceId: string, snap: MprisSnapshot): void {
-    // 同上：关着面板时不写 @State（对端 ~1s 推一次 pos，逐次写会持续触发整页重渲染）
-    if (!this.isMprisPanelFor(deviceId)) {
-      return;
-    }
-    const cur: MprisItem = this.mprisItemOf(deviceId);
-    const next: MprisItem = {
-      deviceId: cur.deviceId,
-      playerList: cur.playerList,
-      currentPlayer: snap.player.length > 0 ? snap.player : cur.currentPlayer,
-      gotAny: true,
-      snapshot: snap
-    };
-    this.putMpris(next);
-  }
-
-  private mprisPluginOf(deviceId: string): MprisPlugin | undefined {
-    const list: PluginBase[] = this.pluginHost === undefined ? [] : this.pluginHost.pluginsFor(deviceId);
-    for (const p of list) {
-      if (p instanceof MprisPlugin) {
-        return p;
-      }
-    }
-    return undefined;
-  }
-
-  // 系统音量插件取用（与 MPRIS 分开：播放器不提供音量/无播放器时仍可调对端系统音量）
-  private sysVolumePluginOf(deviceId: string): SystemVolumePlugin | undefined {
-    const list: PluginBase[] = this.pluginHost === undefined ? [] : this.pluginHost.pluginsFor(deviceId);
-    for (const p of list) {
-      if (p instanceof SystemVolumePlugin) {
-        return p;
-      }
-    }
-    return undefined;
-  }
-
-  // 当前面板设备的输出设备快照（设备不符 ⇒ 空数组，避免显示上一台设备的行）
-  private svSinksForCurrent(): SystemSinkUi[] {
-    return this.svDeviceId === this.mprisDeviceId ? this.svSinks : [];
-  }
-
-  // 打开面板时：换设备先清空快照，再向对端**请求一次列表**（协议级刷新，
-  // 与媒体 tab 的 requestPlayerList/requestStatus 同性质）。
-  // 注意：这里**不再**从插件"抄状态"到页面 —— 状态只有插件一份，任何变化它都会推全量快照。
-  private svPrepare(): void {
-    if (this.svDeviceId !== this.mprisDeviceId) {
-      this.svSinks = [];
-      this.svDeviceId = this.mprisDeviceId;
-    }
-    const p: SystemVolumePlugin | undefined = this.sysVolumePluginOf(this.mprisDeviceId);
-    if (p !== undefined) {
-      p.requestSinks();
-    }
-  }
-
-  private svSinkSet(name: string, pct: number): void {
-    // 60ms 轻门控（用户要求拖动实时同步；Android 端不松手即同步，这里只防刷包）
-    if (!this.actionGate(`sysvol:${name}:vol`, 60)) {
-      return;
-    }
-    const p: SystemVolumePlugin | undefined = this.sysVolumePluginOf(this.mprisDeviceId);
-    if (p === undefined || !p.setVolume(name, pct)) {
-      this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
-    }
-  }
-
-  private svSinkToggleMute(name: string): void {
-    const p: SystemVolumePlugin | undefined = this.sysVolumePluginOf(this.mprisDeviceId);
-    if (p === undefined || !p.toggleMute(name)) {
-      this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
-    }
-  }
-
-  // 「选择输出设备」：把该 sink 设为对端默认输出（协议上单独发 {name, enabled:true}）
-  private svSinkSetDefault(name: string): void {
-    const p: SystemVolumePlugin | undefined = this.sysVolumePluginOf(this.mprisDeviceId);
-    if (p === undefined || !p.setDefault(name)) {
-      this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
-    }
-  }
-
-  // 面板页脚「刷新」：按当前 tab 决定刷新对象（媒体=播放器列表/状态，设备=输出设备列表）
-  private panelRefresh(): void {
-    if (this.mprisTab === 1) {
-      const p: SystemVolumePlugin | undefined = this.sysVolumePluginOf(this.mprisDeviceId);
-      if (p === undefined || !p.requestSinks()) {
-        this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
-      }
-      return;
-    }
-    this.mediaRefresh();
-  }
-
-  // 面板读数（build() 里直接调，靠 @State 触发刷新；**不要**用 @Builder 传值，值参数不变会跳过重建）
-  private mprisSnap(): MprisSnapshot {
-    return this.mprisItemOf(this.mprisDeviceId).snapshot;
-  }
-
-  private mprisList(): string[] {
-    return this.mprisItemOf(this.mprisDeviceId).playerList;
-  }
-
-  // 对端没响应 / 对端没有播放器 → 都走空态
-  private mprisEmpty(): boolean {
-    const it: MprisItem = this.mprisItemOf(this.mprisDeviceId);
-    return !it.gotAny || it.playerList.length === 0;
-  }
-
-  // 音量读数（进度条的插值/千分比量程随批2 一起下沉进 MprisProgress 组件，
-  // 页面侧不再保留 mprisNowMs / mprisPos / mprisPosPermille / mprisPermilleToMs / mprisMaxPos —— 均已删除）
-  private mprisVol(): number {
-    const v: number = this.mprisSnap().volume;
-    return v > 0 ? v : 0;
-  }
-
-  private mprisArtistLine(): ResourceStr {
-    const s: MprisSnapshot = this.mprisSnap();
-    if (s.artist.length > 0 && s.album.length > 0) {
-      return `${s.artist} · ${s.album}`;
-    }
-    if (s.artist.length > 0) {
-      return s.artist;
-    }
-    if (s.album.length > 0) {
-      return s.album;
-    }
-    return $r('app.string.media_unknown_artist');
-  }
-
-  private mprisLoopText(): ResourceStr {
-    const cur: string = this.mprisSnap().loopStatus;
-    if (cur === 'Track') {
-      return $r('app.string.media_loop_track');
-    }
-    if (cur === 'Playlist') {
-      return $r('app.string.media_loop_playlist');
-    }
-    return $r('app.string.media_loop_none');
-  }
-
-  private closeMprisDialog(): void {
-    this.mprisDialogOpen = false;
-  }
-
-  // P2（MSG132 §2）：设备断链/离线 → 丢掉该设备的面板镜像 + 关面板停 ticker。
-  // 过期快照若留着，重连前打开面板会显示旧曲目，并继续用本地插值往前跑（假进度）。
-  private forgetMpris(deviceId: string): void {
-    if (deviceId.length === 0) {
-      return;
-    }
-    this.mprisItems = this.mprisItems.filter((m: MprisItem) => m.deviceId !== deviceId);
-    if (this.mprisDeviceId === deviceId) {
-      this.closeMprisDialog();
-    }
-  }
-
-  // 控制类动作：插件没装载（对端不支持）或发送失败都给明确提示
-  private mediaAction(action: string): void {
-    // 连点保护：⏮⏯⏭ 每次都会真发包，连点会把主线程和对端一起刷爆
-    if (!this.actionGate(`mpris:${this.mprisDeviceId}:${action}`, 400)) {
-      return;
-    }
-    const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
-    if (p === undefined) {
-      this.notify.toast(this.notify.resText($r('app.string.toast_plugin_unavailable').id));
-      return;
-    }
-    let ok: boolean = false;
-    if (action === 'toggle') {
-      ok = p.togglePlay();
-    } else if (action === 'next') {
-      ok = p.next();
-    } else if (action === 'previous') {
-      ok = p.previous();
-    }
-    if (!ok) {
-      this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
-    }
-  }
-
-  private mediaSetVolume(v: number): void {
-    if (!this.actionGate(`mpris:${this.mprisDeviceId}:vol`, 200)) {
-      return;
-    }
-    const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
-    if (p === undefined || !p.setVolume(v)) {
-      this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
-    }
-  }
-
-  private mediaSetPosition(ms: number): void {
-    if (!this.actionGate(`mpris:${this.mprisDeviceId}:pos`, 200)) {
-      return;
-    }
-    const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
-    if (p === undefined || !p.setPosition(ms)) {
-      this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
-    }
-  }
-
-  private mediaToggleLoop(): void {
-    const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
-    if (p === undefined || !p.cycleLoopStatus()) {
-      this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
-    }
-  }
-
-  private mediaToggleShuffle(): void {
-    const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
-    if (p === undefined || !p.toggleShuffle()) {
-      this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
-    }
-  }
-
-  private mediaSelectPlayer(name: string): void {
-    const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
-    if (p === undefined) {
-      this.notify.toast(this.notify.resText($r('app.string.toast_plugin_unavailable').id));
-      return;
-    }
-    p.selectPlayer(name);
-    p.requestStatus(name);
-  }
-
-  private mediaRefresh(): void {
-    if (!this.actionGate(`mpris:${this.mprisDeviceId}:refresh`, 1500)) {
-      return;
-    }
-    const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
-    if (p === undefined) {
-      this.notify.toast(this.notify.resText($r('app.string.toast_plugin_unavailable').id));
-      return;
-    }
-    p.requestPlayerList();
-    p.requestStatus();
-    this.notify.log(`media refresh requested for ${this.mprisDeviceId}`);
   }
 
   // AP-4：非核心 packet 分发到插件（返回 true 表示已处理）
@@ -1345,7 +1035,7 @@ struct Index {
       case 'disconnected': {
         const did: string = event.deviceId ?? '';
         // 终态兜底：断链后该设备「进行中」的接收传输不可能完成 ⇒ 立即落 failed（否则 UI 永久「接收中」）
-        this.failInflightReceives(did, 'disconnected');
+        this.payloadController.failInflightReceives(did, 'disconnected');
         this.connectedDevices = this.connectedDevices.filter((d: DeviceItem) => d.id !== did);
         this.batteryItems = this.batteryItems.filter((b: BatteryItem) => b.deviceId !== did);
         // 断链即清「等待确认」态（否则行上会残留"等待确认"徽标）——由状态机 onDisconnected 统一处理
@@ -1353,10 +1043,10 @@ struct Index {
         this.pluginHost?.unloadForDevice(did);
         // 媒体面板清账（P2，MSG132 §2）：丢该设备的面板镜像并关面板
         // （插件实例已销毁，再点控制键必然失败；留着快照还会显示过期曲目）
-        this.forgetMpris(did);
+        this.mprisController.forget(did);
         // P3（AtomCode 评审条件 / CodeArts MSG21 §2）：断链必须**清空发送队列**，
         // 否则残留任务会在设备重连后自动开传（用户并未再操作，属可见的错误行为）。
-        this.forgetSendQueue(did);
+        this.payloadController.forgetSendQueue(did);
         // 会话中的设备断链 → 连接/配对失败（状态机内建；终局三信号之一）
         this.pairSession.onDisconnected(did);
         this.syncSelectedDevice();
@@ -1380,7 +1070,7 @@ struct Index {
         this.discoveredDevices = this.discoveredDevices.map(
           (d: DeviceItem) => d.id === lid ? { id: d.id, name: d.name, host: d.host, tcpPort: d.tcpPort, deviceType: d.deviceType, online: false } : d);
         // 离线同样清账（P2，MSG132 §2）：面板镜像与弹层都不留过期数据
-        this.forgetMpris(lid);
+        this.mprisController.forget(lid);
         this.notify.log(`lost ${event.deviceId} (kept in list as offline)`);
         break;
       }
@@ -1410,7 +1100,7 @@ struct Index {
         break;
       }
       case 'payloadTransfer': {
-        this.handlePayloadTransfer(event);
+        this.payloadController.handlePayloadTransfer(event);
         break;
       }
       case 'error': {
@@ -1419,7 +1109,7 @@ struct Index {
         // 终态兜底（omp MSG23/24 契约）：native 的 payload FSM 已判 `failed`（如 code=104
         // "control connection closed"），但 `payloadTransfer` 终态事件可能到不了 UI ⇒
         // 这里按 Error 事件把该设备**进行中**的接收传输立即落为 failed，避免永久「接收中」。
-        this.failInflightReceives(event.deviceId ?? '', `error: ${em.length > 0 ? em : event.errorCode}`);
+        this.payloadController.failInflightReceives(event.deviceId ?? '', `error: ${em.length > 0 ? em : event.errorCode}`);
         if (em.includes('rate limited')) {
           this.notify.log('连接过于频繁，请稍后重试（rate limited）');
         } else if (em.includes('certificate mismatch')) {
@@ -1631,28 +1321,23 @@ struct Index {
       return;
     }
     if (key === 'media') {
-      // P2-1②（MSG145）：面板开合入口也要限频 —— 快速开合会堆叠弹窗/面板动画（关闭是收敛操作，不需要 gate）。
       if (!this.actionGate(`mpris-open:${id}`, 500)) {
         return;
       }
-      // 媒体控制（方向 1，P2）：打开面板并主动拉一次「播放器列表 + 当前播放器状态」。
-      // 对端只在状态变化时推包，不主动拉可能长时间停在旧态。
-      const mp: MprisPlugin | undefined = this.mprisPluginOf(id);
+      const mp: MprisPlugin | undefined = this.mprisController.mprisPluginOf(id);
       if (mp === undefined) {
         this.notify.toast(this.notify.resText($r('app.string.toast_plugin_unavailable').id));
         this.notify.log(`media panel unavailable for ${id} (MprisPlugin not loaded)`);
         return;
       }
-      this.mprisDeviceId = id;
-      this.putMpris(mp.item());
-      this.mprisDialogOpen = true;
-      this.mprisTab = 0;
-      // 打开面板：重置/请求系统音量快照（「设备」tab 的输出设备列表）
-      this.svPrepare();
+      this.mprisController.deviceId = id;
+      this.mprisController.put(mp.item());
+      this.mprisController.dialogOpen = true;
+      this.mprisController.tab = 0;
+      this.mprisController.svPrepare();
       mp.requestPlayerList();
       mp.requestStatus();
-      this.notify.log(`media panel opened for ${id} (players=${this.mprisList().length})`);
-      // 弹窗已弹出 ⇒ 释放该卡片的忙碌态（fired by event）
+      this.notify.log(`media panel opened for ${id} (players=${this.mprisController.playerList().length})`);
       this.releaseCard('media', 'event');
       return;
     }
@@ -1707,123 +1392,8 @@ struct Index {
     this.notify.log(`open device detail: ${d.id}`);
   }
 
-  private toPayloadDirection(v: string): PayloadDirection {
-    return v === 'send' ? 'send' : 'receive';
-  }
+  // ========== 页面辅助方法（供 PayloadController 注入回调使用） ==========
 
-  private toPayloadState(v: string): PayloadState {
-    if (v === 'started') {
-      return 'started';
-    }
-    if (v === 'progress') {
-      return 'progress';
-    }
-    if (v === 'finished') {
-      return 'finished';
-    }
-    if (v === 'cancelled') {
-      return 'cancelled';
-    }
-    return 'failed';
-  }
-
-  // AP-2：payloadTransfer 事件 → 传输列表 upsert（进度事件 ≤10Hz，不逐条写日志）
-  // 终态兜底（omp MSG23/24 契约）：控制连接断开 / Error 事件 ⇒ 该设备「进行中」的接收传输
-  // 不可能再完成，立即落为 failed，避免 UI 永久显示「接收中」（用户实测问题）。
-  // 说明：native 侧 `135547b` 起 payload FSM 会给出 `code=`/`msg=`，但 `payloadTransfer`
-  // 终态事件未必到达；本兜底只改 ArkTS 的展示状态，不动任何传输语义。
-  private failInflightReceives(deviceId: string, reason: string): void {
-    // P3-1（AtomCode 评审 / CodeArts MSG18）：deviceId 为空时**直接跳过** ——
-    // 否则会把所有设备的进行中接收无条件落 failed（Error 事件可能不带 deviceId）。
-    if (deviceId.length === 0) {
-      return;
-    }
-    let changed: boolean = false;
-    const next: PayloadTransfer[] = this.payloads.map((p: PayloadTransfer): PayloadTransfer => {
-      const active: boolean = p.state === 'started' || p.state === 'progress';
-      if (p.direction !== 'receive' || !active) {
-        return p;
-      }
-      if (deviceId.length > 0 && p.deviceId !== deviceId) {
-        return p;
-      }
-      changed = true;
-      const failed: PayloadTransfer = {
-        transferId: p.transferId,
-        deviceId: p.deviceId,
-        direction: p.direction,
-        state: 'failed',
-        fileName: p.fileName,
-        size: p.size,
-        bytesDone: p.bytesDone,
-        filePath: p.filePath,
-        settled: p.settled
-      };
-      return failed;
-    });
-    if (changed) {
-      this.payloads = next;
-      console.info(`KDC payload inflight -> failed (${reason}) dev=${deviceId.substring(0, 8)}`);
-    }
-  }
-
-  private handlePayloadTransfer(event: NetEvent): void {
-    const tid: number = event.payloadTransferId ?? 0;
-    const size: number = event.payloadSize ?? 0;
-    // 层间契约（omp MSG23 §4）：`payloadSize > 0` 且 `payloadTransferId == 0` = 「**已宣告但未启动**」
-    // （native 侧启动门槛未通过：未信任 / port 缺失 / deviceId 未知 / 帧无 payload 信息）。
-    // ⇒ **不得**据 payloadSize 建「接收中」条目，否则会出现永久悬挂（用户实测的「一直接收中」）。
-    // native 侧 `135547b` 起会为这种情况派发 Error 事件（"payload not started (why)"），此处只留痕。
-    if (tid <= 0) {
-      if (size > 0) {
-        console.info(`KDC payload declared but not started: size=${size} dev=${(event.deviceId ?? '').substring(0, 8)} (no entry created)`);
-      }
-      return;
-    }
-    const state: PayloadState = this.toPayloadState(event.payloadState ?? 'failed');
-    const idx: number = this.payloads.findIndex((p: PayloadTransfer) => p.transferId === tid);
-    const settled: boolean = idx >= 0 ? this.payloads[idx].settled : false;
-    const item: PayloadTransfer = {
-      transferId: tid,
-      deviceId: event.deviceId ?? '',
-      direction: this.toPayloadDirection(event.payloadDirection ?? 'receive'),
-      state: state,
-      fileName: event.payloadFileName ?? (idx >= 0 ? this.payloads[idx].fileName : ''),
-      size: event.payloadSize ?? (idx >= 0 ? this.payloads[idx].size : 0),
-      bytesDone: event.payloadBytesDone ?? 0,
-      filePath: event.payloadFilePath ?? (idx >= 0 ? this.payloads[idx].filePath : ''),
-      settled: settled
-    };
-    if (idx >= 0) {
-      this.payloads = this.payloads.map((p: PayloadTransfer) => p.transferId === tid ? item : p);
-    } else {
-      this.payloads = [item].concat(this.payloads);
-    }
-    if (state !== 'progress') {
-      this.notify.log(`payload ${state} ${item.direction} #${tid} ${item.fileName}`);
-    }
-    // 终态记录写入历史（内存 + Preferences），**收发都存**，供跨重启在文件页/「已接收」弹窗查看
-    // （2026-09-17：原先只存 receive ⇒ 发送记录重启即丢，用户实测"历史里只剩一条"）
-    if (state === 'finished' || state === 'failed' || state === 'cancelled') {
-      // 多选发送队列：本批次当前文件到达终态 ⇒ 结算并泵下一个（"串行"的真正落点，见 pumpSendQueue）
-      this.onSendPayloadSettled(tid, state, event.errorCode !== undefined ? event.errorCode : 0);
-      // 终态记时间（详情弹窗展示"什么时间传过来的"）
-      item.timeMs = Date.now();
-      this.putReceivedHistory(item);
-    }
-    // 计划 A（用户/AtomCode 现象② 裁决）：接收完成**自动落盘 + 明确通知**，
-    // 不再要求用户到文件页手动点「保存」；授权被拒/失败时给可操作提示（文件页仍可手动保存）。
-    if (state === 'finished' && item.direction === 'receive' && !item.settled && item.filePath.length > 0) {
-      this.notify.log(`auto-save received #${tid} ${item.fileName}`);
-      this.savePayload(item).then((): void => {
-        // 通知已在 savePayload 内部发出
-      }).catch((e: Error): void => {
-        this.notify.log('auto-save failed: ' + e.message);
-      });
-    }
-  }
-
-  // 接收文件的落盘目录：应用沙箱 files/kdeconnect（M1 无需额外存储权限）
   private ensureKdcDir(): string {
     const hostCtx: Context | undefined = this.getUIContext().getHostContext();
     if (hostCtx === undefined) {
@@ -1833,347 +1403,63 @@ struct Index {
     try {
       fileIo.mkdirSync(dir);
     } catch (e) {
-      // 已存在（EEXIST）忽略
     }
     return dir;
   }
 
-  // 文件名白名单清洗（CodeArts MSG58 §4）：native 的 settle() 只拦 ".."，
-  // 这里再去掉路径分隔符/前导点、限长，避免写入意外路径或隐藏文件。
-  // P3-11：本方法与 PayloadHistory.safeFileName 是**同一套规则**（历史上各写了一份，存在漂移风险）。
-  // 现在只做**转发**，规则本体只保留一份（含控制字符过滤），保证"落库名"与"沙箱名"永远一致。
-  private sanitizeFileName(raw: string, transferId: number): string {
-    return PayloadHistory.safeFileName(raw, transferId);
-  }
-
-  // 「查看已接收」弹窗的数据与展示辅助（文件页入口触发）
-  // 列表 = 本次会话的接收记录 ∪ 持久化历史（同 transferId 以内存为准），按 transferId 倒序（新的在前）
-  private receivedFiles(): PayloadTransfer[] {
-    const merged: PayloadTransfer[] = [];
-    for (const p of this.payloads) {
-      if (p.direction === 'receive') {
-        merged.push(p);
-      }
-    }
-    for (const h of this.receivedHistory) {
-      if (!merged.some((m: PayloadTransfer) => m.transferId === h.transferId)) {
-        merged.push(h);
-      }
-    }
-    return merged.sort((a: PayloadTransfer, b: PayloadTransfer) => b.transferId - a.transferId);
-  }
-
-  // 终态接收记录入库（内存 + Preferences；写失败不影响主流程）
-  private putReceivedHistory(item: PayloadTransfer): void {
-    const exists: boolean = this.receivedHistory.some((h: PayloadTransfer) => h.transferId === item.transferId);
-    this.receivedHistory = exists
-      ? this.receivedHistory.map((h: PayloadTransfer) => h.transferId === item.transferId ? item : h)
-      : [item].concat(this.receivedHistory);
-    const hostCtx: Context | undefined = this.getUIContext().getHostContext();
-    if (hostCtx !== undefined) {
-      PayloadHistory.save(hostCtx, this.receivedHistory).catch((e: Error): void => {
-        this.notify.log('payload history save failed: ' + e.message);
-      });
-    }
-  }
-
-  // 「清除历史」：清掉已结束的接收记录（内存 + 持久化），进行中的传输保留
-  private clearReceivedHistory(): void {
-    this.receivedHistory = [];
-    this.payloads = this.payloads.filter((p: PayloadTransfer) =>
-      p.direction !== 'receive' || p.state === 'started' || p.state === 'progress');
-    const hostCtx: Context | undefined = this.getUIContext().getHostContext();
-    if (hostCtx !== undefined) {
-      PayloadHistory.clear(hostCtx).catch((e: Error): void => {
-        this.notify.log('payload history clear failed: ' + e.message);
-      });
-    }
-    this.notify.log('received file history cleared');
-    this.notify.toast(this.notify.resText($r('app.string.toast_history_cleared').id));
-  }
-
-  private fmtBytes(bytes: number): string {
-    if (bytes <= 0) {
-      return '0 B';
-    }
-    if (bytes < 1024) {
-      return `${bytes} B`;
-    }
-    if (bytes < 1024 * 1024) {
-      return `${(bytes / 1024).toFixed(1)} KB`;
-    }
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
-
-  // 状态文案（裁定表 #14，DevEco 独有采纳；口径必须与 components/PayloadRow.ets 一致，改一处要改两处）：
-  //   进行中：发送 = 发送中 / 接收 = 接收中（旧实现不分方向，发送中也被写成"接收中"）
-  //   完成：  发送 = 已发送 / 接收 = 已保存（已处置）或 已完成；失败/取消两方向同词
-  private payloadStateText(p: PayloadTransfer): string {
-    const send: boolean = p.direction === 'send';
-    if (p.state === 'started' || p.state === 'progress') {
-      return this.notify.resText(send ? $r('app.string.files_sending').id : $r('app.string.files_receiving').id);
-    }
-    if (p.state === 'finished') {
-      if (send) {
-        return this.notify.resText($r('app.string.files_sent').id);
-      }
-      return this.notify.resText(p.settled ? $r('app.string.files_saved').id : $r('app.string.files_finished').id);
-    }
-    return this.notify.resText(p.state === 'failed' ? $r('app.string.files_failed').id : $r('app.string.files_cancelled').id);
-  }
-
-  private markPayloadSettled(transferId: number): void {
-    this.payloads = this.payloads.map((p: PayloadTransfer) => {
-      const next: PayloadTransfer = {
-        transferId: p.transferId,
-        deviceId: p.deviceId,
-        direction: p.direction,
-        state: p.state,
-        fileName: p.fileName,
-        size: p.size,
-        bytesDone: p.bytesDone,
-        filePath: p.filePath,
-        settled: true
-      };
-      return p.transferId === transferId ? next : p;
-    });
-  }
-
-  // 保存接收到的文件。用户反馈「APP 从不请求权限」⇒ 这里按文件类型**运行时申请**对应媒体写权限
-  // （user_grant，会弹系统权限框），拿到后再调 native.keepPayload（真实沙箱路径，非 URI）。
-  // 详情弹窗用：时间显示（无时间戳给 —）
-  private timeTextOf(p: PayloadTransfer): string {
-    const t: number = p.timeMs ?? 0;
-    if (t <= 0) {
-      return '—';
-    }
-    try {
-      return new Date(t).toLocaleString();
-    } catch (e) {
-      return '—';
-    }
-  }
-
-  // 「文件详情」弹窗用：按 transferId 取当前条目（找不到给一个只读占位，避免 undefined）
-  private payloadDetail(): PayloadTransfer {
-    for (const p of this.payloads) {
-      if (p.transferId === this.payloadDetailId) {
-        return p;
-      }
-    }
-    const placeholder: PayloadTransfer = {
-      transferId: this.payloadDetailId,
-      deviceId: '',
-      direction: 'receive',
-      state: 'failed',
-      fileName: '',
-      size: 0,
-      bytesDone: 0,
-      filePath: '',
-      settled: true
-    };
-    return placeholder;
-  }
-
-  // 「文件详情」弹窗里的属性行（标签 + 值）
-  @Builder
-  infoLine(label: ResourceStr, value: string) {
-    Row({ space: 10 }) {
-      Text(label)
-        .fontSize(12)
-        .fontColor($r('app.color.text_secondary'))
-        .width(84)
-      Text(value)
-        .fontSize(12)
-        .fontColor($r('app.color.text_primary'))
-        .layoutWeight(1)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-    }
-    .width('100%')
-  }
-
-  // 「另存为」：走系统保存面板（用户自选目录，如「下载」）⇒ 保存后在文件管理里可见。
-  // 源文件优先用 spool（filePath），否则用沙箱里已保存的副本。
-  private async saveAsPayload(p: PayloadTransfer): Promise<void> {
+  private async pickSaveTarget(name: string): Promise<string> {
     const hostCtx: Context | undefined = this.getUIContext().getHostContext();
     if (hostCtx === undefined) {
-      return;
+      return '';
     }
-    const name: string = this.sanitizeFileName(p.fileName, p.transferId);
-    let destUri: string = '';
     try {
       const pk: picker.DocumentViewPicker = new picker.DocumentViewPicker(hostCtx);
       const uris: string[] = await pk.save({ newFileNames: [name] });
-      destUri = uris.length > 0 ? uris[0] : '';
+      return uris.length > 0 ? uris[0] : '';
     } catch (e) {
       this.notify.log('save as: picker failed: ' + (e instanceof Error ? e.message : 'unknown'));
-      return;
-    }
-    if (destUri.length === 0) {
-      return;
-    }
-    // 源：优先沙箱副本（本地已有，可靠性最高），其次 spool
-    const sandboxCopy: string = `${this.ensureKdcDir()}/${name}`;
-    let src: string = sandboxCopy;
-    if (p.filePath.length > 0 && !fileIo.accessSync(sandboxCopy)) {
-      src = p.filePath;
-    }
-    let srcFd: fileIo.File | undefined = undefined;
-    let dstFd: fileIo.File | undefined = undefined;
-    try {
-      srcFd = fileIo.openSync(src, fileIo.OpenMode.READ_ONLY);
-      dstFd = fileIo.openSync(destUri, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
-      fileIo.copyFileSync(srcFd.fd, dstFd.fd);
-      this.notify.log(`save as -> ${destUri}`);
-      this.notify.toast(`${this.notify.resText($r('app.string.files_auto_saved').id)}: ${name}`);
-      this.payloadDetailOpen = false;
-    } catch (e) {
-      this.notify.log('save as: copy failed: ' + (e instanceof Error ? e.message : 'unknown'));
-      this.notify.toast(this.notify.resText($r('app.string.files_save_failed').id));
-    } finally {
-      if (srcFd !== undefined) {
-        try {
-          fileIo.closeSync(srcFd);
-        } catch (e2) {
-          // ignore
-        }
-      }
-      if (dstFd !== undefined) {
-        try {
-          fileIo.closeSync(dstFd);
-        } catch (e3) {
-          // ignore
-        }
-      }
-    }
-  }
-
-  private async savePayload(p: PayloadTransfer): Promise<void> {
-    const dir: string = this.ensureKdcDir();
-    if (dir === '') {
-      this.notify.log('save failed: no host context');
-      this.notify.toast(this.notify.resText($r('app.string.files_save_failed').id));
-      return;
-    }
-    const name: string = this.sanitizeFileName(p.fileName, p.transferId);
-    const dest: string = `${dir}/${name}`;
-    // 保留写权限申请（用户 2026-09-17 裁决：另存为/导出到公共目录时仍需要它）
-    const granted: boolean = await this.ensureWritePermission(name);
-    if (!granted) {
-      this.notify.log(`save aborted: write permission denied for ${name}`);
-      this.notify.toast(this.notify.resText($r('app.string.files_need_permission').id));
-      return;
-    }
-    // 先在沙箱落一份（本地副本）：① 保证文件不丢；② 它是「另存为」的来源（spool 会被消费掉）
-    let sandboxOk: boolean = false;
-    try {
-      sandboxOk = native.keepPayload(p.transferId, dest);
-      this.notify.log(sandboxOk ? `saved(sandbox) -> ${dest}` : 'keepPayload failed');
-    } catch (e) {
-      this.notify.log('keepPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
-    }
-    // 再尝试导出到**文件管理可见**的公共下载目录（官方 DOWNLOAD 模式）
-    const exported: string = await this.exportToDownloads(p, name, dest);
-    if (exported.length > 0) {
-      this.notify.log(`exported to public dir -> ${exported}`);
-      this.markPayloadSettled(p.transferId);
-      this.notify.toast(`${this.notify.resText($r('app.string.files_auto_saved').id)}: ${name}`);
-      return;
-    }
-    if (sandboxOk) {
-      this.markPayloadSettled(p.transferId);
-      this.notify.toast(`${this.notify.resText($r('app.string.files_auto_saved').id)}: ${name}`);
-      return;
-    }
-    this.notify.toast(this.notify.resText($r('app.string.files_save_failed').id));
-  }
-
-  // 把接收文件导出到公共下载目录（文件管理可见），成功返回目标 URI；失败返回空串。
-  // srcPath 是**沙箱内的副本**（keepPayload 之后 spool 已被消费，不能再当源）。
-  private async exportToDownloads(p: PayloadTransfer, name: string, srcPath: string): Promise<string> {
-    // 源优先用沙箱副本（keepPayload 之后 spool 已被消费），不存在时退回 spool
-    let src: string = srcPath;
-    if (src.length === 0) {
-      src = p.filePath;
-    }
-    if (src.length === 0) {
       return '';
     }
+  }
+
+  private async pickDownloadTarget(name: string): Promise<string> {
     const hostCtx: Context | undefined = this.getUIContext().getHostContext();
     if (hostCtx === undefined) {
       return '';
     }
-    let destUri: string = '';
     try {
-      const picker0: picker.DocumentViewPicker = new picker.DocumentViewPicker(hostCtx);
+      const pk: picker.DocumentViewPicker = new picker.DocumentViewPicker(hostCtx);
       const opts: picker.DocumentSaveOptions = {
         newFileNames: [name],
         pickerMode: picker.DocumentPickerMode.DOWNLOAD
       };
-      const uris: string[] = await picker0.save(opts);
-      destUri = uris.length > 0 ? uris[0] : '';
+      const uris: string[] = await pk.save(opts);
+      return uris.length > 0 ? uris[0] : '';
     } catch (e) {
       this.notify.log('export: save picker(DOWNLOAD) failed: ' + (e instanceof Error ? e.message : 'unknown'));
       return '';
     }
-    if (destUri.length === 0) {
-      return '';
-    }
-    let srcFd: fileIo.File | undefined = undefined;
-    let dstFd: fileIo.File | undefined = undefined;
-    try {
-      srcFd = fileIo.openSync(src, fileIo.OpenMode.READ_ONLY);
-      dstFd = fileIo.openSync(destUri, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
-      fileIo.copyFileSync(srcFd.fd, dstFd.fd);
-      fileIo.closeSync(srcFd);
-      srcFd = undefined;
-      fileIo.closeSync(dstFd);
-      dstFd = undefined;
-      // 保留沙箱副本（供「另存为」再次导出），不丢弃 spool
-      this.markPayloadSettled(p.transferId);
-      return destUri;
-    } catch (e) {
-      this.notify.log('export: copy failed: ' + (e instanceof Error ? e.message : 'unknown'));
-      return '';
-    } finally {
-      if (srcFd !== undefined) {
-        try {
-          fileIo.closeSync(srcFd);
-        } catch (e3) {
-          // ignore
-        }
-      }
-      if (dstFd !== undefined) {
-        try {
-          fileIo.closeSync(dstFd);
-        } catch (e4) {
-          // ignore
-        }
-      }
-    }
-  }
-
-  // 按扩展名映射需要申请的写入权限（无匹配则不需要权限 → 直接放行）
-  private writePermissionFor(fileName: string): string {
-    const lower: string = fileName.toLowerCase();
-    const imageVideo: string[] = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.heic', '.mp4', '.mov', '.mkv', '.webm', '.3gp'];
-    const audio: string[] = ['.mp3', '.wav', '.flac', '.aac', '.m4a', '.ogg', '.opus', '.amr'];
-    for (const ext of imageVideo) {
-      if (lower.endsWith(ext)) {
-        return 'ohos.permission.WRITE_IMAGEVIDEO';
-      }
-    }
-    for (const ext of audio) {
-      if (lower.endsWith(ext)) {
-        return 'ohos.permission.WRITE_AUDIO';
-      }
-    }
-    return '';
   }
 
   private async ensureWritePermission(fileName: string): Promise<boolean> {
-    const permName: string = this.writePermissionFor(fileName);
+    const lower: string = fileName.toLowerCase();
+    const imageVideo: string[] = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.heic', '.mp4', '.mov', '.mkv', '.webm', '.3gp'];
+    const audio: string[] = ['.mp3', '.wav', '.flac', '.aac', '.m4a', '.ogg', '.opus', '.amr'];
+    let permName: string = '';
+    for (const ext of imageVideo) {
+      if (lower.endsWith(ext)) {
+        permName = 'ohos.permission.WRITE_IMAGEVIDEO';
+        break;
+      }
+    }
+    if (permName === '') {
+      for (const ext of audio) {
+        if (lower.endsWith(ext)) {
+          permName = 'ohos.permission.WRITE_AUDIO';
+          break;
+        }
+      }
+    }
     if (permName === '') {
       return true;
     }
@@ -2193,62 +1479,28 @@ struct Index {
       return granted;
     } catch (e) {
       this.notify.log('permission request failed: ' + (e instanceof Error ? e.message : 'unknown'));
-      // 申请失败（如模拟器不支持）不阻断保存，交给 keepPayload 自行判定
       return true;
     }
   }
 
-  private discardPayload(p: PayloadTransfer): void {
-    // 排查埋点（用户实测"丢弃没反应"）：hilog 可见每一步走到哪
-    console.info(`KDC discard start #${p.transferId} name=${p.fileName} before=${this.payloads.length}/${this.receivedHistory.length}`);
-    try {
-      const ok: boolean = native.discardPayload(p.transferId);
-      this.notify.log(ok ? `discarded #${p.transferId}` : 'discardPayload failed');
-    } catch (e) {
-      this.notify.log('discardPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
-    }
-    // 用户要求（2026-09-17）：丢弃 = 从沙箱删除 + 同时从**历史记录列表**里移除（并持久化）
-    const name: string = this.sanitizeFileName(p.fileName, p.transferId);
-    const sandboxCopy: string = `${this.ensureKdcDir()}/${name}`;
-    try {
-      if (fileIo.accessSync(sandboxCopy)) {
-        fileIo.unlinkSync(sandboxCopy);
-        this.notify.log(`unlink sandbox copy -> ${sandboxCopy}`);
-      }
-    } catch (e2) {
-      this.notify.log('unlink sandbox copy failed: ' + (e2 instanceof Error ? e2.message : 'unknown'));
-    }
-    this.payloads = this.payloads.filter((x: PayloadTransfer) => x.transferId !== p.transferId);
-    this.receivedHistory = this.receivedHistory.filter((h: PayloadTransfer) => h.transferId !== p.transferId);
-    console.info(`KDC discard done #${p.transferId} after=${this.payloads.length}/${this.receivedHistory.length}`);
+  private async persistPayloadHistory(history: PayloadTransfer[]): Promise<void> {
     const hostCtx: Context | undefined = this.getUIContext().getHostContext();
     if (hostCtx !== undefined) {
-      PayloadHistory.save(hostCtx, this.receivedHistory).catch((e3: Error): void => {
-        this.notify.log('history save after discard failed: ' + e3.message);
+      PayloadHistory.save(hostCtx, history).catch((e: Error): void => {
+        this.notify.log('payload history save failed: ' + e.message);
       });
     }
   }
 
-  private cancelPayload(p: PayloadTransfer): void {
-    try {
-      native.cancelPayload(p.transferId);
-      this.notify.log(`payload cancel requested #${p.transferId}`);
-    } catch (e) {
-      this.notify.log('cancelPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
+  private async clearPayloadHistory(): Promise<void> {
+    const hostCtx: Context | undefined = this.getUIContext().getHostContext();
+    if (hostCtx !== undefined) {
+      PayloadHistory.clear(hostCtx).catch((e: Error): void => {
+        this.notify.log('payload history clear failed: ' + e.message);
+      });
     }
   }
 
-  // M2：选文件 → 复制进沙箱 → 入队 → 串行下发（发送方向；进度走 payloadTransfer）。
-  // 多选（用户 2026-09-18 拍板 / CodeArts MSG19 §3 放行）：一次最多 MAX_PICK_FILES 个，**串行**：
-  //   · 选中后**先把每个文件复制进沙箱**（picker 的 URI 授权是临时的，先落地更稳），再逐个入队；
-  //   · 真正的串行由 pumpSendQueue() + payload 终态事件驱动（见 handlePayloadTransfer），
-  //     **不用固定间隔 sleep** —— 那是时间猜测，无法保证"不并发抢 payload 通道"。
-  //   · 沙箱副本名加 `send_<批次时间戳>_<序号>_` 前缀：避免同批次内**同名文件**互相覆盖，也避免
-  //     覆盖上一个仍在流式传输中的文件。副本留在 cacheDir（应用缓存目录，系统可在空间紧张时回收）。
-  // 发送目标设备（**修复用户实测的「换了 win10dev 却发到 cachyos」**；CodeArts MSG45 §1 授权）：
-  // 旧实现写死 `connectedDevices[0]` = 永远第一台连接的设备，与用户选中的设备无关。
-  // 语义：发送卡片属于"当前选中设备"的详情页；文件页的发送也以选中设备为准。
-  // 只有"恰好一台在线"才允许无歧义地自动选它，其余**不猜**、提示用户先选设备。
   private sendTargetDevice(): DeviceItem | undefined {
     const id: string = this.selectedDeviceId;
     if (id.length > 0) {
@@ -2305,26 +1557,16 @@ struct Index {
       this.notify.toast(this.notify.resText($r('app.string.toast_send_file_failed').id));
       return;
     }
-    // 入队（允许与上一批排队：pumpSendQueue 会等当前传输结束再继续）
-    this.sendTarget = target.id;
-    this.sendTotal += jobs.length;
-    for (const j of jobs) {
-      this.sendQueue.push(j);
-    }
-    this.notify.log(`send file batch queued: ${jobs.length} (queue=${this.sendQueue.length}) -> ${target.name}`);
-    this.pumpSendQueue();
+    this.payloadController.enqueueSendJobs(jobs, target.id);
   }
 
-  // 把 picker 返回的一个 URI 复制进沙箱，成功则返回可下发的任务
   private stageSendJob(ctx: Context, srcUri: string, batchTs: number, seq: number): SendJob | undefined {
     let fileName: string = srcUri.substring(srcUri.lastIndexOf('/') + 1);
     try {
       fileName = decodeURIComponent(fileName);
     } catch (e) {
-      // URI 未编码时 decodeURIComponent 会抛；忽略，沿用原名
     }
     const cachePath: string = `${ctx.cacheDir}/send_${batchTs}_${seq}_${fileName}`;
-    // picker 返回的是 URI：必须经 fd 读，直接 copyFile(uri, path) 会失败（实测 "copy into sandbox failed"）。
     let srcFd: fileIo.File | undefined = undefined;
     try {
       srcFd = fileIo.openSync(srcUri, fileIo.OpenMode.READ_ONLY);
@@ -2338,93 +1580,11 @@ struct Index {
         try {
           fileIo.closeSync(srcFd);
         } catch (e) {
-          // 忽略关闭失败
         }
       }
     }
     const job: SendJob = { cachePath: cachePath, fileName: fileName };
     return job;
-  }
-
-  // 队列泵：空闲时才发队首；**下一个文件由上一个 payload 的终态事件驱动**（见 handlePayloadTransfer）
-  private pumpSendQueue(): void {
-    if (this.sendBusyId >= 0 || this.sendQueue.length === 0) {
-      return;
-    }
-    // 双保险之二（P3）：入口校验目标仍在线 —— 断链事件可能晚于入队、或晚于上一个终态事件，
-    // 一律不对离线设备继续下发（清空并返回，不递归）。
-    if (!this.connectedDevices.some((d: DeviceItem) => d.id === this.sendTarget)) {
-      this.forgetSendQueue(this.sendTarget);
-      return;
-    }
-    // 注意：**不 shift** —— 队首任务的"归属"一直保留到它的终态事件（onSendPayloadSettled 里结算/重试），
-    // 这样失败重试才能把它放回队首，而不是重新走一遍复制沙箱。
-    const job: SendJob = this.sendQueue[0];
-    try {
-      const body: SendShareBody = { filename: job.fileName };
-      const tid: number = native.sendPayload(this.sendTarget, 'kdeconnect.share.request',
-        JSON.stringify(body), job.cachePath);
-      if (tid > 0) {
-        this.sendBusyId = tid;
-        this.sendInflightJob = job;
-        this.notify.log(`send file #${tid}: ${job.fileName} (queued=${this.sendQueue.length})`);
-        return;
-      }
-      this.notify.log(`send file: sendPayload returned 0 (${job.fileName})`);
-    } catch (e) {
-      this.notify.log(`sendPayload error (${job.fileName}): ` + (e instanceof Error ? e.message : 'unknown'));
-    }
-    // 连"下发"都没成功（同步失败）：丢弃该文件，继续泵下一个（不阻塞整批）
-    this.sendQueue.shift();
-    this.pumpSendQueue();
-  }
-
-  // 断链时清空发送队列（P3）。只清"发给该设备"的批次：断的是别的设备时不影响当前批次。
-  // 双保险之一（另一个在 pumpSendQueue 入口做在线校验）—— 队列不能对着离线设备继续发。
-  private forgetSendQueue(deviceId: string): void {
-    if (deviceId.length === 0 || this.sendTarget !== deviceId) {
-      return;
-    }
-    const dropped: number = this.sendQueue.length + (this.sendBusyId >= 0 ? 1 : 0);
-    this.sendQueue = [];
-    this.sendBusyId = -1;
-    this.sendInflightJob = undefined;
-    this.sendTarget = '';
-    this.sendOkCount = 0;
-    this.sendTotal = 0;
-    this.notify.log(`send queue cleared on disconnect (dropped=${dropped})`);
-  }
-
-  // 当前批次是否有文件在传（供 payload 终态回调判断"该不该继续泵"）
-  private onSendPayloadSettled(transferId: number, state: PayloadState, code: number): void {
-    if (transferId !== this.sendBusyId) {
-      return;   // 不是本队列在传的那一个（例如接收方向、或历史条目）
-    }
-    const job: SendJob | undefined = this.sendInflightJob;
-    this.sendBusyId = -1;
-    this.sendInflightJob = undefined;
-    // 队首恒为这一个（pump 时不 shift）⇒ 在这里结算：成功/最终失败都移出队列，重试则放回队首
-    if (this.sendQueue.length > 0) {
-      this.sendQueue.shift();
-    }
-    if (state === 'finished') {
-      this.sendOkCount++;
-      this.notify.log(`send file done: ${job !== undefined ? job.fileName : '?'} (${this.sendOkCount}/${this.sendTotal})`);
-    } else {
-      this.notify.log(`send file failed: ${job !== undefined ? job.fileName : '?'} state=${state} code=${code}`);
-    }
-    // 裁定表 #15（合并裁定）：code=110「兜底重试一次」已撤除——Omp MSG38 判断：阶段未定位前
-    // 加重试会把真因掩盖成偶发。恢复条件：native 阶段诊断（46c55d4）的复跑数据定位后，
-    // 若确认是「对端尚未就绪」的固有窗口，再以**有界**重试回归并如实计数。
-    this.pumpSendQueue();
-    if (this.sendBusyId < 0 && this.sendQueue.length === 0 && this.sendTotal > 0) {
-      // 整批结束：一条汇总提示（CodeArts MSG19 §3：「逐条 toast 或一条汇总」——取后者，避免刷屏）
-      const head: string = this.notify.resText($r('app.string.toast_send_batch_done').id);
-      this.notify.toast(`${head} (${this.sendOkCount}/${this.sendTotal})`);
-      this.notify.log(`send file batch done: ${this.sendOkCount}/${this.sendTotal}`);
-      this.sendOkCount = 0;
-      this.sendTotal = 0;
-    }
   }
 
   // P2（MSG145 §2 P2-1）：actionGateMs 只增不减 ⇒ 随「设备 × 动作」缓慢泄漏。
@@ -2831,25 +1991,25 @@ struct Index {
               FilesTab({
                     connectedCount: this.connectedDevices.length,
                     immersive: this.immersiveSupported,
-                    payloads: this.payloads,
+                    payloads: this.payloadController.payloads,
                     onSavePayload: (p: PayloadTransfer): void => {
-                      this.savePayload(p);
+                      this.payloadController.savePayload(p);
                     },
                     onDiscardPayload: (p: PayloadTransfer): void => {
-                      this.discardPayload(p);
+                      this.payloadController.discardPayload(p);
                     },
                     onCancelPayload: (p: PayloadTransfer): void => {
-                      this.cancelPayload(p);
+                      this.payloadController.cancelPayload(p);
                     },
                     onSendFile: (): void => {
                       this.pickAndSendFile();
                     },
                     onOpenReceivedFiles: (): void => {
-                      this.receivedDialogOpen = true;
+                      this.payloadController.dialogOpen = true;
                     },
                     onOpenPayload: (tid: number): void => {
-                      this.payloadDetailId = tid;
-                      this.payloadDetailOpen = true;
+                      this.payloadController.detailId = tid;
+                      this.payloadController.detailOpen = true;
                     }
                   })
             }
@@ -2985,320 +2145,11 @@ struct Index {
         })
       }
 
-      // 媒体控制面板（P2 方向 1，FEATURE_PLAN_MPRIS §3.3）：控电脑端播放器。
-      // 读数一律走 this.mprisXxx() 方法直读 @State（**不用 @Builder 传值**：值参数不变会跳过重建，
-      // 会出现「点了图标不变/置灰不刷新」；这是本项目已踩过的坑）。
-      if (this.mprisDialogOpen) {
-        Column() {
-          Column({ space: 12 }) {
-            Text($r('app.string.media_dialog_title'))
-              .fontSize(16)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_primary'))
-            Text(this.displayNameOf(this.mprisDeviceId))
-              .fontSize(12)
-              .fontColor($r('app.color.text_muted'))
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-            // 两个 tab（用户 2026-09-18 要求）：0=媒体（播放器控制）1=设备（OutputDevice）
-            Row({ space: 8 }) {
-              Text($r('app.string.media_tab_player'))
-                .fontSize(13)
-                .fontWeight(this.mprisTab === 0 ? FontWeight.Medium : FontWeight.Normal)
-                .fontColor(this.mprisTab === 0 ? $r('app.color.accent_text') : $r('app.color.text_secondary'))
-                .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-                .borderRadius(10)
-                .backgroundColor(this.mprisTab === 0 ? $r('app.color.accent_soft') : Color.Transparent)
-                .onClick(() => {
-                  this.mprisTab = 0;
-                })
-              Text($r('app.string.media_tab_devices'))
-                .fontSize(13)
-                .fontWeight(this.mprisTab === 1 ? FontWeight.Medium : FontWeight.Normal)
-                .fontColor(this.mprisTab === 1 ? $r('app.color.accent_text') : $r('app.color.text_secondary'))
-                .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-                .borderRadius(10)
-                .backgroundColor(this.mprisTab === 1 ? $r('app.color.accent_soft') : Color.Transparent)
-                .onClick(() => {
-                  this.mprisTab = 1;
-                })
-            }
-            .width('100%')
-            if (this.mprisTab === 0) {
-
-            if (this.mprisEmpty()) {
-              Text($r('app.string.media_empty'))
-                .fontSize(13)
-                .fontColor($r('app.color.text_secondary'))
-              Text($r('app.string.media_empty_hint'))
-                .fontSize(11)
-                .fontColor($r('app.color.text_muted'))
-                .textAlign(TextAlign.Center)
-            } else {
-              // 多播放器：横向 chips 切换（单个时隐藏）
-              if (this.mprisList().length > 1) {
-                Scroll() {
-                  Row({ space: 8 }) {
-                    ForEach(this.mprisList(), (pl: string) => {
-                      Text(mprisPlayerText(pl))
-                        .fontSize(11)
-                        .fontColor(pl === this.mprisSnap().player
-                          ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
-                        .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-                        .borderRadius(999)
-                        .backgroundColor(pl === this.mprisSnap().player
-                          ? $r('app.color.accent_text') : $r('app.color.chip_bg'))
-                        .onClick(() => {
-                          this.mediaSelectPlayer(pl);
-                        })
-                    }, (pl: string) => pl)
-                  }
-                }
-                .scrollable(ScrollDirection.Horizontal)
-                .scrollBar(BarState.Off)
-                .align(Alignment.Start)
-                .width('100%')
-              }
-
-              // 曲目信息（封面本期不做：对端封面要走 payload 传输，属规划 Phase 2）
-              Row({ space: 12 }) {
-                Column() {
-                  SymbolGlyph($r('sys.symbol.music_fill'))
-                    .fontSize(24)
-                    .fontColor([$r('app.color.accent_text')])
-                }
-                .width(56)
-                .height(56)
-                .borderRadius(14)
-                .backgroundColor($r('app.color.chip_bg'))
-                .justifyContent(FlexAlign.Center)
-
-                Column({ space: 4 }) {
-                  Text(this.mprisSnap().title.length > 0
-                    ? this.mprisSnap().title : $r('app.string.media_unknown_track'))
-                    .fontSize(15)
-                    .fontWeight(FontWeight.Medium)
-                    .fontColor($r('app.color.text_primary'))
-                    .maxLines(2)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    .width('100%')
-                  Text(this.mprisArtistLine())
-                    .fontSize(11)
-                    .fontColor($r('app.color.text_muted'))
-                    .maxLines(1)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    .width('100%')
-                }
-                .alignItems(HorizontalAlign.Start)
-                .layoutWeight(1)
-              }
-              .width('100%')
-
-              // 进度：批2 根治 —— 抽成 MprisProgress 组件，**插值时钟（1s）落在组件局部 @State**，
-              // 面板打开期间不再每秒整页重建（原来 ticker 写页面级 mprisNowMs）。
-              MprisProgress({
-                lengthMs: this.mprisSnap().length,
-                posMs: this.mprisSnap().pos,
-                posAtMs: this.mprisSnap().posAt,
-                isPlaying: this.mprisSnap().isPlaying,
-                canSeek: this.mprisSnap().canSeek,
-                onSeek: (ms: number): void => {
-                  this.mediaSetPosition(ms);
-                }
-              })
-
-              // 控制键（按 can* 置灰；播放/暂停统一发 PlayPause，由对端决定方向）
-              Row({ space: 20 }) {
-                Column() {
-                  SymbolGlyph($r('sys.symbol.backward_end_fill'))
-                    .fontSize(24)
-                    .fontColor([this.mprisSnap().canGoPrevious
-                      ? $r('app.color.text_primary') : $r('app.color.text_muted')])
-                }
-                .width(46)
-                .height(46)
-                .borderRadius(23)
-                .backgroundColor($r('app.color.chip_bg'))
-                .justifyContent(FlexAlign.Center)
-                .onClick(() => {
-                  this.mediaAction('previous');
-                })
-
-                Column() {
-                  SymbolGlyph(this.mprisSnap().isPlaying
-                    ? $r('sys.symbol.pause_fill') : $r('sys.symbol.play_fill'))
-                    .fontSize(28)
-                    .fontColor([$r('app.color.accent_text')])
-                }
-                .width(58)
-                .height(58)
-                .borderRadius(29)
-                .backgroundColor($r('app.color.chip_bg'))
-                .justifyContent(FlexAlign.Center)
-                .onClick(() => {
-                  this.mediaAction('toggle');
-                })
-
-                Column() {
-                  SymbolGlyph($r('sys.symbol.forward_end_fill'))
-                    .fontSize(24)
-                    .fontColor([this.mprisSnap().canGoNext
-                      ? $r('app.color.text_primary') : $r('app.color.text_muted')])
-                }
-                .width(46)
-                .height(46)
-                .borderRadius(23)
-                .backgroundColor($r('app.color.chip_bg'))
-                .justifyContent(FlexAlign.Center)
-                .onClick(() => {
-                  this.mediaAction('next');
-                })
-              }
-
-              // 音量（对端未报 volume 时禁用）
-              Row({ space: 8 }) {
-                SymbolGlyph(this.mprisVol() > 0
-                  ? $r('sys.symbol.speaker_wave_3_fill') : $r('sys.symbol.speaker_slash_fill'))
-                  .fontSize(16)
-                  .fontColor([$r('app.color.text_secondary')])
-                Slider({ value: this.mprisVol(), min: 0, max: 100, step: 1 })
-                  .layoutWeight(1)
-                  .enabled(this.mprisSnap().volume >= 0)
-                  .onChange((value: number, mode: SliderChangeMode) => {
-                    if (mode === SliderChangeMode.Begin) {
-                      this.mprisVolDragging = true;
-                      return;
-                    }
-                    if (mode === SliderChangeMode.Moving) {
-                      return;
-                    }
-                    if (!this.mprisVolDragging) {
-                      return;
-                    }
-                    this.mprisVolDragging = false;
-                    this.mediaSetVolume(value);
-                  })
-                Text(`${this.mprisVol()}`)
-                  .fontSize(10)
-                  .fontColor($r('app.color.text_muted'))
-                  .width(24)
-              }
-              .width('100%')
-
-              // 循环（None → Track → Playlist 三态）/ 随机
-              Row({ space: 10 }) {
-                Row({ space: 6 }) {
-                  SymbolGlyph($r('sys.symbol.repeat'))
-                    .fontSize(15)
-                    .fontColor([this.mprisSnap().loopStatus !== 'None'
-                      ? $r('app.color.accent_text') : $r('app.color.text_muted')])
-                  Text(this.mprisLoopText())
-                    .fontSize(11)
-                    .fontColor(this.mprisSnap().loopStatus !== 'None'
-                      ? $r('app.color.accent_text') : $r('app.color.text_muted'))
-                }
-                .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-                .borderRadius(999)
-                .backgroundColor($r('app.color.chip_bg'))
-                .onClick(() => {
-                  this.mediaToggleLoop();
-                })
-
-                Row({ space: 6 }) {
-                  SymbolGlyph($r('sys.symbol.shuffle'))
-                    .fontSize(15)
-                    .fontColor([this.mprisSnap().shuffle
-                      ? $r('app.color.accent_text') : $r('app.color.text_muted')])
-                  Text($r('app.string.media_shuffle'))
-                    .fontSize(11)
-                    .fontColor(this.mprisSnap().shuffle
-                      ? $r('app.color.accent_text') : $r('app.color.text_muted'))
-                }
-                .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-                .borderRadius(999)
-                .backgroundColor($r('app.color.chip_bg'))
-                .onClick(() => {
-                  this.mediaToggleShuffle();
-                })
-              }
-              .width('100%')
-            }
-
-            } else {
-              // 「设备」tab：对端音频输出设备（OutputDevice）列表 —— 每个 sink 一行，可分别调音量/静音。
-              // 数据是插件推的**全量快照**（SystemSinkUi，刻度已换算成百分比）：UI 不做换算、不做兜底猜测，
-              // 也不持有第二份状态；打开面板时只向对端请求一次列表（协议级刷新）。
-              if (this.svSinksForCurrent().length === 0) {
-                Text($r('app.string.media_no_output'))
-                  .fontSize(13)
-                  .fontColor($r('app.color.text_secondary'))
-                Text($r('app.string.media_no_output_hint'))
-                  .fontSize(11)
-                  .fontColor($r('app.color.text_muted'))
-                  .textAlign(TextAlign.Center)
-              } else {
-                ForEach(this.svSinksForCurrent(), (s: SystemSinkUi) => {
-                  SystemSinkRow({
-                    sink: s,
-                    onVolumeChange: (name: string, pct: number): void => {
-                      this.svSinkSet(name, pct);
-                    },
-                    onToggleMute: (name: string): void => {
-                      this.svSinkToggleMute(name);
-                    },
-                    onSelect: (name: string): void => {
-                      this.svSinkSetDefault(name);
-                    }
-                  })
-                }, (s: SystemSinkUi) => s.name)
-              }
-            }
-
-            // 共用页脚（两个 tab 都是刷新/关闭）：旧实现把这两个按钮放在「媒体」tab 内部，
-            // 切到「设备」tab 后就**没有关闭入口**了 —— 已按「tab 只切内容、页脚共用」修正。
-            Row({ space: 10 }) {
-              Button($r('app.string.media_refresh'))
-                .layoutWeight(1)
-                .height(42)
-                .fontSize(14)
-                .backgroundColor($r('app.color.chip_bg'))
-                .fontColor($r('app.color.text_secondary'))
-                .borderRadius(12)
-                .onClick(() => {
-                  this.panelRefresh();
-                })
-              Button($r('app.string.action_cancel'))
-                .layoutWeight(1)
-                .height(42)
-                .fontSize(14)
-                .backgroundColor($r('app.color.chip_bg'))
-                .fontColor($r('app.color.text_secondary'))
-                .borderRadius(12)
-                .onClick(() => {
-                  this.closeMprisDialog();
-                })
-            }
-            .width('100%')
-          }
-          .width('86%')
-          .padding(20)
-          .borderRadius(20)
-          // 弹层不用毛玻璃（手机实测：BACKGROUND_THICK 在弹层上会让整屏重算背景模糊，
-          // 叠上面板每秒重绘就把主线程拖死 → THREAD_BLOCK_3S/6S、点击无响应）。用更实的底色替代。
-          .backgroundColor($r('app.color.dialog_bg'))
-          .border({ width: 1, color: $r('app.color.card_border') })
-          .alignItems(HorizontalAlign.Center)
-          // onClick 为同类型手势竞争（非冒泡）：卡片自身也绑一个空点击把空白区域的点击消费掉，
-          // 否则点卡片内的空白处会被外层遮罩的 onClick 抢走 → 弹窗被误关。空白处=只关「卡外」。
-          .onClick(() => {})
-        }
-        .width('100%')
-        .height('100%')
-        .justifyContent(FlexAlign.Center)
-        .alignItems(HorizontalAlign.Center)
-        .backgroundColor($r('app.color.dialog_mask'))
-        .onClick(() => {
-          this.closeMprisDialog();
+      // 媒体控制面板（阶段 3 批次 2 步骤 6a-2 ⇒ components/MprisDialog.ets）
+      if (this.mprisController.dialogOpen) {
+        MprisDialog({
+          mpris: this.mprisController,
+          deviceName: this.displayNameOf(this.mprisController.deviceId)
         })
       }
 
@@ -3318,112 +2169,31 @@ struct Index {
         })
       }
 
-      // 「查看已接收」弹窗（文件页入口）：只读列出本次会话收到的文件 + 大小 + 状态。
-      // 结构与其它弹层一致（卡片自身消费点击，只有点卡外遮罩才关）。
-      if (this.receivedDialogOpen) {
-        Column() {
-          Column({ space: 12 }) {
-            Text($r('app.string.files_received_dialog_title'))
-              .fontSize(16)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_primary'))
-            if (this.receivedFiles().length === 0) {
-              Text($r('app.string.files_received_empty'))
-                .fontSize(13)
-                .fontColor($r('app.color.text_secondary'))
-            } else {
-              Scroll() {
-                Column({ space: 8 }) {
-                  ForEach(this.receivedFiles(), (p: PayloadTransfer) => {
-                    Row({ space: 10 }) {
-                      Text(p.fileName)
-                        .fontSize(12)
-                        .fontColor($r('app.color.text_primary'))
-                        .maxLines(1)
-                        .textOverflow({ overflow: TextOverflow.Ellipsis })
-                        .layoutWeight(1)
-                      Text(this.fmtBytes(p.size))
-                        .fontSize(11)
-                        .fontColor($r('app.color.text_muted'))
-                      Text(this.payloadStateText(p))
-                        .fontSize(11)
-                        .fontColor($r('app.color.accent_text'))
-                    }
-                    .width('100%')
-                    .padding({ left: 12, right: 12, top: 15, bottom: 15 })
-                    .borderRadius(12)
-                    .backgroundColor($r('app.color.chip_bg'))
-                  }, (p: PayloadTransfer) => `recv_${p.transferId}`)
-                }
-                .width('100%')
-              }
-              .width('100%')
-              .constraintSize({ maxHeight: 320 })
-              .align(Alignment.TopStart)
-              .scrollBar(BarState.Off)
-            }
-            Row({ space: 10 }) {
-              Button($r('app.string.files_history_clear'))
-                .layoutWeight(1)
-                .height(42)
-                .fontSize(14)
-                .backgroundColor($r('app.color.danger_bg'))
-                .fontColor($r('app.color.danger_text'))
-                .borderRadius(12)
-                .enabled(this.receivedFiles().length > 0)
-                .onClick(() => {
-                  this.clearReceivedHistory();
-                })
-              Button($r('app.string.action_close'))
-                .layoutWeight(1)
-                .height(42)
-                .fontSize(14)
-                .backgroundColor($r('app.color.chip_bg'))
-                .fontColor($r('app.color.text_secondary'))
-                .borderRadius(12)
-                .onClick(() => {
-                  this.receivedDialogOpen = false;
-                })
-            }
-            .width('100%')
-          }
-          .width('86%')
-          .padding(20)
-          .borderRadius(20)
-          .backgroundColor($r('app.color.dialog_bg'))
-          .border({ width: 1, color: $r('app.color.card_border') })
-          .alignItems(HorizontalAlign.Center)
-          .onClick(() => {})
-        }
-        .width('100%')
-        .height('100%')
-        .justifyContent(FlexAlign.Center)
-        .alignItems(HorizontalAlign.Center)
-        .backgroundColor($r('app.color.dialog_mask'))
-        .onClick(() => {
-          this.receivedDialogOpen = false;
+      // 「查看已接收」弹窗（阶段 3 批次 2 步骤 6b-2 ⇒ components/ReceivedFilesDialog.ets）
+      if (this.payloadController.dialogOpen) {
+        ReceivedFilesDialog({
+          payload: this.payloadController
         })
       }
 
-      if (this.payloadDetailOpen) {
-        // 合并裁定 #13：「文件详情」弹窗抽为 components/PayloadDetailDialog.ets（来自 DevEco，行为保持）
+      if (this.payloadController.detailOpen) {
         PayloadDetailDialog({
-          fileName: this.payloadDetail().fileName.length > 0
-            ? this.payloadDetail().fileName : `#${this.payloadDetailId}`,
-          sizeText: this.fmtBytes(this.payloadDetail().size),
-          timeText: this.timeTextOf(this.payloadDetail()),
-          stateText: this.payloadStateText(this.payloadDetail()),
-          dirText: this.notify.resText(this.payloadDetail().direction === 'receive'
+          fileName: this.payloadController.payloadDetail().fileName.length > 0
+            ? this.payloadController.payloadDetail().fileName : `#${this.payloadController.detailId}`,
+          sizeText: this.payloadController.fmtBytes(this.payloadController.payloadDetail().size),
+          timeText: this.payloadController.timeTextOf(this.payloadController.payloadDetail()),
+          stateText: this.payloadController.payloadStateText(this.payloadController.payloadDetail()),
+          dirText: this.notify.resText(this.payloadController.payloadDetail().direction === 'receive'
             ? $r('app.string.file_dir_receive').id : $r('app.string.file_dir_send').id),
           onSaveAs: (): void => {
-            this.saveAsPayload(this.payloadDetail());
+            this.payloadController.saveAsPayload(this.payloadController.payloadDetail());
           },
           onDiscard: (): void => {
-            this.discardPayload(this.payloadDetail());
-            this.payloadDetailOpen = false;
+            this.payloadController.discardPayload(this.payloadController.payloadDetail());
+            this.payloadController.detailOpen = false;
           },
           onClose: (): void => {
-            this.payloadDetailOpen = false;
+            this.payloadController.detailOpen = false;
           }
         })
       }

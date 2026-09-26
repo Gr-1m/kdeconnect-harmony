@@ -11,7 +11,7 @@ import { PayloadTransfer } from '../model/PayloadModels';
 export struct FilesTab {
   @Prop connectedCount: number = 0;
   @Prop immersive: boolean = false;
-  @Link payloads: PayloadTransfer[];
+  @Prop payloads: PayloadTransfer[] = [];
   cardMaterial: uiMaterial.Material | undefined = undefined;
   onSavePayload: (p: PayloadTransfer) => void = () => {
   };
