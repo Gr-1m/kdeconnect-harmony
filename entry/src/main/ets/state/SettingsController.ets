@@ -22,13 +22,11 @@ export class SettingsController {
   themeMode: number = THEME_FOLLOW_SYSTEM;
   language: string = LANG_SYSTEM;
   deviceName: string = DEFAULT_DEVICE_NAME;
-  systemName: string = '';
 
   log: (m: string) => void = () => {};
   persistEntries: (entries: SettingEntry[]) => Promise<void> = () => Promise.resolve();
   applyColorMode: (mode: number) => void = () => {};
   applyLang: (lang: string) => void = () => {};
-  getSystemName: () => string = () => '';
   restartNative: () => void = () => {};
 
   applyTheme(mode: number, persist: boolean): void {
@@ -58,12 +56,5 @@ export class SettingsController {
     this.persistEntries(entries);
     this.log(`rename device -> ${name} (restart native)`);
     this.restartNative();
-  }
-
-  useSystemDeviceName(): void {
-    const name: string = this.getSystemName();
-    this.systemName = name;
-    this.log(`use system device name: ${name}`);
-    this.renameDevice(name);
   }
 }

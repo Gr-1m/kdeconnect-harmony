@@ -105,6 +105,7 @@ struct Index {
   @State cardBusyKey: string = '';
   private cardBusyTimer: number = -1;
   @State settingsController: SettingsController = new SettingsController();
+  @State systemName: string = '';
   @State isWide: boolean = false;
   // 横屏判定（宽 > 高）
   @State isLandscape: boolean = false;
@@ -217,9 +218,9 @@ struct Index {
       keyPem = String(await pref.get('keyPem', ''));
       // 设备名称：用户改过就用用户的；没改过 → 读**系统设备名称**（设置→关于本机→设备名称，回退市场名/型号）
       this.settingsController.deviceName = String(await pref.get('deviceName', ''));
-      this.settingsController.systemName = systemDeviceName(ctx);
+      this.systemName = systemDeviceName(ctx);
       if (this.settingsController.deviceName.length === 0) {
-        this.settingsController.deviceName = this.settingsController.systemName;
+        this.settingsController.deviceName = this.systemName;
       }
       this.settingsController.themeMode = parseInt(String(await pref.get('themeMode', '0')), 10) || THEME_FOLLOW_SYSTEM;
       this.settingsController.language = String(await pref.get('language', LANG_SYSTEM));
@@ -454,7 +455,6 @@ struct Index {
         this.notify.log('setLanguage failed: ' + (e instanceof Error ? e.message : 'unknown'));
       }
     };
-    this.settingsController.getSystemName = (): string => systemDeviceName(this.getUIContext().getHostContext());
     this.settingsController.restartNative = (): void => {
       try {
         native.stop();
@@ -655,6 +655,13 @@ struct Index {
     } catch (e) {
       this.notify.log('persist settings failed');
     }
+  }
+
+  private useSystemDeviceName(): void {
+    const name: string = systemDeviceName(this.getUIContext().getHostContext());
+    this.systemName = name;
+    this.notify.log(`use system device name: ${name}`);
+    this.settingsController.renameDevice(name);
   }
 
   private async persistTrust(): Promise<void> {
@@ -1948,7 +1955,7 @@ struct Index {
               SettingsTab({
                 deviceId: this.deviceId,
                 deviceName: this.settingsController.deviceName,
-                systemName: this.settingsController.systemName,
+                systemName: this.systemName,
                 statusText: this.status,
                 themeMode: this.settingsController.themeMode,
                 language: this.settingsController.language,
@@ -1957,7 +1964,7 @@ struct Index {
                   this.settingsController.renameDevice(name);
                 },
                 onUseSystemName: (): void => {
-                  this.settingsController.useSystemDeviceName();
+                  this.useSystemDeviceName();
                 },
                 onThemeChange: (mode: number): void => {
                   this.settingsController.applyTheme(mode, true);
