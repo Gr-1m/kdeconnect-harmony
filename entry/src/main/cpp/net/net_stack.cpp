@@ -359,40 +359,54 @@ bool NetStack::sendPacket(const std::string &deviceId, const std::string &packet
                   (long long) lockWaitMs, (unsigned long long) connections_.size());
     }
 #endif
+    // P2（多链路卫生；Omp 2026-09-26 依 E2E 证据修复）：同一设备可能存在**多条存活链路**
+    // （真机 E2E 遥测曾见 conn[in=7 out=11]）。原实现按 map 迭代序取**第一个**处于
+    // Encrypted/TlsHandshake 的连接 ⇒ 可能选中**仍在握手**的那条，把包排到对端尚未完成的链路上
+    // （顺序与时延不可预期）。现改为**两轮择链**：优先已 Encrypted 的链路；仅在没有任何已建立
+    // 链路时才退回 TlsHandshake（完整保留 P0-b 行为）。
+    TcpConnection *target = nullptr;
     for (auto &p : connections_) {
         TcpConnection &conn = *p.second;
-        if (conn.deviceId() != deviceId) {
-            continue;
+        if (conn.deviceId() == deviceId && conn.state() == ConnectionState::Encrypted) {
+            target = &conn;
+            break;
         }
+    }
+    if (target == nullptr) {
         // P0-b（CodeArts MSG160 §3.1 批准）：TLS 握手中的连接也接受 —— 只入队，
         // 由网络线程在 handshakeDone() 后自动 flush（flushTx 以 handshakeDone() 为前置，
         // 因此不会有明文裸发/顺序问题）。修复前这里找不到连接就返回 false，而启动时
         // 首批包（battery/connectivity_report/mpris.request）恰好落在握手窗口内，
         // 「成功」全靠 sendPacket 被 connMutex_ 扣住 6 秒等到了握手完成——纯属巧合。
-        const ConnectionState st = conn.state();
-        if (st != ConnectionState::Encrypted && st != ConnectionState::TlsHandshake) {
-            continue;
+        for (auto &p : connections_) {
+            TcpConnection &conn = *p.second;
+            if (conn.deviceId() == deviceId && conn.state() == ConnectionState::TlsHandshake) {
+                target = &conn;
+                break;
+            }
         }
-        // 只入队，不做 I/O：本方法可从 ArkTS 主线程调用（CPP_GUIDE §4 硬约束）。
-        // 真正的写由网络线程 flushTx 承担（EPOLLOUT/tick 驱动），
-        // 因此不会阻塞 JS 线程，也不会出现多写者帧交错（REVIEW §4 P1-6/P1-3）。
-        if (!conn.enqueueTx(packetJson)) {
-            dispatchError(deviceId, ENOBUFS, "sendPacket: tx queue full");
-            return false;
-        }
-        // 诊断（DevEco MSG181 §3.3 要求）：如实记录出向 pair 帧时序，便于与对端帧对齐。
-        // 注意：native 侧**不构造**任何 pair 帧（代码中无 pair 语义），这里只记录 App 下发的内容。
-        if (packetJson.find("kdeconnect.pair") != std::string::npos) {
-            deferLogf("I ", "[KDC-PAIR-OUT] device=%s pkt=%s", deviceId.c_str(),  // S2
-                      packetJson.c_str());
-        }
-        // 入队后按需挂 EPOLLOUT（否则要等 tick 的 200ms 兜底才发出去 —— 配对 ack 会被推迟）
-        updateWriteInterestLocked(conn.fd());
-        // 唤醒网络线程尽快 flush（EPOLLET 下不能指望一定会再有 EPOLLOUT 边沿）
-        wakeLoop();
-        return true;
     }
-    return false;
+    if (target == nullptr) {
+        return false;
+    }
+    // 只入队，不做 I/O：本方法可从 ArkTS 主线程调用（CPP_GUIDE §4 硬约束）。
+    // 真正的写由网络线程 flushTx 承担（EPOLLOUT/tick 驱动），
+    // 因此不会阻塞 JS 线程，也不会出现多写者帧交错（REVIEW §4 P1-6/P1-3）。
+    if (!target->enqueueTx(packetJson)) {
+        dispatchError(deviceId, ENOBUFS, "sendPacket: tx queue full");
+        return false;
+    }
+    // 诊断（DevEco MSG181 §3.3 要求）：如实记录出向 pair 帧时序，便于与对端帧对齐。
+    // 注意：native 侧**不构造**任何 pair 帧（代码中无 pair 语义），这里只记录 App 下发的内容。
+    if (packetJson.find("kdeconnect.pair") != std::string::npos) {
+        deferLogf("I ", "[KDC-PAIR-OUT] device=%s pkt=%s", deviceId.c_str(),  // S2
+                  packetJson.c_str());
+    }
+    // 入队后按需挂 EPOLLOUT（否则要等 tick 的 200ms 兜底才发出去 —— 配对 ack 会被推迟）
+    updateWriteInterestLocked(target->fd());
+    // 唤醒网络线程尽快 flush（EPOLLET 下不能指望一定会再有 EPOLLOUT 边沿）
+    wakeLoop();
+    return true;
 }
 
 void NetStack::disconnectDevice(const std::string &deviceId)
