@@ -2,6 +2,10 @@
 # 真机（HarmonyOS）诊断工具：读取 KDE Connect 构建信息 / 抓取「切后台断链」瞬间日志。
 #
 # 前置：手机以 USB(HDC 模式) 或无线连接，且 `hdc list targets` 能看到它。
+#   ★ root 政策：本工具及使用它的人**不得**以任何方式（udev 规则 / chmod / sudoers / pkexec /
+#     以 root 运行 hdc 等）获得持久的 root 级权限。凡是需要 root 的动作（下面那条 udev 规则、
+#     读 faultlog 等）**一律交给用户本人执行**，把命令交给用户即可。
+#   ★ 零 root 首选路径：手机开发者选项 →「无线调试」，然后 `hdc tconn <手机IP>:<端口>`。
 #   USB 权限（Linux，需 root，一次性）：hdc 走 USB 需要能读写 /dev/bus/usb/... 节点。
 #   注意：系统自带的 51-android.rules 只覆盖 ADB 接口，**不匹配 HDC 接口**，所以通常要自己加一条。
 #   推荐（把设备交给当前用户所在的 uucp 组，比 0666 干净）：
@@ -20,7 +24,17 @@
 set -uo pipefail
 BUNDLE="${BUNDLE:-org.kde.kdeconnect}"
 TARGET="${TARGET:-}"
+# 未指定 TARGET 时自动选择：**排除本机模拟器 127.0.0.1:5555**，避免误对模拟器取证（真机才有效）。
+if [ -z "$TARGET" ] && [ "${1:-}" != "targets" ]; then
+  _t=$(hdc list targets 2>/dev/null | grep -v '^\[Empty\]$' | grep -v '^127\.0\.0\.1:5555$' | head -1)
+  if [ -n "$_t" ]; then TARGET="$_t"; else
+    echo "✗ 没有可用真机目标（只有模拟器或为空）。请接真机/无线调试，或用 TARGET=<序列号> 指定。" >&2
+    echo "  当前 hdc list targets：$(hdc list targets 2>/dev/null | tr '\n' ' ')" >&2
+    exit 3
+  fi
+fi
 D=""; [ -n "$TARGET" ] && D="-t $TARGET"
+echo "[目标设备] ${TARGET:-（唯一/默认）}" >&2
 hd() { hdc $D shell "$@" 2>&1 | tr -d '\r'; }
 
 case "${1:-}" in
