@@ -4,13 +4,14 @@
 
 ## 当前状态
 
-- 分支 `main`（= `dev/zcodeinit` = `refactor/arkts-codearts`），提交 `38024be`，工作区干净
-- 阶段 1 + 阶段 2 已完成：P3 修复 + 回归验证 + PairSession + PluginEventBus + Index.ets 接线 + 路由装配
-- Index.ets 当前 **3714 行**（目标 < 1500 行）
-- 已抽出：DrawerOverlay(304) + PayloadDetailDialog(103) + PairSession(335) + PluginEventBus(83)
+- 分支 `main`（= `dev/zcodeinit` = `refactor/arkts-codearts`），提交 `f12c4e6`，工作区有未跟踪文件 `SettingsController.ets`（批次 3 在途）
+- 阶段 1 + 阶段 2 + 阶段 3 批次 1-2 已完成：P3 修复 + 回归验证 + PairSession + PluginEventBus + 批次 1（4 模块）+ 批次 2（4 模块）接线/评审/验收
+- Index.ets 当前 **2210 行**（目标 < 1500 行）
+- 已抽出 10+ 模块：DrawerOverlay(304) + PayloadDetailDialog(103) + PairSession(335) + PluginEventBus(83) + PairConfirmDialog(121) + RunCommandDialog(107) + NotificationHelper(97) + NetworkWatcher(73) + MprisController(332) + MprisDialog(348) + PayloadController(564) + ReceivedFilesDialog(107)
 - RemoteInputPlugin / NotificationPlugin 仍为 P1 占位骨架（21 行，只声明 caps）
 - MprisPlugin 已完整实现方向1（控制方），方向2（被控方）未做
-- 版本号 0.2.0，KDE 官方命名对齐（bundleName `org.kde.kdeconnect`）
+- 版本号 0.5.0（versionCode 3），KDE 官方命名对齐（bundleName `org.kde.kdeconnect`）
+- CI native 回归门禁已接入（`.github/workflows/native-tests.yml`）
 
 ## 五个推进方向
 
@@ -26,16 +27,16 @@
 | 2 | ✅ | PayloadDetailDialog | components/PayloadDetailDialog.ets | 103 |
 | 3 | ✅ | PairSession（配对会话状态机） | state/PairSession.ets | 335 |
 | 4 | ✅ | PluginEventBus（插件事件路由表） | state/PluginEventBus.ets | 83 |
-| **5** | **待做** | **批次1：低风险独立模块**（4 项，~350 行） | | |
-| 5a | | PairConfirmDialog（配对确认弹窗 UI） | components/PairConfirmDialog.ets | ~92 |
-| 5b | | RunCommandDialog（远程命令弹窗 UI + runCommand 方法） | components/RunCommandDialog.ets | ~106 |
-| 5c | | NotificationHelper（日志/通知工具方法） | common/NotificationHelper.ets | ~86 |
-| 5d | | NetworkWatcher（网络监听副作用模块） | common/NetworkWatcher.ets | ~68 |
-| **6** | **待做** | **批次2：大块领域模块**（2 项，~1413 行） | | |
-| 6a | | MprisController + MprisDialog（28 方法 + 313 行 UI） | state/MprisController.ets + components/MprisDialog.ets | ~599 |
-| 6b | | PayloadController + ReceivedFilesDialog（27 方法 + 84 行 UI） | state/PayloadController.ets + components/ReceivedFilesDialog.ets | ~814 |
-| **7** | **待做** | **批次3：中等耦合模块**（2 项，~176 行） | | |
-| 7a | | SettingsController（设置/主题/语言） | state/SettingsController.ets | ~79 |
+| **5** | ✅ | **批次1：低风险独立模块**（4 项，398 行） | | |
+| 5a | ✅ | PairConfirmDialog（配对确认弹窗 UI） | components/PairConfirmDialog.ets | 121 |
+| 5b | ✅ | RunCommandDialog（远程命令弹窗 UI） | components/RunCommandDialog.ets | 107 |
+| 5c | ✅ | NotificationHelper（日志/通知工具方法） | common/NotificationHelper.ets | 97 |
+| 5d | ✅ | NetworkWatcher（网络监听副作用模块） | common/NetworkWatcher.ets | 73 |
+| **6** | ✅ | **批次2：大块领域模块**（4 项，1351 行） | | |
+| 6a | ✅ | MprisController + MprisDialog（24 方法 + 348 行 UI） | state/MprisController.ets(332) + components/MprisDialog.ets(348) | 680 |
+| 6b | ✅ | PayloadController + ReceivedFilesDialog（27 方法 + 107 行 UI） | state/PayloadController.ets(564) + components/ReceivedFilesDialog.ets(107) | 671 |
+| **7** | **进行中** | **批次3：中等耦合模块**（2 项，~176 行） | | |
+| 7a | 进行中 | SettingsController（设置/主题/语言） | state/SettingsController.ets | ~69 |
 | 7b | | PluginEventHandlers（10 个事件处理方法） | state/PluginEventHandlers.ets | ~97 |
 | **8** | **待做** | **批次4：高耦合核心模块**（2 项，~611 行） | | |
 | 8a | | DeviceController（handleEvent + 配对/信任/派生列表） | state/DeviceController.ets | ~466 |
