@@ -402,7 +402,16 @@ bool NetStack::sendPacket(const std::string &deviceId, const std::string &packet
         deferLogf("I ", "[KDC-PAIR-OUT] device=%s pkt=%s", deviceId.c_str(),  // S2
                   packetJson.c_str());
     }
-    // 入队后按需挂 EPOLLOUT（否则要等 tick 的 200ms 兜底才发出去 —— 配对 ack 会被推迟）
+    // 入队后按需挂 EPOLLOUT（否则要等 tick 的 200ms 兜底才发出去 —— 配对 ack 会被推迟）。
+    //
+    // 语义说明（AtomCode REVIEW_OMP_CHANGES_20260926 §2 建议，随 P2 后半梳理）：
+    // 若 target 处于 `TlsHandshake`，此处挂上的 EPOLLOUT 对 flushTx **不生效**（flushTx 以
+    // `handshakeDone()` 为前置）；该包由**握手完成当次必 drain** 的路径送出（见 EPOLLET 三坑之"握手完成当次必 drain"），
+    // 因此不会滞留。**此调用保留不动**，理由有二：
+    //   · 拨号方**依赖**注册时挂 EPOLLOUT 借 ADD 的可写上报启动首帧握手（去掉会破坏握手启动）；
+    //   · 历史上 payload fd 的 EPOLLOUT "按需挂载"改过三次都让载荷握手停摆、接收侧 `done=0` 卡死
+    //     （见 `devdocs/EXP_LESSONS_20260916_splash_freeze.md`）⇒ 此处不做"看似更精确"的时机收紧。
+    // 真正可做的是 P2 后半（同设备冗余链路收敛）时，把"握手期链路的写兴趣"作为整体语义一并理清。
     updateWriteInterestLocked(target->fd());
     // 唤醒网络线程尽快 flush（EPOLLET 下不能指望一定会再有 EPOLLOUT 边沿）
     wakeLoop();

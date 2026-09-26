@@ -30,6 +30,9 @@
      使用 `backgroundTaskManager` 长时任务，保证后台不被冻结；
   3. 折中：进入后台**不主动断链**，由系统回收时再停（并派发 `Disconnected`）。
 - **归属**：**DevEco**（ArkTS 生命周期与权限/后台任务实现）+ **CodeArts**（排期与方案裁决）。
+- **旁证（供查，未断言因果）**：模拟器 faultlog 里有 2 条 `sysfreeze-org.kde.kdeconnect-…` 故障日志
+  （2026-09-26 20:32/20:33，`Reason: LIFECYCLE_TIMEOUT`，`Foreground: No`），时间点与应用/模拟器生命周期切换相近，
+  记此以备排查（当时安装的还是 0.2.0 旧包）。
 - **状态**：⬜ **未修（待裁决）** —— 本条由用户 2026-09-26 指定"很重要，记录下来"。
 
 ---
@@ -42,7 +45,13 @@
 - **后半（未做）**：
   1. 同设备冗余链路**收敛到 1 条**（注意既有语义：`net_stack_link.cpp` 中"新链路替换旧链路时不派发
      `Disconnected`"，改动面较大 ⇒ 建议 AtomCode 评审后再动）；
-  2. `jobs_` 发送条目回收（实测回收点计数 = 0）。
+  2. `jobs_` 发送条目回收（实测回收点计数 = 0）；
+  3. **「握手期链路的写兴趣」语义梳理**（AtomCode `devdocs/REVIEW_OMP_CHANGES_20260926.md` §2 建议，非阻塞）：
+     `sendPacket` 选中 `TlsHandshake` 链路时，入队后 `updateWriteInterestLocked` 挂的 EPOLLOUT 对 `flushTx`
+     **无效**（其前置是 `handshakeDone()`）——行为与旧代码一致、**不算回归**；该包由"握手完成当次必 drain"
+     送出，不会滞留。**现状已在代码注释里固化语义并说明"为何不能顺手收紧"**（拨号方依赖注册期 EPOLLOUT 启动握手；
+     payload fd 曾三次因收紧挂载时机导致握手停摆 ⇒ 见 `devdocs/EXP_LESSONS_20260916_splash_freeze.md`）。
+     待 P2 后半动「冗余链路收敛」时一并成体系处理。
 - **归属**：**Omp**（native）—— 建议在 AtomCode 对其余 native 议题评审后成批处理。
 - **状态**：🟡 前半已修；后半 ⬜ 待评审。
 
