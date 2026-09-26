@@ -7,8 +7,6 @@ import { preferences } from '@kit.ArkData';
 import { Context, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { display, SymbolGlyphModifier } from '@kit.ArkUI';
-import { connection } from '@kit.NetworkKit';
-import { BusinessError } from '@kit.BasicServicesKit';
 import { HdsTabs, HdsTabsController, hdsMaterial } from '@kit.UIDesignKit';
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import deviceInfo from '@ohos.deviceInfo';
@@ -36,7 +34,10 @@ import { TrustedDevice } from '../model/TrustModels';
 import { TrustStore } from '../common/TrustStore';
 import { PayloadHistory } from '../common/PayloadHistory';
 import { PayloadDetailDialog } from '../components/PayloadDetailDialog';
-import { LogStore } from '../common/LogStore';
+import { PairConfirmDialog } from '../components/PairConfirmDialog';
+import { RunCommandDialog } from '../components/RunCommandDialog';
+import { NotificationHelper } from '../common/NotificationHelper';
+import { NetworkWatcher } from '../common/NetworkWatcher';
 import { colorModeOf, languageOf, LANG_SYSTEM, THEME_FOLLOW_SYSTEM, systemDeviceName } from '../common/AppSettings';
 import { DevicesTab } from '../components/DevicesTab';
 import { DrawerOverlay } from '../components/DrawerOverlay';
@@ -84,8 +85,6 @@ const DEFAULT_DEVICE_NAME: string = 'kdeconnect-harmony';
 //  否则用户还在点对端通知时本侧就先判失败。见 MSG65 §2）
 const CONNECT_TIMEOUT_MS: number = 20000;
 const PAIR_TIMEOUT_MS: number = 45000;
-// 成功提示停留时间
-const NOTICE_MS: number = 2500;
 // 抽屉收起态最多显示的已连接设备数（超出才出现「展开 ⌄」）
 const DRAWER_DEVICE_CAP: number = 2;
 // 抽屉面板宽度上限（vp）：大屏上 78% 会撑成一条巨板，故夹住
@@ -107,15 +106,13 @@ interface SendJob {
 @Component
 struct Index {
   @State status: string = 'booting';
-  // 日志状态（批3 #1）：收进 @Observed LogStore，由 LogsTab 以 @ObjectLink 绑定。
-  // ⚠️ 这里**必须**挂 @State 才能传给 @ObjectLink（ArkTS 不允许 regular 属性绑定该装饰器）。
-  // 但**改 store 的内部字段（text）不会重建页面** —— @Observed 只通知 @ObjectLink 订阅者（LogsTab），
-  // 这正是本批要的收益：日志刷新只重建日志组件，页面其余部分不受影响。
-  @State logStore: LogStore = new LogStore();
+  // 通知/日志工具（阶段 3 批次 1 步骤 5c ⇒ common/NotificationHelper.ets）：日志缓冲与节流、
+  // 提示文案映射全在模块里；页面只负责注入（resText/showToast/setNoticeKey/logTabVisible）与渲染。
+  // logStore（@Observed）由页面转交给 LogsTab 的 @ObjectLink —— 写它只重建 LogsTab，不重建页面其余部分。
+  private notify: NotificationHelper = new NotificationHelper();
+  // 局域网发现：网络变化监听（阶段 3 批次 1 步骤 5d ⇒ common/NetworkWatcher.ets）
+  private netWatcher: NetworkWatcher = new NetworkWatcher();
   @State currentTab: number = 0;
-  // 日志合并刷新计数（非 @State，避免自身触发重建）：批3 后写日志不再重建页面，
-  // 这个计数只代表 flush 次数（用于量化刷新频率），名字随语义改掉，别再叫 buildCount。
-  private logFlushCount: number = 0;
   // 事件日志开关：true 时打印完整事件 JSON（排查用）；常态 false ⇒ 只打轻量摘要
   private debugEventLog: boolean = false;
   // 卡片忙碌态【补丁·待优化】（用户 2026-09-16 提案 / CodeArts MSG6-7 批准）：
@@ -161,19 +158,12 @@ struct Index {
   // 点击/发包限频（key = "设备:动作" → 上次触发时刻）。手机实测：卡片点太快会连发网络请求 +
   // 连开弹窗，叠加重渲染直接把主线程压死（THREAD_BLOCK_3S/6S → 点击无响应）。
   private actionGateMs: Map<string, number> = new Map();
-  // 日志刷新节流（缓冲与文本已移入 common/LogStore.ets）：日志可能每秒来十几条（每个 packet 一条），
-  // 攒一批再 flush，避免刷新频率跟着日志频率走。
-  private logFlushTimer: number = -1;
-  private logLastFlushMs: number = 0;   // 上次 flushLog 时刻（P2-2 动态窗用）
   // 音量 Slider 的「用户是否真在拖」标志。
   // 实测坑：Slider 的 onChange 在**程序性**改 value/max 时也会回调（面板刚打开时 length 从 -1
   // 变成真实值 ⇒ 回调被当成 Click/End）→ 误发设置请求。
   // 因此只有先收到 Begin（真拖动才会发）的这一次才算用户操作。
   // （进度条的同类 gate 已随批2 下沉进 MprisProgress 组件内部。）
   private mprisVolDragging: boolean = false;
-  // 局域网发现（MSG73/MSG74）：网络变化时触发 native 重新广播 identity
-  private netConnection: connection.NetConnection | undefined = undefined;
-  private netConnRegistered: boolean = false;
   // AP-2 payload 传输（接收/发送进度与处置状态）
   @State payloads: PayloadTransfer[] = [];
   // 多选发送队列（CodeArts MSG19 §3：**串行**、不并发抢 payload 通道）。
@@ -293,14 +283,14 @@ struct Index {
         const r: RememberedDevice = { id: t.id, name: t.name, paired: t.paired };
         return r;
       });
-      this.log(`trust store: ${this.trustedDevices.length} device(s)`);
+      this.notify.log(`trust store: ${this.trustedDevices.length} device(s)`);
       // WP-2 钉扎：把已配对设备的对端证书回灌给 native（内存态），重启后仍能强校验
       for (const t of this.trustedDevices) {
         if (t.certPem.length > 0) {
           try {
             native.setTrustedCertificate(t.id, t.certPem);
           } catch (e) {
-            this.log(`pin rehydrate failed: ${t.id}`);
+            this.notify.log(`pin rehydrate failed: ${t.id}`);
           }
         }
       }
@@ -364,7 +354,7 @@ struct Index {
     this.pluginRegistry.register('remoteinput', (): RemoteInputPlugin => new RemoteInputPlugin());
     this.pluginRegistry.register('notification', (): NotificationPlugin => new NotificationPlugin());
     this.pluginHost = new PluginHost(this.pluginRegistry, (m: string): void => {
-      this.log(m);
+      this.notify.log(m);
     });
     const callbacks: RouterCallbacks = {
       onPairRequest: (id: string, ts: number): void => {
@@ -387,12 +377,12 @@ struct Index {
     };
     this.router = new PacketRouter(this.deviceId, this.deviceName, 'phone',
       (msg: string): void => {
-        this.log(msg);
+        this.notify.log(msg);
       }, callbacks);
     // 阶段 2 接线：把会话状态机的副作用接回页面既有实现（状态机自身不碰 I/O/UI/持久化）。
-    this.pairSession.onLog = (m: string): void => { this.log(m); };
+    this.pairSession.onLog = (m: string): void => { this.notify.log(m); };
     this.pairSession.onNotice = (kind: string, detail: string, isError: boolean, code: number): void => {
-      this.showNotice(kind, detail, isError, code);
+      this.notify.showNotice(kind, detail, isError, code);
     };
     // ★ 发包走 PacketRouter（不按 §3.6 用裸 native.sendPacket）：
     //   router.acceptPair 会回调 onPaired ⇒ 页面 handlePaired 负责 trusted 登记与证书钉扎，绕开就丢 trust 落盘。
@@ -426,15 +416,15 @@ struct Index {
         this.selectedDeviceId = id;
         this.pruneActionGate();
       }
-      this.showNotice('paired', '', false);
+      this.notify.showNotice('paired', '', false);
     };
     this.pairSession.onUnpaired = (id: string): void => { this.handleUnpaired(id); };
 
     // 阶段 2 步骤 4：插件事件路由装配（清单见 devdocs/PLUGIN_ROUTE_INVENTORY.md）。
     // 兜底与拆分前的"其余 kind 只记日志"逐字一致 —— **绝不静默丢弃**。
-    this.eventBus.setLog((m: string): void => { this.log(m); });
+    this.eventBus.setLog((m: string): void => { this.notify.log(m); });
     this.eventBus.setFallback((id: string, ev: PluginEvent): void => {
-      this.log(`plugin event ${ev.kind} from ${id}`);
+      this.notify.log(`plugin event ${ev.kind} from ${id}`);
     });
     this.eventBus.on('runcommand.list', (id: string, ev: PluginEvent): void => { this.onRunCommandList(id, ev); });
     this.eventBus.on('runcommand.output', (id: string, ev: PluginEvent): void => { this.onRunCommandOutput(id, ev); });
@@ -443,13 +433,48 @@ struct Index {
     this.eventBus.on('mpris.playerUpdate', (id: string, ev: PluginEvent): void => { this.onMprisPlayerUpdate(id, ev); });
     this.eventBus.on('systemvolume.sinks', (id: string, ev: PluginEvent): void => { this.onSystemVolumeSinks(id, ev); });
     this.eventBus.on('battery', (id: string, ev: PluginEvent): void => { this.onBattery(id, ev); });
+
+    // 阶段 3 批次 1 装配（步骤 5c/5d）：把页面能力注入抽出的模块（模块自身不碰 Context/UI/native）。
+    // 5c NotificationHelper：日志与提示文案在模块里，页面只提供"必须有 Context/UI 才能做"的四件事。
+    this.notify.resText = (resId: number): string => {
+      try {
+        const hostCtx: Context | undefined = this.getUIContext().getHostContext();
+        if (hostCtx === undefined) {
+          return '';
+        }
+        return hostCtx.resourceManager.getStringSync(resId);
+      } catch (e) {
+        return '';
+      }
+    };
+    // ⚠️ toast 的 message 必须是**纯字符串**（带格式参数的 $r(...) 会被 PromptAction 拒绝，实测 "toast failed (4)"）
+    this.notify.showToast = (message: string, ms: number): void => {
+      this.getUIContext().getPromptAction().showToast({
+        message: message,
+        duration: ms,
+        bottom: '96vp'
+      });
+    };
+    // noticeKey 仍是页面 @State（渲染用）⇒ 经回调写入，Helper 不反向持有页面状态
+    this.notify.setNoticeKey = (key: string): void => {
+      this.noticeKey = key;
+    };
+    this.notify.logTabVisible = (): boolean => this.currentTab === 3;
+    // 5d NetworkWatcher：日志/限频/广播全部走页面既有实现（3s 限频那条历史坑在模块内原样保留）
+    this.netWatcher.log = (msg: string): void => {
+      this.notify.log(msg);
+    };
+    this.netWatcher.gate = (key: string, ms: number): boolean => this.actionGate(key, ms);
+    this.netWatcher.triggerBroadcast = (): void => {
+      this.triggerDiscoveryBroadcast();
+    };
     // 装配自检：注册数与清单一致（7）。**同时写 hilog**（页面 log() 只进 app 内 LogStore，机器不可见）
     // ⇒ 漏注册/多注册可在 `hdc shell hilog` 里直接机检（devdocs/PLUGIN_ROUTE_INVENTORY.md §5）。
     const routeCount: number = this.eventBus.kinds().length;
-    this.log(`plugin routes registered: ${routeCount}`);
+    this.notify.log(`plugin routes registered: ${routeCount}`);
     hilog.info(0x0001, 'KDEConnectUI', 'plugin routes registered: %{public}d', routeCount);
     this.startNative();
-    this.registerNetworkListener();
+    this.netWatcher.register();
   }
 
   // 页面显示后应用主题/语言（setColorMode/setLanguage 要求页面已加载完成）。
@@ -510,7 +535,7 @@ struct Index {
   }
 
   aboutToDisappear(): void {
-    this.unregisterNetworkListener();
+    this.netWatcher.unregister();
     try {
       native.stop();
     } catch (e) {
@@ -590,9 +615,9 @@ struct Index {
         this.probeNative('setCapabilities', (): void => {
           native.setCapabilities(incoming, outgoing);
         });
-        this.log(`caps: in=${incoming.length} out=${outgoing.length}`);
+        this.notify.log(`caps: in=${incoming.length} out=${outgoing.length}`);
       } catch (e) {
-        this.log('setCapabilities unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
+        this.notify.log('setCapabilities unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
       }
       // MSG136 §2 F1：native.start 现在返回 boolean（omp 已让 JsStart 回传 ok）。
       // 旧代码不消费返回值、无条件置 running ⇒ 端口冲突 / UDP bind 失败时 UI 仍显示「运行中」，
@@ -603,7 +628,7 @@ struct Index {
       });
       if (!started) {
         this.status = 'start failed';
-        this.log('native.start returned false (port conflict or UDP bind failure)');
+        this.notify.log('native.start returned false (port conflict or UDP bind failure)');
         return;
       }
       this.status = 'running';
@@ -625,14 +650,14 @@ struct Index {
       }
       await pref.flush();
     } catch (e) {
-      this.log('persist settings failed');
+      this.notify.log('persist settings failed');
     }
   }
 
   private async persistTrust(): Promise<void> {
     const hostCtx: Context | undefined = this.getUIContext().getHostContext();
     if (hostCtx === undefined) {
-      this.log('persist trust failed: no host context');
+      this.notify.log('persist trust failed: no host context');
       return;
     }
     await TrustStore.save(hostCtx, this.trustedDevices);
@@ -646,7 +671,7 @@ struct Index {
     this.deviceName = name;
     const nameEntries: SettingEntry[] = [{ key: 'deviceName', value: name }];
     this.persistSettings(nameEntries);
-    this.log(`rename device -> ${name} (restart native)`);
+    this.notify.log(`rename device -> ${name} (restart native)`);
     try {
       native.stop();
     } catch (e) {
@@ -659,7 +684,7 @@ struct Index {
   private useSystemDeviceName(): void {
     const name: string = systemDeviceName(this.getUIContext().getHostContext());
     this.systemName = name;
-    this.log(`use system device name: ${name}`);
+    this.notify.log(`use system device name: ${name}`);
     this.renameDevice(name);
   }
 
@@ -671,7 +696,7 @@ struct Index {
         hostCtx.getApplicationContext().setColorMode(colorModeOf(mode));
       }
     } catch (e) {
-      this.log('setColorMode failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.notify.log('setColorMode failed: ' + (e instanceof Error ? e.message : 'unknown'));
     }
     if (persist) {
       const themeEntries: SettingEntry[] = [{ key: 'themeMode', value: `${mode}` }];
@@ -687,67 +712,12 @@ struct Index {
         hostCtx.getApplicationContext().setLanguage(languageOf(language));
       }
     } catch (e) {
-      this.log('setLanguage failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.notify.log('setLanguage failed: ' + (e instanceof Error ? e.message : 'unknown'));
     }
     if (persist) {
       const langEntries: SettingEntry[] = [{ key: 'language', value: language }];
       this.persistSettings(langEntries);
     }
-  }
-
-  // 局域网发现（CodeArts MSG73/MSG74）：网络变化时通知 native 重新广播 identity。
-  // 用户真机反馈「发现设备」长时间为空：对端后启动 / 丢包 / 切网后只能等对端再广播，
-  // 这里在 netAvailable 时主动触发一次本侧广播（native.triggerBroadcast，omp 实现后生效）。
-  private registerNetworkListener(): void {
-    if (this.netConnRegistered) {
-      return;
-    }
-    try {
-      const conn: connection.NetConnection = connection.createNetConnection();
-      conn.on('netAvailable', (): void => {
-        // 网络抖动 / 多网卡（WiFi+蜂窝+多张卡）会连着发 netAvailable，每次都同步调
-        // native.triggerBroadcast() 会在主线程上扎堆 —— 用户实测「手动打开 WiFi 那一瞬间 App 就卡住」。
-        // 这里先做 3s 限频（对端周期广播 + native 侧 caps 变更重播已能覆盖发现，少发一次不影响发现）。
-        if (!this.actionGate('net:triggerBroadcast', 3000)) {
-          return;
-        }
-        this.log('network available — trigger discovery broadcast');
-        this.triggerDiscoveryBroadcast();
-      });
-      conn.on('netLost', (): void => {
-        this.log('network lost');
-      });
-      // 本 SDK（OpenHarmony API 26）只有 callback 形式：register(callback: AsyncCallback<void>)
-      conn.register((err: BusinessError): void => {
-        if (err) {
-          this.log(`net listener register failed: ${err.code}`);
-          return;
-        }
-        this.netConnection = conn;
-        this.netConnRegistered = true;
-        this.log('net change listener registered');
-      });
-    } catch (e) {
-      this.log('net listener failed: ' + (e instanceof Error ? e.message : 'unknown'));
-    }
-  }
-
-  private unregisterNetworkListener(): void {
-    const conn: connection.NetConnection | undefined = this.netConnection;
-    if (conn === undefined || !this.netConnRegistered) {
-      return;
-    }
-    try {
-      conn.unregister((err: BusinessError): void => {
-        if (err) {
-          return;
-        }
-      });
-    } catch (e) {
-      // 忽略：进程退出路径
-    }
-    this.netConnection = undefined;
-    this.netConnRegistered = false;
   }
 
   // 触发一次 UDP identity 广播（native 未导出该符号时静默降级，不写屏幕日志）
@@ -757,7 +727,7 @@ struct Index {
         native.triggerBroadcast();
       });
     } catch (e) {
-      this.log('triggerBroadcast unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.notify.log('triggerBroadcast unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
     }
   }
 
@@ -791,7 +761,7 @@ struct Index {
     const data: string = ev.text ?? '';
     this.runCommandDeviceId = deviceId;
     this.runCommands = this.commandsOf(deviceId);
-    this.log(`run command list <- ${deviceId} (${data})`);
+    this.notify.log(`run command list <- ${deviceId} (${data})`);
   }
 
   private onRunCommandOutput(deviceId: string, ev: PluginEvent): void {
@@ -803,16 +773,16 @@ struct Index {
     const ok: boolean = ro.success;
     const code: number = ro.exitCode;
     const text: string = ro.text;
-    const head: string = this.resText(ok
+    const head: string = this.notify.resText(ok
       ? $r('app.string.toast_run_cmd_ok').id : $r('app.string.toast_run_cmd_failed').id);
-    this.toastText(text.length > 0 ? `${head} (exit=${code}): ${text}` : `${head} (exit=${code})`);
-    this.log(`run command output <- ${deviceId}: success=${ok} exit=${code}`);
+    this.notify.toast(text.length > 0 ? `${head} (exit=${code}): ${text}` : `${head} (exit=${code})`);
+    this.notify.log(`run command output <- ${deviceId}: success=${ok} exit=${code}`);
   }
 
   private onClipboardRequest(deviceId: string, ev: PluginEvent): void {
     // 对端索取本机剪贴板：三方应用无权读剪贴板，只能提示用户点「粘贴」按钮授权发送
-    this.toastText(this.resText($r('app.string.toast_clipboard_requested').id));
-    this.log(`clipboard requested by ${deviceId}`);
+    this.notify.toast(this.notify.resText($r('app.string.toast_clipboard_requested').id));
+    this.notify.log(`clipboard requested by ${deviceId}`);
   }
 
   // 媒体控制（方向 1）：类型化对象直读，省掉每事件一次 stringify+parse
@@ -859,7 +829,7 @@ struct Index {
     } else {
       this.batteryItems = this.batteryItems.concat([item]);
     }
-    this.log(`battery ${text} <- ${deviceId}`);
+    this.notify.log(`battery ${text} <- ${deviceId}`);
   }
 
   // 取某设备已收到的预设命令列表（命令由 RunCommandPlugin 实例持有）
@@ -978,14 +948,14 @@ struct Index {
     }
     const p: SystemVolumePlugin | undefined = this.sysVolumePluginOf(this.mprisDeviceId);
     if (p === undefined || !p.setVolume(name, pct)) {
-      this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+      this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
     }
   }
 
   private svSinkToggleMute(name: string): void {
     const p: SystemVolumePlugin | undefined = this.sysVolumePluginOf(this.mprisDeviceId);
     if (p === undefined || !p.toggleMute(name)) {
-      this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+      this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
     }
   }
 
@@ -993,7 +963,7 @@ struct Index {
   private svSinkSetDefault(name: string): void {
     const p: SystemVolumePlugin | undefined = this.sysVolumePluginOf(this.mprisDeviceId);
     if (p === undefined || !p.setDefault(name)) {
-      this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+      this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
     }
   }
 
@@ -1002,7 +972,7 @@ struct Index {
     if (this.mprisTab === 1) {
       const p: SystemVolumePlugin | undefined = this.sysVolumePluginOf(this.mprisDeviceId);
       if (p === undefined || !p.requestSinks()) {
-        this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+        this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
       }
       return;
     }
@@ -1080,7 +1050,7 @@ struct Index {
     }
     const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
     if (p === undefined) {
-      this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
+      this.notify.toast(this.notify.resText($r('app.string.toast_plugin_unavailable').id));
       return;
     }
     let ok: boolean = false;
@@ -1092,7 +1062,7 @@ struct Index {
       ok = p.previous();
     }
     if (!ok) {
-      this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+      this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
     }
   }
 
@@ -1102,7 +1072,7 @@ struct Index {
     }
     const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
     if (p === undefined || !p.setVolume(v)) {
-      this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+      this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
     }
   }
 
@@ -1112,28 +1082,28 @@ struct Index {
     }
     const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
     if (p === undefined || !p.setPosition(ms)) {
-      this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+      this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
     }
   }
 
   private mediaToggleLoop(): void {
     const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
     if (p === undefined || !p.cycleLoopStatus()) {
-      this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+      this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
     }
   }
 
   private mediaToggleShuffle(): void {
     const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
     if (p === undefined || !p.toggleShuffle()) {
-      this.toastText(this.resText($r('app.string.toast_media_action_failed').id));
+      this.notify.toast(this.notify.resText($r('app.string.toast_media_action_failed').id));
     }
   }
 
   private mediaSelectPlayer(name: string): void {
     const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
     if (p === undefined) {
-      this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
+      this.notify.toast(this.notify.resText($r('app.string.toast_plugin_unavailable').id));
       return;
     }
     p.selectPlayer(name);
@@ -1146,12 +1116,12 @@ struct Index {
     }
     const p: MprisPlugin | undefined = this.mprisPluginOf(this.mprisDeviceId);
     if (p === undefined) {
-      this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
+      this.notify.toast(this.notify.resText($r('app.string.toast_plugin_unavailable').id));
       return;
     }
     p.requestPlayerList();
     p.requestStatus();
-    this.log(`media refresh requested for ${this.mprisDeviceId}`);
+    this.notify.log(`media refresh requested for ${this.mprisDeviceId}`);
   }
 
   // AP-4：非核心 packet 分发到插件（返回 true 表示已处理）
@@ -1177,7 +1147,7 @@ struct Index {
       }
       return parts.join(' ');
     } catch (e) {
-      this.log('getPairVerificationCode unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.notify.log('getPairVerificationCode unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
       return '';
     }
   }
@@ -1219,7 +1189,7 @@ struct Index {
     try {
       peerCert = native.getPeerCertificate(deviceId);
     } catch (e) {
-      this.log('getPeerCertificate unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.notify.log('getPeerCertificate unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
     }
     if (exists) {
       // 重新配对：条目保留、只刷新名称/证书。**paired 的置位不再内联写**（原来是 `paired: true`），
@@ -1259,10 +1229,10 @@ struct Index {
       try {
         native.setTrustedCertificate(deviceId, peerCert);
       } catch (e) {
-        this.log('setTrustedCertificate unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
+        this.notify.log('setTrustedCertificate unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
       }
     }
-    this.log(`paired with ${deviceId} (cert=${peerCert.length > 0 ? 'stored' : 'unavailable'})`);
+    this.notify.log(`paired with ${deviceId} (cert=${peerCert.length > 0 ? 'stored' : 'unavailable'})`);
     // 会话收口交给状态机（RouterCallbacks.onPaired 里已调 pairSession.onPeerPaired ⇒ 会走 onPaired 回调做 UI 副作用）
   }
 
@@ -1274,7 +1244,7 @@ struct Index {
     try {
       native.removeTrustedCertificate(deviceId);
     } catch (e) {
-      this.log('removeTrustedCertificate unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.notify.log('removeTrustedCertificate unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
     }
       // 单一来源（修 AtomCode/用户实测「对端解除配对后本侧 UI 仍显示【已配对】」）：
       // 旧实现这里**自己又实现了一遍**置配对态，且守卫写成 `trustedDevices.length !== before` ——
@@ -1282,7 +1252,7 @@ struct Index {
       // 也不持久化，连那行 `unpaired …` 日志都不打（与真机取证：两次对端 unpair、徽标仍为已配对、无该日志，完全吻合）。
       // 现在统一走 `setPairedFlag()`：由它负责 trusted/remembered 同步 + 持久化 + 状态日志，消除这份重复实现。
       this.setPairedFlag(deviceId, false);
-      this.log(`unpaired ${deviceId} (kept in remembered list)`);
+      this.notify.log(`unpaired ${deviceId} (kept in remembered list)`);
   }
 
   private handleEvent(event: NetEvent): void {
@@ -1329,7 +1299,7 @@ struct Index {
         } else {
           this.discoveredDevices = [item].concat(this.discoveredDevices);
         }
-        this.log(`discovered ${id}`);
+        this.notify.log(`discovered ${id}`);
         break;
       }
       case 'connected': {
@@ -1356,7 +1326,7 @@ struct Index {
           // ③ 插件装载兜底（MSG81）：native 不派发 identity 帧时 caps 不可知 → 按「全支持」装载
           if (this.pluginHost !== undefined && this.pluginHost.pluginsFor(cid).length === 0) {
             this.loadPlugins(cid, [], []);
-            this.log(`plugins loaded for ${cid} with unknown caps (fallback)`);
+            this.notify.log(`plugins loaded for ${cid} with unknown caps (fallback)`);
           }
           // ④ 本侧发起连接的反馈（手动连接时发起前不知道 deviceId，这里按会话状态收口）
           //    状态迁移交给状态机；**提示是 UI 职责**，仍在页面发（与拆分前逐字一致）。
@@ -1364,12 +1334,12 @@ struct Index {
             && (this.pairSession.deviceId === cid || this.pairSession.deviceId === '')) {
             const shownName: string = event.deviceName ?? this.pairSession.peerName;
             this.pairSession.onConnected(cid);
-            this.showNotice('connected', shownName, false);
-            this.log(`connected ${cid} -> notice 连接成功`);
+            this.notify.showNotice('connected', shownName, false);
+            this.notify.log(`connected ${cid} -> notice 连接成功`);
           }
         }
         this.syncSelectedDevice();
-        this.log(`connected ${event.deviceId} role=${event.role}`);
+        this.notify.log(`connected ${event.deviceId} role=${event.role}`);
         break;
       }
       case 'disconnected': {
@@ -1390,7 +1360,7 @@ struct Index {
         // 会话中的设备断链 → 连接/配对失败（状态机内建；终局三信号之一）
         this.pairSession.onDisconnected(did);
         this.syncSelectedDevice();
-        this.log(`disconnected ${event.deviceId}`);
+        this.notify.log(`disconnected ${event.deviceId}`);
         break;
       }
       case 'deviceLost': {
@@ -1398,7 +1368,7 @@ struct Index {
         // 但若该设备当前仍是连接态，则不标离线（避免"已连接却显示离线"的状态矛盾）。
         const lid: string = event.deviceId ?? '';
         if (this.connectedDevices.some((d: DeviceItem) => d.id === lid)) {
-          this.log(`lost ${lid} ignored (still connected)`);
+          this.notify.log(`lost ${lid} ignored (still connected)`);
           break;
         }
         // 同上：已经标过离线就别再写 @State（否则离线设备每秒仍触发整页重渲染）
@@ -1411,7 +1381,7 @@ struct Index {
           (d: DeviceItem) => d.id === lid ? { id: d.id, name: d.name, host: d.host, tcpPort: d.tcpPort, deviceType: d.deviceType, online: false } : d);
         // 离线同样清账（P2，MSG132 §2）：面板镜像与弹层都不留过期数据
         this.forgetMpris(lid);
-        this.log(`lost ${event.deviceId} (kept in list as offline)`);
+        this.notify.log(`lost ${event.deviceId} (kept in list as offline)`);
         break;
       }
       case 'packetReceived': {
@@ -1419,7 +1389,7 @@ struct Index {
         if (event.deviceId !== undefined && raw.length > 0) {
           this.router?.onPacket(event.deviceId, raw);
         }
-        this.log(`packet from ${event.deviceId}: ${raw.slice(0, 80)}`);
+        this.notify.log(`packet from ${event.deviceId}: ${raw.slice(0, 80)}`);
         break;
       }
       case 'pairingRequest': {
@@ -1435,7 +1405,7 @@ struct Index {
             this.discoveredDevices = this.discoveredDevices.map(
               (d: DeviceItem) => d.id === pid ? { id: d.id, name: name, host: d.host, tcpPort: d.tcpPort, deviceType: d.deviceType, online: d.online } : d);
           }
-          this.log(`peer identity: ${name !== '' ? name : pid}`);
+          this.notify.log(`peer identity: ${name !== '' ? name : pid}`);
         }
         break;
       }
@@ -1451,11 +1421,11 @@ struct Index {
         // 这里按 Error 事件把该设备**进行中**的接收传输立即落为 failed，避免永久「接收中」。
         this.failInflightReceives(event.deviceId ?? '', `error: ${em.length > 0 ? em : event.errorCode}`);
         if (em.includes('rate limited')) {
-          this.log('连接过于频繁，请稍后重试（rate limited）');
+          this.notify.log('连接过于频繁，请稍后重试（rate limited）');
         } else if (em.includes('certificate mismatch')) {
-          this.log('对端证书与登记不符，需重新配对（certificate mismatch）');
+          this.notify.log('对端证书与登记不符，需重新配对（certificate mismatch）');
         } else {
-          this.log(`error ${event.errorCode}: ${em}`);
+          this.notify.log(`error ${event.errorCode}: ${em}`);
         }
         // 会话进行中报错的处理（修用户实测「电脑端还没接受，本侧就先弹『配对失败 5』」）：
         // 旧条件写成了 `eid === '' || sessionDeviceId === '' || 相等` —— 前两项**放行**了
@@ -1472,7 +1442,7 @@ struct Index {
         break;
       }
       default:
-        this.log(`event: ${event.type}`);
+        this.notify.log(`event: ${event.type}`);
         break;
     }
   }
@@ -1481,14 +1451,14 @@ struct Index {
   // 用户 2026-09-13 裁决：**链路不用管**——KDE 收到 unpair 后自行处理（可能断链、可能重拨），
   // 我们不再主动 disconnect，也不做任何抑制；`disconnected` 事件到了就把行从列表移除。
   private unpairDevice(d: DeviceItem): void {
-    this.log(`unpair ${d.id}`);
+    this.notify.log(`unpair ${d.id}`);
     const unpairBody: PairRequestBody = { pair: false };
     const unpairPkt: PairRequestPacket = { id: Date.now(), type: 'kdeconnect.pair', body: unpairBody };
     try {
       const ok: boolean = native.sendPacket(d.id, JSON.stringify(unpairPkt) + '\n');
-      this.log(ok ? 'unpair sent' : 'unpair not sent (conn not encrypted?)');
+      this.notify.log(ok ? 'unpair sent' : 'unpair not sent (conn not encrypted?)');
     } catch (e) {
-      this.log('unpair send failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.notify.log('unpair send failed: ' + (e instanceof Error ? e.message : 'unknown'));
     }
     this.handleUnpaired(d.id);
     this.router?.forgetPeer(d.id);
@@ -1497,13 +1467,13 @@ struct Index {
   // 手动连接（可选功能）：host:port 直连，与发现列表「连接」同一条会话状态机
   private manualConnect(host: string, port: number): void {
     if (host.trim().length === 0) {
-      this.toastText(this.resText($r('app.string.toast_manual_bad_host').id));
-      this.log('manual connect rejected: empty host');
+      this.notify.toast(this.notify.resText($r('app.string.toast_manual_bad_host').id));
+      this.notify.log('manual connect rejected: empty host');
       return;
     }
     if (isNaN(port) || port < 1 || port > 65535) {
-      this.toastText(this.resText($r('app.string.toast_manual_bad_port').id));
-      this.log(`manual connect rejected: invalid port ${port}`);
+      this.notify.toast(this.notify.resText($r('app.string.toast_manual_bad_port').id));
+      this.notify.log(`manual connect rejected: invalid port ${port}`);
       return;
     }
     this.pairSession.start('', `${host}:${port}`, host, port);
@@ -1542,62 +1512,15 @@ struct Index {
       return r;
     });
     this.persistTrust();
-    this.log(`state: ${deviceId} paired=${paired}`);
-  }
-
-  // 提示（需求 4.1/4.2 + 用户反馈）：用**系统 toast**（底部居中、系统层级）；
-  // 失败只给错误码，明细只进日志（上线口径）。
-  // 注意：toast 的 message 用**纯字符串**（带格式参数的 $r(...) 会被 PromptAction 拒绝，实测 "toast failed (4)"）。
-  private showNotice(key: string, detail: string, isError: boolean, dupMs: number = 0): void {
-    this.noticeKey = key;
-    let message: string = this.resText($r('app.string.connect_failed').id);
-    if (key === 'connecting') {
-      message = `${this.resText($r('app.string.connect_connecting').id)} ${detail}`;
-    } else if (key === 'connected') {
-      message = `${this.resText($r('app.string.connect_success').id)} ${detail}`;
-    } else if (key === 'paired') {
-      message = this.resText($r('app.string.pair_success').id);
-    } else if (key === 'pairFailed') {
-      message = `${this.resText($r('app.string.pair_failed').id)} ${detail}`;
-    } else {
-      message = `${this.resText($r('app.string.connect_failed').id)} ${detail}`;
-    }
-    const ms: number = dupMs > 0 ? Math.min(dupMs, 10000) : NOTICE_MS;
-    try {
-      this.getUIContext().getPromptAction().showToast({
-        message: message,
-        duration: ms,
-        bottom: '96vp'
-      });
-      this.log(`toast: ${message}`);
-    } catch (e) {
-      this.log('toast failed: ' + (e instanceof Error ? e.message : 'unknown'));
-    }
-  }
-
-  // 同步取本地化文案（用于 toast 拼接）
-  private resText(resId: number): string {
-    try {
-      const hostCtx: Context | undefined = this.getUIContext().getHostContext();
-      if (hostCtx === undefined) {
-        return '';
-      }
-      return hostCtx.resourceManager.getStringSync(resId);
-    } catch (e) {
-      return '';
-    }
-  }
-
-  private clearNotice(): void {
-    this.noticeKey = '';
+    this.notify.log(`state: ${deviceId} paired=${paired}`);
   }
 
   // 剪贴板安全控件回调：拿到临时读权限（PasteButton SUCCESS）后**立刻**读取并发送；
   // 未授权时不得尝试读取（系统要求），只给提示。
   private onClipboardPasteResult(granted: boolean): void {
     if (!granted) {
-      this.log('paste button: temporary authorization failed');
-      this.toastText(this.resText($r('app.string.toast_clipboard_denied').id));
+      this.notify.log('paste button: temporary authorization failed');
+      this.notify.toast(this.notify.resText($r('app.string.toast_clipboard_denied').id));
       return;
     }
     this.onDeviceAction('clipboard');
@@ -1651,7 +1574,7 @@ struct Index {
     // 连点保护（用户 2026-09-15 反馈「点太快就卡」）：卡片动作会真发网络请求 + 开弹窗。
     // 窗口取 300ms：只为挡住抖动式连点；700ms 会让用户「开→取消→马上再开」被误吞（实测被感知成卡顿）。
     if (!this.actionGate(`act:${id}:${key}`, 300)) {
-      this.log(`action ${key} throttled (rapid taps)`);
+      this.notify.log(`action ${key} throttled (rapid taps)`);
       return;
     }
     const list: PluginBase[] = this.pluginHost === undefined ? [] : this.pluginHost.pluginsFor(id);
@@ -1659,13 +1582,13 @@ struct Index {
       for (const p of list) {
         if (p instanceof ClipboardPlugin) {
           const ok: boolean = p.sendClipboard();
-          this.toastText(this.resText(ok
+          this.notify.toast(this.notify.resText(ok
             ? $r('app.string.toast_clipboard_sent').id
             : $r('app.string.toast_clipboard_failed').id));
           return;
         }
       }
-      this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
+      this.notify.toast(this.notify.resText($r('app.string.toast_plugin_unavailable').id));
       return;
     }
     if (key === 'clipboard_request') {
@@ -1673,13 +1596,13 @@ struct Index {
       for (const p of list) {
         if (p instanceof ClipboardPlugin) {
           const ok: boolean = p.requestPeerClipboard();
-          this.toastText(this.resText(ok
+          this.notify.toast(this.notify.resText(ok
             ? $r('app.string.toast_clipboard_request_sent').id
             : $r('app.string.toast_clipboard_failed').id));
           return;
         }
       }
-      this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
+      this.notify.toast(this.notify.resText($r('app.string.toast_plugin_unavailable').id));
       return;
     }
     if (key === 'find_device') {
@@ -1688,13 +1611,13 @@ struct Index {
       for (const p of list) {
         if (p instanceof PingPlugin) {
           const ok: boolean = p.sendPing(this.deviceName);
-          this.toastText(this.resText(ok
+          this.notify.toast(this.notify.resText(ok
             ? $r('app.string.toast_find_device_sent').id
             : $r('app.string.toast_find_device_failed').id));
           return;
         }
       }
-      this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
+      this.notify.toast(this.notify.resText($r('app.string.toast_plugin_unavailable').id));
       return;
     }
     if (key === 'run_command') {
@@ -1702,7 +1625,7 @@ struct Index {
       this.runCommandDeviceId = id;
       this.runCommands = this.commandsOf(id);
       this.runCommandDialogOpen = true;
-      this.log(`run command dialog: ${this.runCommands.length} entries for ${id}`);
+      this.notify.log(`run command dialog: ${this.runCommands.length} entries for ${id}`);
       // 弹窗已弹出 ⇒ 释放该卡片的忙碌态（fired by event）
       this.releaseCard('run_command', 'event');
       return;
@@ -1716,8 +1639,8 @@ struct Index {
       // 对端只在状态变化时推包，不主动拉可能长时间停在旧态。
       const mp: MprisPlugin | undefined = this.mprisPluginOf(id);
       if (mp === undefined) {
-        this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
-        this.log(`media panel unavailable for ${id} (MprisPlugin not loaded)`);
+        this.notify.toast(this.notify.resText($r('app.string.toast_plugin_unavailable').id));
+        this.notify.log(`media panel unavailable for ${id} (MprisPlugin not loaded)`);
         return;
       }
       this.mprisDeviceId = id;
@@ -1728,7 +1651,7 @@ struct Index {
       this.svPrepare();
       mp.requestPlayerList();
       mp.requestStatus();
-      this.log(`media panel opened for ${id} (players=${this.mprisList().length})`);
+      this.notify.log(`media panel opened for ${id} (players=${this.mprisList().length})`);
       // 弹窗已弹出 ⇒ 释放该卡片的忙碌态（fired by event）
       this.releaseCard('media', 'event');
       return;
@@ -1744,13 +1667,13 @@ struct Index {
     for (const p of list) {
       if (p instanceof RunCommandPlugin) {
         const ok: boolean = p.run(key);
-        this.toastText(this.resText(ok
+        this.notify.toast(this.notify.resText(ok
           ? $r('app.string.toast_run_cmd_sent').id
           : $r('app.string.toast_run_cmd_send_failed').id));
         return;
       }
     }
-    this.toastText(this.resText($r('app.string.toast_plugin_unavailable').id));
+    this.notify.toast(this.notify.resText($r('app.string.toast_plugin_unavailable').id));
   }
 
   // 切底栏页签（HdsTabs 控制器）；失败只记日志，不阻塞
@@ -1758,30 +1681,16 @@ struct Index {
     this.currentTab = index;
     try {
       this.tabsController.changeIndex(index);
-      this.log(`switch tab -> ${index}`);
+      this.notify.log(`switch tab -> ${index}`);
     } catch (e) {
-      this.log('changeIndex failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.notify.log('changeIndex failed: ' + (e instanceof Error ? e.message : 'unknown'));
     }
   }
 
   // 设备详情页的大按钮目前只做占位（用户要求：功能暂不实现，先保留版式）
   private toastPlaceholder(key: string): void {
-    const base: string = this.resText($r('app.string.toast_not_implemented').id);
-    this.toastText(`${base}: ${key}`);
-  }
-
-  // 通用 toast（纯字符串；带格式参数的 $r(...) 会被 PromptAction 拒绝）
-  private toastText(message: string): void {
-    try {
-      this.getUIContext().getPromptAction().showToast({
-        message: message,
-        duration: NOTICE_MS,
-        bottom: '96vp'
-      });
-      this.log(`toast: ${message}`);
-    } catch (e) {
-      this.log('toast failed: ' + (e instanceof Error ? e.message : 'unknown'));
-    }
+    const base: string = this.notify.resText($r('app.string.toast_not_implemented').id);
+    this.notify.toast(`${base}: ${key}`);
   }
 
   // 点设备行（发现页 / 已连接列表 / 抽屉）→ 回到该设备的「功能页」（设备信息 + 大按钮）。
@@ -1789,13 +1698,13 @@ struct Index {
   private openDeviceDetail(d: DeviceItem): void {
     const online: boolean = this.connectedDevices.some((x: DeviceItem) => x.id === d.id);
     if (!online) {
-      this.toastText(this.resText($r('app.string.device_offline').id));
+      this.notify.toast(this.notify.resText($r('app.string.device_offline').id));
       return;
     }
     this.selectedDeviceId = d.id;
     this.pruneActionGate();   // P2-1①：选设备时清过期限频键
     this.deviceSection = 0;
-    this.log(`open device detail: ${d.id}`);
+    this.notify.log(`open device detail: ${d.id}`);
   }
 
   private toPayloadDirection(v: string): PayloadDirection {
@@ -1891,7 +1800,7 @@ struct Index {
       this.payloads = [item].concat(this.payloads);
     }
     if (state !== 'progress') {
-      this.log(`payload ${state} ${item.direction} #${tid} ${item.fileName}`);
+      this.notify.log(`payload ${state} ${item.direction} #${tid} ${item.fileName}`);
     }
     // 终态记录写入历史（内存 + Preferences），**收发都存**，供跨重启在文件页/「已接收」弹窗查看
     // （2026-09-17：原先只存 receive ⇒ 发送记录重启即丢，用户实测"历史里只剩一条"）
@@ -1905,11 +1814,11 @@ struct Index {
     // 计划 A（用户/AtomCode 现象② 裁决）：接收完成**自动落盘 + 明确通知**，
     // 不再要求用户到文件页手动点「保存」；授权被拒/失败时给可操作提示（文件页仍可手动保存）。
     if (state === 'finished' && item.direction === 'receive' && !item.settled && item.filePath.length > 0) {
-      this.log(`auto-save received #${tid} ${item.fileName}`);
+      this.notify.log(`auto-save received #${tid} ${item.fileName}`);
       this.savePayload(item).then((): void => {
         // 通知已在 savePayload 内部发出
       }).catch((e: Error): void => {
-        this.log('auto-save failed: ' + e.message);
+        this.notify.log('auto-save failed: ' + e.message);
       });
     }
   }
@@ -1963,7 +1872,7 @@ struct Index {
     const hostCtx: Context | undefined = this.getUIContext().getHostContext();
     if (hostCtx !== undefined) {
       PayloadHistory.save(hostCtx, this.receivedHistory).catch((e: Error): void => {
-        this.log('payload history save failed: ' + e.message);
+        this.notify.log('payload history save failed: ' + e.message);
       });
     }
   }
@@ -1976,11 +1885,11 @@ struct Index {
     const hostCtx: Context | undefined = this.getUIContext().getHostContext();
     if (hostCtx !== undefined) {
       PayloadHistory.clear(hostCtx).catch((e: Error): void => {
-        this.log('payload history clear failed: ' + e.message);
+        this.notify.log('payload history clear failed: ' + e.message);
       });
     }
-    this.log('received file history cleared');
-    this.toastText(this.resText($r('app.string.toast_history_cleared').id));
+    this.notify.log('received file history cleared');
+    this.notify.toast(this.notify.resText($r('app.string.toast_history_cleared').id));
   }
 
   private fmtBytes(bytes: number): string {
@@ -2002,15 +1911,15 @@ struct Index {
   private payloadStateText(p: PayloadTransfer): string {
     const send: boolean = p.direction === 'send';
     if (p.state === 'started' || p.state === 'progress') {
-      return this.resText(send ? $r('app.string.files_sending').id : $r('app.string.files_receiving').id);
+      return this.notify.resText(send ? $r('app.string.files_sending').id : $r('app.string.files_receiving').id);
     }
     if (p.state === 'finished') {
       if (send) {
-        return this.resText($r('app.string.files_sent').id);
+        return this.notify.resText($r('app.string.files_sent').id);
       }
-      return this.resText(p.settled ? $r('app.string.files_saved').id : $r('app.string.files_finished').id);
+      return this.notify.resText(p.settled ? $r('app.string.files_saved').id : $r('app.string.files_finished').id);
     }
-    return this.resText(p.state === 'failed' ? $r('app.string.files_failed').id : $r('app.string.files_cancelled').id);
+    return this.notify.resText(p.state === 'failed' ? $r('app.string.files_failed').id : $r('app.string.files_cancelled').id);
   }
 
   private markPayloadSettled(transferId: number): void {
@@ -2098,7 +2007,7 @@ struct Index {
       const uris: string[] = await pk.save({ newFileNames: [name] });
       destUri = uris.length > 0 ? uris[0] : '';
     } catch (e) {
-      this.log('save as: picker failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.notify.log('save as: picker failed: ' + (e instanceof Error ? e.message : 'unknown'));
       return;
     }
     if (destUri.length === 0) {
@@ -2116,12 +2025,12 @@ struct Index {
       srcFd = fileIo.openSync(src, fileIo.OpenMode.READ_ONLY);
       dstFd = fileIo.openSync(destUri, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
       fileIo.copyFileSync(srcFd.fd, dstFd.fd);
-      this.log(`save as -> ${destUri}`);
-      this.toastText(`${this.resText($r('app.string.files_auto_saved').id)}: ${name}`);
+      this.notify.log(`save as -> ${destUri}`);
+      this.notify.toast(`${this.notify.resText($r('app.string.files_auto_saved').id)}: ${name}`);
       this.payloadDetailOpen = false;
     } catch (e) {
-      this.log('save as: copy failed: ' + (e instanceof Error ? e.message : 'unknown'));
-      this.toastText(this.resText($r('app.string.files_save_failed').id));
+      this.notify.log('save as: copy failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.notify.toast(this.notify.resText($r('app.string.files_save_failed').id));
     } finally {
       if (srcFd !== undefined) {
         try {
@@ -2143,8 +2052,8 @@ struct Index {
   private async savePayload(p: PayloadTransfer): Promise<void> {
     const dir: string = this.ensureKdcDir();
     if (dir === '') {
-      this.log('save failed: no host context');
-      this.toastText(this.resText($r('app.string.files_save_failed').id));
+      this.notify.log('save failed: no host context');
+      this.notify.toast(this.notify.resText($r('app.string.files_save_failed').id));
       return;
     }
     const name: string = this.sanitizeFileName(p.fileName, p.transferId);
@@ -2152,32 +2061,32 @@ struct Index {
     // 保留写权限申请（用户 2026-09-17 裁决：另存为/导出到公共目录时仍需要它）
     const granted: boolean = await this.ensureWritePermission(name);
     if (!granted) {
-      this.log(`save aborted: write permission denied for ${name}`);
-      this.toastText(this.resText($r('app.string.files_need_permission').id));
+      this.notify.log(`save aborted: write permission denied for ${name}`);
+      this.notify.toast(this.notify.resText($r('app.string.files_need_permission').id));
       return;
     }
     // 先在沙箱落一份（本地副本）：① 保证文件不丢；② 它是「另存为」的来源（spool 会被消费掉）
     let sandboxOk: boolean = false;
     try {
       sandboxOk = native.keepPayload(p.transferId, dest);
-      this.log(sandboxOk ? `saved(sandbox) -> ${dest}` : 'keepPayload failed');
+      this.notify.log(sandboxOk ? `saved(sandbox) -> ${dest}` : 'keepPayload failed');
     } catch (e) {
-      this.log('keepPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.notify.log('keepPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
     }
     // 再尝试导出到**文件管理可见**的公共下载目录（官方 DOWNLOAD 模式）
     const exported: string = await this.exportToDownloads(p, name, dest);
     if (exported.length > 0) {
-      this.log(`exported to public dir -> ${exported}`);
+      this.notify.log(`exported to public dir -> ${exported}`);
       this.markPayloadSettled(p.transferId);
-      this.toastText(`${this.resText($r('app.string.files_auto_saved').id)}: ${name}`);
+      this.notify.toast(`${this.notify.resText($r('app.string.files_auto_saved').id)}: ${name}`);
       return;
     }
     if (sandboxOk) {
       this.markPayloadSettled(p.transferId);
-      this.toastText(`${this.resText($r('app.string.files_auto_saved').id)}: ${name}`);
+      this.notify.toast(`${this.notify.resText($r('app.string.files_auto_saved').id)}: ${name}`);
       return;
     }
-    this.toastText(this.resText($r('app.string.files_save_failed').id));
+    this.notify.toast(this.notify.resText($r('app.string.files_save_failed').id));
   }
 
   // 把接收文件导出到公共下载目录（文件管理可见），成功返回目标 URI；失败返回空串。
@@ -2205,7 +2114,7 @@ struct Index {
       const uris: string[] = await picker0.save(opts);
       destUri = uris.length > 0 ? uris[0] : '';
     } catch (e) {
-      this.log('export: save picker(DOWNLOAD) failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.notify.log('export: save picker(DOWNLOAD) failed: ' + (e instanceof Error ? e.message : 'unknown'));
       return '';
     }
     if (destUri.length === 0) {
@@ -2225,7 +2134,7 @@ struct Index {
       this.markPayloadSettled(p.transferId);
       return destUri;
     } catch (e) {
-      this.log('export: copy failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.notify.log('export: copy failed: ' + (e instanceof Error ? e.message : 'unknown'));
       return '';
     } finally {
       if (srcFd !== undefined) {
@@ -2280,10 +2189,10 @@ struct Index {
       const result = await atManager.requestPermissionsFromUser(hostCtx, perms);
       const codes: number[] = result.authResults;
       const granted: boolean = codes.length > 0 && codes[0] === 0;
-      this.log(`permission ${permName}: granted=${granted}`);
+      this.notify.log(`permission ${permName}: granted=${granted}`);
       return granted;
     } catch (e) {
-      this.log('permission request failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.notify.log('permission request failed: ' + (e instanceof Error ? e.message : 'unknown'));
       // 申请失败（如模拟器不支持）不阻断保存，交给 keepPayload 自行判定
       return true;
     }
@@ -2294,9 +2203,9 @@ struct Index {
     console.info(`KDC discard start #${p.transferId} name=${p.fileName} before=${this.payloads.length}/${this.receivedHistory.length}`);
     try {
       const ok: boolean = native.discardPayload(p.transferId);
-      this.log(ok ? `discarded #${p.transferId}` : 'discardPayload failed');
+      this.notify.log(ok ? `discarded #${p.transferId}` : 'discardPayload failed');
     } catch (e) {
-      this.log('discardPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.notify.log('discardPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
     }
     // 用户要求（2026-09-17）：丢弃 = 从沙箱删除 + 同时从**历史记录列表**里移除（并持久化）
     const name: string = this.sanitizeFileName(p.fileName, p.transferId);
@@ -2304,10 +2213,10 @@ struct Index {
     try {
       if (fileIo.accessSync(sandboxCopy)) {
         fileIo.unlinkSync(sandboxCopy);
-        this.log(`unlink sandbox copy -> ${sandboxCopy}`);
+        this.notify.log(`unlink sandbox copy -> ${sandboxCopy}`);
       }
     } catch (e2) {
-      this.log('unlink sandbox copy failed: ' + (e2 instanceof Error ? e2.message : 'unknown'));
+      this.notify.log('unlink sandbox copy failed: ' + (e2 instanceof Error ? e2.message : 'unknown'));
     }
     this.payloads = this.payloads.filter((x: PayloadTransfer) => x.transferId !== p.transferId);
     this.receivedHistory = this.receivedHistory.filter((h: PayloadTransfer) => h.transferId !== p.transferId);
@@ -2315,7 +2224,7 @@ struct Index {
     const hostCtx: Context | undefined = this.getUIContext().getHostContext();
     if (hostCtx !== undefined) {
       PayloadHistory.save(hostCtx, this.receivedHistory).catch((e3: Error): void => {
-        this.log('history save after discard failed: ' + e3.message);
+        this.notify.log('history save after discard failed: ' + e3.message);
       });
     }
   }
@@ -2323,9 +2232,9 @@ struct Index {
   private cancelPayload(p: PayloadTransfer): void {
     try {
       native.cancelPayload(p.transferId);
-      this.log(`payload cancel requested #${p.transferId}`);
+      this.notify.log(`payload cancel requested #${p.transferId}`);
     } catch (e) {
-      this.log('cancelPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.notify.log('cancelPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
     }
   }
 
@@ -2357,19 +2266,19 @@ struct Index {
 
   private async pickAndSendFile(): Promise<void> {
     if (this.connectedDevices.length === 0) {
-      this.log('send file: no connected device');
+      this.notify.log('send file: no connected device');
       return;
     }
     const target: DeviceItem | undefined = this.sendTargetDevice();
     if (target === undefined) {
-      this.log(`send file: no unambiguous target (selected='${this.selectedDeviceId}' connected=${this.connectedDevices.length})`);
-      this.toastText(this.resText($r('app.string.toast_send_no_target').id));
+      this.notify.log(`send file: no unambiguous target (selected='${this.selectedDeviceId}' connected=${this.connectedDevices.length})`);
+      this.notify.toast(this.notify.resText($r('app.string.toast_send_no_target').id));
       return;
     }
-    this.log(`send file target: ${target.name} (${target.id.substring(0, 8)})`);
+    this.notify.log(`send file target: ${target.name} (${target.id.substring(0, 8)})`);
     const hostCtx: Context | undefined = this.getUIContext().getHostContext();
     if (hostCtx === undefined) {
-      this.log('send file: no host context');
+      this.notify.log('send file: no host context');
       return;
     }
     let uris: string[] = [];
@@ -2378,7 +2287,7 @@ struct Index {
       const options: picker.DocumentSelectOptions = { maxSelectNumber: MAX_PICK_FILES };
       uris = await docPicker.select(options);
     } catch (e) {
-      this.log('send file: picker cancelled/failed');
+      this.notify.log('send file: picker cancelled/failed');
       return;
     }
     if (uris.length === 0) {
@@ -2393,7 +2302,7 @@ struct Index {
       }
     }
     if (jobs.length === 0) {
-      this.toastText(this.resText($r('app.string.toast_send_file_failed').id));
+      this.notify.toast(this.notify.resText($r('app.string.toast_send_file_failed').id));
       return;
     }
     // 入队（允许与上一批排队：pumpSendQueue 会等当前传输结束再继续）
@@ -2402,7 +2311,7 @@ struct Index {
     for (const j of jobs) {
       this.sendQueue.push(j);
     }
-    this.log(`send file batch queued: ${jobs.length} (queue=${this.sendQueue.length}) -> ${target.name}`);
+    this.notify.log(`send file batch queued: ${jobs.length} (queue=${this.sendQueue.length}) -> ${target.name}`);
     this.pumpSendQueue();
   }
 
@@ -2421,7 +2330,7 @@ struct Index {
       srcFd = fileIo.openSync(srcUri, fileIo.OpenMode.READ_ONLY);
       fileIo.copyFileSync(srcFd.fd, cachePath);
     } catch (e) {
-      this.log(`send file: copy into sandbox failed (${fileName}): `
+      this.notify.log(`send file: copy into sandbox failed (${fileName}): `
         + (e instanceof Error ? e.message : 'unknown'));
       return undefined;
     } finally {
@@ -2458,12 +2367,12 @@ struct Index {
       if (tid > 0) {
         this.sendBusyId = tid;
         this.sendInflightJob = job;
-        this.log(`send file #${tid}: ${job.fileName} (queued=${this.sendQueue.length})`);
+        this.notify.log(`send file #${tid}: ${job.fileName} (queued=${this.sendQueue.length})`);
         return;
       }
-      this.log(`send file: sendPayload returned 0 (${job.fileName})`);
+      this.notify.log(`send file: sendPayload returned 0 (${job.fileName})`);
     } catch (e) {
-      this.log(`sendPayload error (${job.fileName}): ` + (e instanceof Error ? e.message : 'unknown'));
+      this.notify.log(`sendPayload error (${job.fileName}): ` + (e instanceof Error ? e.message : 'unknown'));
     }
     // 连"下发"都没成功（同步失败）：丢弃该文件，继续泵下一个（不阻塞整批）
     this.sendQueue.shift();
@@ -2483,7 +2392,7 @@ struct Index {
     this.sendTarget = '';
     this.sendOkCount = 0;
     this.sendTotal = 0;
-    this.log(`send queue cleared on disconnect (dropped=${dropped})`);
+    this.notify.log(`send queue cleared on disconnect (dropped=${dropped})`);
   }
 
   // 当前批次是否有文件在传（供 payload 终态回调判断"该不该继续泵"）
@@ -2500,9 +2409,9 @@ struct Index {
     }
     if (state === 'finished') {
       this.sendOkCount++;
-      this.log(`send file done: ${job !== undefined ? job.fileName : '?'} (${this.sendOkCount}/${this.sendTotal})`);
+      this.notify.log(`send file done: ${job !== undefined ? job.fileName : '?'} (${this.sendOkCount}/${this.sendTotal})`);
     } else {
-      this.log(`send file failed: ${job !== undefined ? job.fileName : '?'} state=${state} code=${code}`);
+      this.notify.log(`send file failed: ${job !== undefined ? job.fileName : '?'} state=${state} code=${code}`);
     }
     // 裁定表 #15（合并裁定）：code=110「兜底重试一次」已撤除——Omp MSG38 判断：阶段未定位前
     // 加重试会把真因掩盖成偶发。恢复条件：native 阶段诊断（46c55d4）的复跑数据定位后，
@@ -2510,49 +2419,11 @@ struct Index {
     this.pumpSendQueue();
     if (this.sendBusyId < 0 && this.sendQueue.length === 0 && this.sendTotal > 0) {
       // 整批结束：一条汇总提示（CodeArts MSG19 §3：「逐条 toast 或一条汇总」——取后者，避免刷屏）
-      const head: string = this.resText($r('app.string.toast_send_batch_done').id);
-      this.toastText(`${head} (${this.sendOkCount}/${this.sendTotal})`);
-      this.log(`send file batch done: ${this.sendOkCount}/${this.sendTotal}`);
+      const head: string = this.notify.resText($r('app.string.toast_send_batch_done').id);
+      this.notify.toast(`${head} (${this.sendOkCount}/${this.sendTotal})`);
+      this.notify.log(`send file batch done: ${this.sendOkCount}/${this.sendTotal}`);
       this.sendOkCount = 0;
       this.sendTotal = 0;
-    }
-  }
-
-  private log(line: string): void {
-    // 缓冲与文本都在 LogStore 里（批3 #1）：这里只负责"什么时候 flush"
-    this.logStore.append(line);
-    // 合并刷新：窗口内的多条日志攒成一次写入，避免日志频率直接驱动刷新频率。
-    // P2（MSG145 §2 P2-2）：原实现让「低频期首条」也要等满 900ms（用户体感：卡一下才出日志）。
-    // 改为动态窗：距上次 flush 已空闲 ≥900ms ⇒ 视为新批次，100ms 短窗让首条尽快出现；
-    // 高频期（距上次 flush <900ms）保持 900ms 节拍不变 —— 即**不会**退回「逐条渲染」。
-    if (this.logFlushTimer < 0) {
-      const idleMs: number = Date.now() - this.logLastFlushMs;
-      const waitMs: number = idleMs >= 900 ? 100 : 900;
-      this.logFlushTimer = setTimeout((): void => {
-        this.logFlushTimer = -1;
-        this.flushLog();
-      }, waitMs);
-    }
-  }
-
-  private flushLog(): void {
-    if (this.logStore.isEmpty()) {
-      return;
-    }
-    // ARKTS_ANALYSIS §8-A、批3 #1：日志页不可见时不 flush。
-    // 写 LogStore 只会重建 LogsTab（不再整页重建），所以这**已不是正确性要求**，只是省 CPU；
-    // 切回日志页时由 tabs onChange 补一次 flush（否则期间攒的行要等下一次日志才出现）。
-    if (this.currentTab !== 3) {
-      return;
-    }
-    this.logStore.flush();
-    this.logLastFlushMs = Date.now();
-    // 开屏卡顿排查（MSG8 §4 问题 1/#1）：每次 flushLog 都会写 @State logText ⇒ 触发一次整页重建。
-    // 这里计数并在首屏窗口内打印，用来量化「开屏期日志驱动的重建次数」。build() 里不能写任意语句，
-    // 所以计数放在这个真正触发重建的点上。
-    this.logFlushCount++;
-    if (this.logFlushCount <= 3 || this.logFlushCount % 50 === 0) {
-      console.info(`KDC logflush #${this.logFlushCount} @${Date.now()}`);
     }
   }
 
@@ -2782,7 +2653,7 @@ struct Index {
       return r;
     });
     this.persistTrust();
-    this.log(`remember known device ${id} (connected once)`);
+    this.notify.log(`remember known device ${id} (connected once)`);
   }
 
   @Builder
@@ -3029,7 +2900,7 @@ struct Index {
           TabContent() {
             Column() {
                 LogsTab({
-                  logStore: this.logStore,
+                  logStore: this.notify.logStore,
                   immersive: this.immersiveSupported
                 })
             }
@@ -3075,7 +2946,7 @@ struct Index {
           }
           // ARKTS_ANALYSIS §8-A：切到「日志」页签时补一次 flush（页面不可见期间日志只进缓冲、不写 @State）
           if (index === 3) {
-            this.flushLog();
+            this.notify.flushLog();
           }
         })
       }
@@ -3091,100 +2962,27 @@ struct Index {
         this.drawerOverlay()
       }
 
-
       // 配对确认弹窗（需求 4.3）：本侧点已连接行「配对」或对端发起时都走这里；
-      // 显示验证码，两端核对一致后确认 → 配对成功
+      // 显示验证码，两端核对一致后确认 → 配对成功。
+      // 阶段 3 批次 1 步骤 5a：UI 抽到 components/PairConfirmDialog.ets（纯 UI，状态仍全在 pairSession）。
+      // ⚠️ 组件**自带全屏遮罩**，这里不要再包一层 Column/遮罩（否则双遮罩、要点两次才关）。
       if (this.pairSession.stage === 'prompt' || this.pairSession.stage === 'awaiting') {
-        Column() {
-          Column({ space: 14 }) {
-            Text(this.pairSession.peerRequested
-              ? $r('app.string.pair_dialog_title')
-              : $r('app.string.pair_dialog_title_outgoing'))
-              .fontSize(16)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_primary'))
-            Text(this.pairSession.peerName)
-              .fontSize(14)
-              .fontColor($r('app.color.text_secondary'))
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-            // 设备 ID 在弹窗里核对（列表里只显示 IP:端口，用户 2026-09-14）
-            if (this.pairSession.deviceId.length > 0) {
-              Text(`${this.resText($r('app.string.settings_device_id').id)}: ${this.pairSession.deviceId}`)
-                .fontSize(11)
-                .fontColor($r('app.color.text_muted'))
-                .fontFamily('monospace')
-                .maxLines(1)
-                .textOverflow({ overflow: TextOverflow.Ellipsis })
-            }
-            Column({ space: 4 }) {
-              Text($r('app.string.pair_dialog_code_label'))
-                .fontSize(12)
-                .fontColor($r('app.color.text_muted'))
-              Text(this.pairSession.code.length > 0 ? this.pairSession.code : '-- -- -- --')
-                .fontSize(28)
-                .fontWeight(FontWeight.Bold)
-                .fontColor($r('app.color.accent_text'))
-                .fontFamily('monospace')
-              if (this.pairSession.code.length === 0) {
-                Text($r('app.string.pair_code_unavailable'))
-                  .fontSize(10)
-                  .fontColor($r('app.color.text_muted'))
-              }
-            }
-            Text($r('app.string.pair_dialog_hint'))
-              .fontSize(12)
-              .fontColor($r('app.color.text_secondary'))
-              .textAlign(TextAlign.Center)
-            if (this.pairSession.stage === 'awaiting') {
-              Text($r('app.string.pair_waiting'))
-                .fontSize(12)
-                .fontColor($r('app.color.accent_text'))
-                .textAlign(TextAlign.Center)
-              Text($r('app.string.pair_waiting_hint'))
-                .fontSize(12)
-                .fontColor($r('app.color.text_secondary'))
-                .textAlign(TextAlign.Center)
-            }
-            Row({ space: 10 }) {
-              Button(this.pairSession.peerRequested ? $r('app.string.pair_reject') : $r('app.string.action_cancel'))
-                .layoutWeight(1)
-                .height(42)
-                .fontSize(14)
-                .backgroundColor($r('app.color.danger_bg'))
-                .fontColor($r('app.color.danger_text'))
-                .borderRadius(12)
-                .onClick(() => {
-                  this.pairSession.cancel();
-                })
-              if (this.pairSession.stage === 'prompt') {
-                Button(this.pairSession.peerRequested ? $r('app.string.pair_accept') : $r('app.string.pair_action'))
-                  .layoutWeight(1)
-                  .height(42)
-                  .fontSize(14)
-                  .backgroundColor($r('app.color.accent'))
-                  .borderRadius(12)
-                  .onClick(() => {
-                    this.pairSession.confirm();
-                  })
-              }
-            }
-            .width('100%')
+        PairConfirmDialog({
+          peerRequested: this.pairSession.peerRequested,
+          peerName: this.pairSession.peerName,
+          deviceId: this.pairSession.deviceId,
+          // 设备 ID 在弹窗里核对（列表里只显示 IP:端口，用户 2026-09-14）；组件不依赖 Context ⇒ 页面算好传入
+          deviceIdLabel: this.notify.resText($r('app.string.settings_device_id').id),
+          code: this.pairSession.code,
+          awaiting: this.pairSession.stage === 'awaiting',
+          canConfirm: this.pairSession.stage === 'prompt',
+          onConfirm: (): void => {
+            this.pairSession.confirm();
+          },
+          onCancel: (): void => {
+            this.pairSession.cancel();
           }
-          .width('86%')
-          .padding(20)
-          .borderRadius(20)
-          // 弹层不用毛玻璃（手机实测：BACKGROUND_THICK 在弹层上会让整屏重算背景模糊，
-          // 叠上面板每秒重绘就把主线程拖死 → THREAD_BLOCK_3S/6S、点击无响应）。用更实的底色替代。
-          .backgroundColor($r('app.color.dialog_bg'))
-          .border({ width: 1, color: $r('app.color.card_border') })
-          .alignItems(HorizontalAlign.Center)
-        }
-        .width('100%')
-        .height('100%')
-        .justifyContent(FlexAlign.Center)
-        .alignItems(HorizontalAlign.Center)
-        .backgroundColor($r('app.color.dialog_mask'))
+        })
       }
 
       // 媒体控制面板（P2 方向 1，FEATURE_PLAN_MPRIS §3.3）：控电脑端播放器。
@@ -3504,93 +3302,19 @@ struct Index {
         })
       }
 
-      // 远程命令弹窗（P1，MSG112 §1）：展示对端下发的预设命令列表，点一条即请求执行
+      // 远程命令弹窗（P1，MSG112 §1）：展示对端下发的预设命令列表，点一条即请求执行。
+      // 阶段 3 批次 1 步骤 5b：UI 抽到 components/RunCommandDialog.ets（页面的 runCommand() 仍留本页，
+      // 它要经 PluginHost 发请求 + 释放卡片忙碌态）。⚠️ 组件自带遮罩，不要外再包一层。
       if (this.runCommandDialogOpen) {
-        Column() {
-          Column({ space: 12 }) {
-            Text($r('app.string.run_command_dialog_title'))
-              .fontSize(16)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_primary'))
-            Text(this.displayNameOf(this.runCommandDeviceId))
-              .fontSize(12)
-              .fontColor($r('app.color.text_muted'))
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-            if (this.runCommands.length === 0) {
-              Text($r('app.string.run_command_empty'))
-                .fontSize(13)
-                .fontColor($r('app.color.text_secondary'))
-              Text($r('app.string.run_command_empty_hint'))
-                .fontSize(11)
-                .fontColor($r('app.color.text_muted'))
-            } else {
-              Scroll() {
-                Column({ space: 8 }) {
-                  ForEach(this.runCommands, (c: RunCommandEntry) => {
-                    Column({ space: 2 }) {
-                      Text(c.name)
-                        .fontSize(14)
-                        .fontColor($r('app.color.text_primary'))
-                        .maxLines(1)
-                        .textOverflow({ overflow: TextOverflow.Ellipsis })
-                        .width('100%')
-                      if (c.command.length > 0) {
-                        Text(c.command)
-                          .fontSize(10)
-                          .fontColor($r('app.color.text_muted'))
-                          .fontFamily('monospace')
-                          .maxLines(1)
-                          .textOverflow({ overflow: TextOverflow.Ellipsis })
-                          .width('100%')
-                      }
-                    }
-                    .width('100%')
-                    .alignItems(HorizontalAlign.Start)
-                    .padding({ left: 12, right: 12, top: 15, bottom: 15 })
-                    .borderRadius(12)
-                    .backgroundColor($r('app.color.chip_bg'))
-                    .onClick(() => {
-                      this.runCommand(c.key);
-                    })
-                  }, (c: RunCommandEntry) => c.key)
-                }
-                .width('100%')
-              }
-              .width('100%')
-              .constraintSize({ maxHeight: 320 })
-              .align(Alignment.TopStart)
-              .scrollBar(BarState.Off)
-            }
-            Button($r('app.string.action_cancel'))
-              .width('100%')
-              .height(42)
-              .fontSize(14)
-              .backgroundColor($r('app.color.chip_bg'))
-              .fontColor($r('app.color.text_secondary'))
-              .borderRadius(12)
-              .onClick(() => {
-                this.runCommandDialogOpen = false;
-              })
+        RunCommandDialog({
+          deviceName: this.displayNameOf(this.runCommandDeviceId),
+          commands: this.runCommands,
+          onPick: (key: string): void => {
+            this.runCommand(key);
+          },
+          onClose: (): void => {
+            this.runCommandDialogOpen = false;
           }
-          .width('86%')
-          .padding(20)
-          .borderRadius(20)
-          // 弹层不用毛玻璃（手机实测：BACKGROUND_THICK 在弹层上会让整屏重算背景模糊，
-          // 叠上面板每秒重绘就把主线程拖死 → THREAD_BLOCK_3S/6S、点击无响应）。用更实的底色替代。
-          .backgroundColor($r('app.color.dialog_bg'))
-          .border({ width: 1, color: $r('app.color.card_border') })
-          .alignItems(HorizontalAlign.Center)
-          // 同媒体面板：卡片自身消费点击，只有点「卡外」的遮罩才关弹窗
-          .onClick(() => {})
-        }
-        .width('100%')
-        .height('100%')
-        .justifyContent(FlexAlign.Center)
-        .alignItems(HorizontalAlign.Center)
-        .backgroundColor($r('app.color.dialog_mask'))
-        .onClick(() => {
-          this.runCommandDialogOpen = false;
         })
       }
 
@@ -3689,7 +3413,7 @@ struct Index {
           sizeText: this.fmtBytes(this.payloadDetail().size),
           timeText: this.timeTextOf(this.payloadDetail()),
           stateText: this.payloadStateText(this.payloadDetail()),
-          dirText: this.resText(this.payloadDetail().direction === 'receive'
+          dirText: this.notify.resText(this.payloadDetail().direction === 'receive'
             ? $r('app.string.file_dir_receive').id : $r('app.string.file_dir_send').id),
           onSaveAs: (): void => {
             this.saveAsPayload(this.payloadDetail());
