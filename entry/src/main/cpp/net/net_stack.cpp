@@ -359,11 +359,13 @@ bool NetStack::sendPacket(const std::string &deviceId, const std::string &packet
                   (long long) lockWaitMs, (unsigned long long) connections_.size());
     }
 #endif
-    // P2（多链路卫生；Omp 2026-09-26 依 E2E 证据修复）：同一设备可能存在**多条存活链路**
-    // （真机 E2E 遥测曾见 conn[in=7 out=11]）。原实现按 map 迭代序取**第一个**处于
-    // Encrypted/TlsHandshake 的连接 ⇒ 可能选中**仍在握手**的那条，把包排到对端尚未完成的链路上
-    // （顺序与时延不可预期）。现改为**两轮择链**：优先已 Encrypted 的链路；仅在没有任何已建立
-    // 链路时才退回 TlsHandshake（完整保留 P0-b 行为）。
+    // 择链（Omp 2026-09-26）：优先选**已建立**（Encrypted）的链路，避免把包排到仍在握手的链路上。
+    // 说明与更正：本改动**并非**基于「多链路长期并存」——`conn[in/out/hup]` 是**累计计数器**
+    // （`net_stack.h` 的 connIn_/connOut_/connHup_），不是在线链路数（我曾误读，已在
+    // `devdocs/KNOWN_ISSUES.md` 的 KI-2 更正）；同设备旧链路由 `net_stack_link.cpp` 的
+    // 「替换同设备旧链路」逻辑主动关闭，长期只保留一条。此处两轮择链仍保留：它让**替换窗口内**
+    // （新链路握手完成、旧链路尚未被关）的择链确定化，属稳健性改进。
+    // 行为边界不变：仅在没有任何已建立链路时才退回 TlsHandshake（完整保留 P0-b）。
     TcpConnection *target = nullptr;
     for (auto &p : connections_) {
         TcpConnection &conn = *p.second;
