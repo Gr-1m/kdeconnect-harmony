@@ -19,6 +19,8 @@ g++ -std=c++17 -Wall -Wextra -O1 -pipe \
     -I. -I.. -Istub -I../bearssl/inc \
     desktop_pair.cpp \
     ../net/net_stack.cpp \
+    ../net/net_stack_link.cpp \
+    ../net/net_stack_discovery.cpp \
     ../net/tls_engine.cpp \
     ../net/tcp_connection.cpp \
     ../net/tcp_server.cpp \
