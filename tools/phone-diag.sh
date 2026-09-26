@@ -105,8 +105,8 @@ case "${1:-}" in
     # 4 遥测连续性：既看相邻间隔，也看「采集仍在继续而 App 已静默」（这才是冻结的真正信号）
     gap=$(grep "KDC-NETLOOP" "$LOG" 2>/dev/null | awk '{print $2}' | awk -F: '{s=$3; sub(/\..*/,"",s); print $1*3600+$2*60+s}' | awk 'NR>1 && $1-p>mx {mx=$1-p} {p=$1} END{print int(mx+0)}')
     tosec='function t(x,p){split(x,p,":"); n=p[3]; sub(/\..*/,"",n); return p[1]*3600+p[2]*60+n}'
-    lastapp=$(grep "KDEConnect" "$LOG" 2>/dev/null | awk '{print $2}' | tail -1)
-    lastany=$(awk -v _=1 'NF>2 && $2 ~ /^[0-9]+:[0-9]+:[0-9]+/ {v=$2} END{print v}' "$LOG" 2>/dev/null)
+    lastapp=$(grep "KDEConnect" "$LOG" 2>/dev/null | awk '{print $2}' | grep -E '^[0-9]+:[0-9]+:[0-9]+' | sort | tail -1)
+    lastany=$(awk -v _=1 'NF>2 && $2 ~ /^[0-9]+:[0-9]+:[0-9]+/ {print $2}' "$LOG" 2>/dev/null | sort | tail -1)
     sil=0
     if [ -n "$lastapp" ] && [ -n "$lastany" ]; then
       sil=$(awk -v a="$lastapp" -v b="$lastany" "$tosec BEGIN{print t(b)-t(a)}" 2>/dev/null)
