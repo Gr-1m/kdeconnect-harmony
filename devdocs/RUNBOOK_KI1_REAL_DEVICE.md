@@ -75,6 +75,17 @@ capture 开始后依次：
   ⇒ 记录 `actualDelayTime` 与 `OnAppFrozen` 的**时间差**并回报；
 - 1 未出现 ⇒ 修改没生效（先查构建是否真的是含修复的包，见 §1）。
 
+### 4.1 一条命令出判决
+
+```bash
+TARGET=<target> tools/phone-diag.sh verdict /tmp/phone-<时间戳>.log /tmp/phone-<时间戳>.log.desktop
+```
+
+自动按本表 6 项给出 `PASS/FAIL` 与总结论。注意判据 4 同时检查两件事：
+**相邻遥测间隔** 与 **「采集仍在继续而 App 已静默多久」**——后者才是被冻结的真正信号
+（例：修复前实测 = 间隔仅 5s，但**采集结束前 App 已静默 98s**，且随后出现 `OnAppFrozen`）。
+先用修复前的日志做反向验证：应得到 `FAIL`（含 `failed=3`、桌面失去 `reachable`、静默 98s、`OnAppFrozen`）。
+
 ## 5. 取证归档
 
 保留并（**脱敏** deviceId/uid 后）记入：
