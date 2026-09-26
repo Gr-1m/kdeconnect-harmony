@@ -57,11 +57,24 @@ struct DeferredLogFlush {
     ~DeferredLogFlush()
     {
         t_flushArmed = false;
-        if (!t_deferredLogs.empty()) {
-            OH_LOG_Print(LOG_APP, LOG_INFO, 0x0001, LOG_TAG, "%{public}s",
-                         t_deferredLogs.c_str());
-            t_deferredLogs.clear();
+        if (t_deferredLogs.empty()) {
+            return;
         }
+        // P3-B（AtomCode 评审）：原实现把整个缓冲**按 LOG_INFO 一整条**打出 ⇒ ① 锁内路径的真实 ERROR
+        // （证书不匹配/限流/ENOBUFS 等）被降级为 INFO，hilog 级别过滤会漏；② 多行拼成一条 hilog，
+        // 受 ~4KB 截断会丢尾部。现改为**逐行、按各自级别**冲刷。缓冲格式：每行 = 一个级别字符 + 正文。
+        size_t pos = 0;
+        while (pos < t_deferredLogs.size()) {
+            const size_t nl = t_deferredLogs.find('\n', pos);
+            const size_t end = (nl == std::string::npos) ? t_deferredLogs.size() : nl;
+            if (end > pos) {
+                const bool isErr = t_deferredLogs[pos] == 'E';
+                OH_LOG_Print(LOG_APP, isErr ? LOG_ERROR : LOG_INFO, 0x0001, LOG_TAG,
+                             "%{public}s", t_deferredLogs.substr(pos + 1, end - pos - 1).c_str());
+            }
+            pos = (nl == std::string::npos) ? t_deferredLogs.size() : nl + 1;
+        }
+        t_deferredLogs.clear();
     }
 };
 

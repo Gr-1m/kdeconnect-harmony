@@ -171,8 +171,8 @@ void Emit(const NetEvent &event)
         // 事件真的被丢了：此前是静默 delete，出问题时无从判断「未派发」还是「投递丢」。
         // （tsfn 队列长度为 0 = 不限，正常不该走到这里；留痕以便 DevEco MSG24 §2 类问题定性。）
         OH_LOG_Print(LOG_APP, LOG_WARN, 0x0001, "KDEConnect",
-                     "event dropped: tsfn call failed (type=%d device=%s)", (int) event.type,
-                     event.deviceId.c_str());
+                     "event dropped: tsfn call failed (type=%{public}d device=%{public}s)",
+                     (int) event.type, event.deviceId.c_str());
         delete data;
     }
 }

@@ -283,7 +283,8 @@
 **signingConfigs 门禁**（2026-09-13 增补，基于 MSG64 实测问题）：
 - **构建前**：Linux 侧构建前先校验 `build-profile.json5` 的 `signingConfigs` 必须为 `[]`（Syncthing 同步窗口期可能带入 DevEco 注入的 Windows 签名配置，直接卡死 SignHap）
 - **构建后**：DevEco Code 每次构建后还原 `signingConfigs` 为 `[]`（DevEco/hvigor 自动签名会注入 HarmonyOS 类型配置）
-- 校验命令：`grep -q '"signingConfigs": \[\]' build-profile.json5 || echo "WARN: signingConfigs not empty"`
+- 校验命令（P3-A：容忍带/不带引号两种 JSON5 写法，原先只匹配带引号形式 ⇒ 文件被重写成 `signingConfigs: []` 后会**永不匹配、每次假 WARN 且真注入漏检**）：
+  `grep -qE '"?signingConfigs"?[[:space:]]*:[[:space:]]*\[\]' build-profile.json5 || echo "WARN: signingConfigs not empty"`
 
 ---
 
