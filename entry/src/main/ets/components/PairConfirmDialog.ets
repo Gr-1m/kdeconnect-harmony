@@ -130,8 +130,8 @@ export struct PairConfirmDialog {
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
     .backgroundColor($r('app.color.dialog_mask'))
-    .onClick(() => {
-      this.onCancel();
-    })
+    // 裁决（CodeArts MSG63 §2，2026-09-26）：**遮罩不加 onClick** —— 配对是重要操作，
+    // 误触取消需重新发起整个流程，代价高 ⇒ 防误触优先于"点卡外关闭"的便利。
+    // （旧弹窗行为即如此；本行为模块设计 §行为保持要点 ④ 的例外，已由裁决确认。）
   }
 }
