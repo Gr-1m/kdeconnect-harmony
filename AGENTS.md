@@ -95,6 +95,16 @@ QEMU 手机镜像跑在宿主（非真机、非 IDE）：镜像/日志放 `~/Wor
 
 以下每条都来自 2026-09-21/22 的**实际摩擦**（附实例），跨机协作一律照此执行：
 
+### 角色分工（2026-09-26 用户指令，最高优先）
+| 角色 | 职责 |
+|---|---|
+| **DevEco**（Win10/DevEco） | 写**所有** ArkTS/UI 代码：新文件 + **Index.ets 接线/替换/修复** |
+| **Omp**（本机原生线） | **只负责 commit + push**，外加：构建验证（`assembleHap`）、ohemu 验证（`tools/verify-on-ohemu.sh`）、分支归一、`GIT_REVISION.md` 刷新 |
+| **CodeArts** | 协调各方消息规划、推进开发进程（不做代码） |
+| **AtomCode** | 评审各方代码 |
+> ⇒ 自 2026-09-26 起：**代码替换/接线不再由 Omp 执行**（批 1 曾因 DevEco 无 git 而由 Omp 代做，该模式已终止）；
+> DevEco 直接改 `Index.ets`，改完通知 Omp 代提交；Omp 验收口径 = 参数级保真比对 + 构建 + ohemu 冒烟。
+
 1. **分车道 + 单写者**：主线 `dev/zcodeinit` 只由本机原生线（Omp）提交；ArkTS 车道 `refactor/arkts-codearts`
    只由 DevEco 提交；**不跨车道改文件**。任何跨车道动作（切分支、回退、push）前先发 `TO_<owner>` 消息。
 2. **回退他人改动必须按 hunk 审，禁止无脑整文件 checkout**：同一文件常混有多类改动。
