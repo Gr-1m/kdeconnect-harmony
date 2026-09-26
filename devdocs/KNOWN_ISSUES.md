@@ -31,22 +31,33 @@
   与之相对，2026-09-26 的 A/B（两次都由**用户真实按 Home/切应用**触发）都不复现。
 - **权限现实（用户 2026-09-26 提供）**：`ohos.permission.KEEP_BACKGROUND_RUNNING` 属**需华为云官方申请**的受限权限，
   **用户首次申请已被驳回** ⇒ 长时后台方案（下述方案 2）**当前不可用**，阻塞在华为审批。
-- **2026-09-26 ohemu A/B 实测（结论：本条在 ohemu 上不复现；并更正我先前的说法）**：
-  - 实验 A（"不提交原型"：注释掉 `aboutToDisappear` 里的 `native.stop()`）：用户按 Home/切设置页后，
-    桌面仍 `(paired and reachable)`，且**后台完整收到文件**（`KDC-PAYLOAD … finished=1`）；
-  - 实验 B（**还原为原始代码**（含 `native.stop()`）重装再测）：结果**完全相同**（仍 `reachable`、仍能收文件）
-    ⇒ **实验 A 未证明任何东西** ⇒ 我先前"原型验证成功"的说法**据此收回/更正**；
-  - 同批用 **UI 可见标记**（标题改为 `KDE Connect [BUILD-CHECK 22:26]` + 截图）实证
-    **每次重编译都确实生效于设备** ⇒ 上述 A/B 对照可信 ⇒ 结论：**ohemu 上（Home/切应用）根本不复现本问题**。
-- **根因判断（更正版）**：**真机（或厂商 ROM 的严格后台策略）才稳定复现** —— 后台进程被**冻结/回收**，
-  或页面/窗口被系统销毁，最终到达 `aboutToDisappear → native.stop()`（或进程直接消失）⇒ 链路断；
-  旁证：本机 faultlog 出现过 2 条 `sysfreeze … LIFECYCLE_TIMEOUT`（20:32/20:33），说明该类事件确实会发生。
-- **计划（两步的修正版）**：
-  1. **代码侧最小修复（仍值得做、正确，但只能在真机验收）**：把停栈从页面 `aboutToDisappear` 挪到
-     `EntryAbility.onDestroy()`，覆盖"页面被销毁而进程仍活"的情形；✗ **ohemu 无法验收**（不触发该路径）；
-  2. **长时后台（决定性）**：对抗进程冻结/回收（长时任务）⇒ **必须有 `KEEP_BACKGROUND_RUNNING`**，
-     该权限**需华为云审批且用户首次申请被拒** ⇒ **阻塞**；
-  ⇒ **结论：本条的最终验收必须在真机上做；真机验证恢复 / 权限获批之前，按用户 2026-09-26 指示「放在记录区」，不投入实现。**
+- **✅ 2026-09-26 真机日志实证（根因确认：**不是**我方 `native.stop()`）**：
+  设备 = 华为真机（`org.kde.kdeconnect.harmony`，改名前的 debug 包），经**无线调试**接入本机
+  （`hdc tconn`，零 root）。手机与桌面时钟同区，可直接对齐；因果链：
+  | 时刻 (CST) | 事件（来源） |
+  |---|---|
+  | 22:36:08.107 | `AppLifeCycleManager: … isForeground: true, state 2`（App 在前台） |
+  | 22:36:12.545 | 我方日志：`peer identity over TLS: <桌面ID> (Gr%1m-cachyos)` ⇒ 链路建立 |
+  | 22:36:13.170 | 我方日志：`[KDC-PAYLOAD] … state=failed code=110 msg=payload handshake/accept timeout`（= 用户看到的 fail） |
+  | 22:36:18.207 | **我方最后一条日志**（遥测 `KDC-NETLOOP` 其后彻底停写） |
+  | 22:36:19.556 | `AppLifeCycleManager: … isForeground: false, state 4` ⇒ **切后台（用户按 Home）** |
+  | 22:36:20.314 | 系统：`appUsage … "state":"OUT"`（前台时长 12.2s） |
+  | **22:36:37.349** | **`memmgrservice/MM: OnAppFrozen uid=20020294, name=<APP>, gpuReclaimedPages=0`** ⇒ **系统冻结了本 App** |
+  | 22:36:34 | 桌面：该设备 `(paired and reachable)` → `(paired)`（KDE 链路超时） |
+  | 22:36:59 | 桌面：`CompositeUploadJob::timeoutTriggered() - no connection received, closing port 1739` |
+  ⇒ **根因**：切后台后**系统冻结进程** ⇒ 原生栈停摆 ⇒ payload 握手超时（code=110）⇒ 桌面 ~12-15s 后判离线。
+  **全程没有 `native stop` / `net stack stopped`** ⇒ 本仓 `aboutToDisappear → native.stop()` **不是**本次根因；
+  ohemu 之所以测不出，是因为它不执行真机那套 `OnAppFrozen` 冻结策略。
+- **修复路径（2026-09-26 查 SDK `.d.ts` 确认，含一条零权限方案）**：
+  1. **短时任务 TransientTask（免权限）**：`@ohos.backgroundTaskManager` 的 `requestSuspendDelay()`
+     属 `SystemCapability.ResourceSchedule.BackgroundTaskManager.TransientTask`（`@since 7`），
+     该 `.d.ts` **没有 `@permission` 标注** ⇒ 不需要任何权限即可让 App 在后台多存活一小段时间，
+     覆盖"切后台后仍在传输 / 马上要收文件"这一实际场景；
+  2. **长时任务 ContinuousTask（需权限）**：`@ohos.resourceschedule.backgroundTaskManager` 中
+     `@permission ohos.permission.KEEP_BACKGROUND_RUNNING`（**用户首次申请被拒**）⇒ 仅用于常驻后台；
+  3. 另（正确性改进，非本次根因）：`aboutToDisappear` 里的 `native.stop()` 建议挪到
+     `EntryAbility.onDestroy()`，避免"页面被销毁但进程仍活"时误停栈。
+  ⇒ **行动**：先做 1+3（零权限且覆盖用户实际场景）；2 待华为审批。
 - **可选方案（未决）**：
   1. **不随 UI 停栈**：把 `native.stop()` 从 `aboutToDisappear` 移到 Ability 的 `onDestroy`，链路随进程存活；
   2. **后台任务/前台服务**：配合**已声明**的 `ohos.permission.KEEP_BACKGROUND_RUNNING`（`module.json5` 现存）
@@ -57,7 +68,8 @@
   （2026-09-26 20:32/20:33，`Reason: LIFECYCLE_TIMEOUT`，`Foreground: No`），时间点与应用/模拟器生命周期切换相近，
   记此以备排查（当时安装的还是 0.2.0 旧包）。
 - **用户实测确认（2026-09-26）**：用户明确表示"**后台断链是确实存在的，在之前测试中我体验过**" ⇒ 本条由「有日志证据」升级为「**用户实机体验确认的真实缺陷**」，为当前**最高优先级**待修项。
-- **状态**：⏸ **挂在记录区（ohemu 不复现 + 真机才可验收 + 权限被拒阻塞）** —— 2026-09-26 更正：
+- **状态**：🔧 **根因已实证（真机 `OnAppFrozen` 冻结）**；修复路径含**零权限**方案（短时任务 + 生命周期修正）⇒ 可实施；仅"常驻后台"需被拒的权限
+- （历史）⏸ **曾挂在记录区（ohemu 不复现 + 真机才可验收）** —— 2026-09-26 更正：
   ohemu 上两种构建均不复现；用户实机体验确认存在；待真机验证恢复与华为审批后再实施。
 
 ---
