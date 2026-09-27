@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
+import { DeviceController } from '../state/DeviceController';
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import { DeviceItem, RememberedDevice, BatteryItem } from '../model/DeviceModels';
 import { GlassCard } from './GlassCard';
@@ -61,7 +62,8 @@ export struct DevicesTab {
   };
   // 侧栏选中项：0 已连接 / 1 发现 / 2 记住的 / 3 手动连接
   // @Link：连接/配对成功后由 Index 切回「已连接设备」分区
-  @Link deviceSection: number;
+  // 侧栏选中项由页面持有的 @Observed 控制器持有（@ObjectLink 保证写回与刷新）
+  @ObjectLink controller: DeviceController;
   // 手动连接默认值：host 留空（10.0.2.2 只是 QEMU 模拟器的 NAT 网关，真机无意义），port 用默认端口
   @State manualHost: string = '';
   @State manualPort: string = '1716';
@@ -71,7 +73,7 @@ export struct DevicesTab {
   @State paneWidthVp: number = 0;
 
   private pickSection(index: number): void {
-    this.deviceSection = index;
+    this.controller.deviceSection = index;
   }
 
   // 大按钮列数：以**主区实测宽度**为准（横屏侧栏占 30% 后主区变宽 → 3 列）
@@ -250,8 +252,8 @@ export struct DevicesTab {
     Row({ space: 8 }) {
       Text(label)
         .fontSize(14)
-        .fontColor(this.deviceSection === index ? $r('app.color.accent_text') : $r('app.color.text_secondary'))
-        .fontWeight(this.deviceSection === index ? FontWeight.Medium : FontWeight.Normal)
+        .fontColor(this.controller.deviceSection === index ? $r('app.color.accent_text') : $r('app.color.text_secondary'))
+        .fontWeight(this.controller.deviceSection === index ? FontWeight.Medium : FontWeight.Normal)
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
@@ -268,7 +270,7 @@ export struct DevicesTab {
     .height(44)
     .padding({ left: 12, right: 12 })
     .borderRadius(14)
-    .backgroundColor(this.deviceSection === index ? $r('app.color.accent_soft') : Color.Transparent)
+    .backgroundColor(this.controller.deviceSection === index ? $r('app.color.accent_soft') : Color.Transparent)
     .onClick(() => {
       this.pickSection(index);
     })
@@ -853,9 +855,9 @@ export struct DevicesTab {
     Column({ space: 8 }) {
       // 「已连接设备」分区：只有选中设备（默认自动选中已连接的第一台）时才显示标题 + 详情页；
       // 没有可选设备时不再渲染一个空壳页，直接给「请选择设备查看功能」提示
-      if (!(this.deviceSection === 0 && !this.selectedDeviceVisible())) {
+      if (!(this.controller.deviceSection === 0 && !this.selectedDeviceVisible())) {
         Row({ space: 8 }) {
-          Text(this.sectionTitleOf(this.deviceSection))
+          Text(this.sectionTitleOf(this.controller.deviceSection))
             .fontSize(13)
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.text_primary'))
@@ -863,7 +865,7 @@ export struct DevicesTab {
         }
         .width('100%')
       }
-      if (this.deviceSection === 0) {
+      if (this.controller.deviceSection === 0) {
         // 已连接设备只保留「详情/功能页」，默认直接用（自动选中第一台已连接设备）
         if (this.selectedDeviceVisible()) {
           ForEach(this.selectedDeviceList(),
@@ -873,7 +875,7 @@ export struct DevicesTab {
         } else {
           this.emptyHint($r('app.string.select_device_hint'))
         }
-      } else if (this.deviceSection === 1) {
+      } else if (this.controller.deviceSection === 1) {
         // 横屏：发现列表在左侧栏（带下拉刷新与配对按钮），右侧不再重复
         if (this.sideBySide) {
           this.emptyHint($r('app.string.select_device_hint'))
@@ -913,7 +915,7 @@ export struct DevicesTab {
           }, 1500);
         })
         }
-      } else if (this.deviceSection === 2) {
+      } else if (this.controller.deviceSection === 2) {
         if (this.rememberedDevices.length === 0) {
           this.emptyHint($r('app.string.remembered_hint_empty'))
         }
