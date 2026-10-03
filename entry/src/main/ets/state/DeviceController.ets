@@ -68,6 +68,8 @@ export class DeviceController {
   pairSessionOnError: (deviceId: string, code: number, msg: string) => void = () => {};
   actionGate: (key: string, windowMs: number) => boolean = () => true;
   getDeviceName: () => string = () => '';
+  // 本机 deviceId 注入（原 handleEvent 的「忽略自己」过滤：防自发现/自连，AGENTS 协议约束）
+  getSelfDeviceId: () => string = () => '';
 
   handleEvent(event: NetEvent): void {
     const pktLen: number = event.packet === undefined || event.packet === null ? 0 : event.packet.length;
@@ -75,7 +77,7 @@ export class DeviceController {
     switch (event.type) {
       case 'deviceDiscovered': {
         const id: string = event.deviceId ?? '';
-        if (id === '') {
+        if (id === '' || id === this.getSelfDeviceId()) {
           break;
         }
         const item: DeviceItem = {

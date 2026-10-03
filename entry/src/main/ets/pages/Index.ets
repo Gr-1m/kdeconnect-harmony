@@ -515,8 +515,16 @@ struct Index {
     };
     this.deviceController.onPayloadTransfer = (event: NetEvent): void => { this.payloadController.handlePayloadTransfer(event); };
     this.deviceController.pairSessionOnConnected = (deviceId: string, shownName: string): void => {
-      if (this.pairSession.stage === 'connecting' && this.pairSession.deviceId === deviceId) {
-        this.notify.showNotice('connected', shownName, false);
+      // 守卫与名称回退按接线前原件保真（N1 回归修复，AtomCode MSG120 §三）：
+      //   原文 `stage==='connecting' && (deviceId===cid || deviceId==='')`；名称 `event.deviceName ?? peerName`
+      //   手动连接时 PairSession 尚未预设 deviceId ⇒ `=== ''` 分支是该场景唯一会命中的路径，不可省略。
+      if (this.pairSession.stage === 'connecting'
+        && (this.pairSession.deviceId === deviceId || this.pairSession.deviceId === '')) {
+        const shown: string = shownName.length > 0
+          ? shownName
+          : (this.pairSession.peerName.length > 0 ? this.pairSession.peerName : deviceId);
+        this.notify.showNotice('connected', shown, false);
+        this.notify.log(`connected ${deviceId} -> notice 连接成功`);
       }
       this.pairSession.onConnected(deviceId);
     };
@@ -528,6 +536,7 @@ struct Index {
     };
     this.deviceController.actionGate = (key: string, windowMs: number): boolean => this.actionGate(key, windowMs);
     this.deviceController.getDeviceName = (): string => this.settingsController.deviceName;
+    this.deviceController.getSelfDeviceId = (): string => this.deviceId;
     // 阶段 3 批次 4 装配：DeviceActionController 注入
     this.actionController.log = (m: string): void => { this.notify.log(m); };
     this.actionController.toast = (m: string): void => { this.notify.toast(m); };
