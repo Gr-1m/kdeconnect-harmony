@@ -14,6 +14,7 @@
 #include "../net/cert_gen.h"
 #include "../net/cert_util.h"
 #include "../net/net_util.h"
+#include "../net/napi_args.h"
 #include "../net/packet_io.h"
 
 using namespace kdeconnect;
@@ -341,6 +342,44 @@ TEST_CASE(pemRoundTripUsesSharedImpl)
     CHECK(pemToDer(back, "CERTIFICATE") == certDer);
     // 标签不匹配时必须失败（防止误解析私钥/证书混用）
     CHECK(pemToDer(pair.certPem, "EC PRIVATE KEY").empty());
+}
+
+
+// —————— T1：NAPI 取参校验的纯判定层（AtomCode MSG112 T1；锁定代码评审 F1 的约定）——————
+// 约定：字段缺失 或 类型不符 ⇒ 抛 TypeError；生产代码（net/napi_exports.cpp）直接调用本层，
+// 故任何回退都会被下列用例立即拦下（文案逐字锁定）。
+
+TEST_CASE(napiArgCheckTruthTable)
+{
+    struct Row { bool present; napiargs::ArgTag got; napiargs::ArgTag want; napiargs::ArgCheck expect; };
+    const Row rows[] = {
+        {false, napiargs::ArgTag::String,    napiargs::ArgTag::String, napiargs::ArgCheck::Missing},
+        {true,  napiargs::ArgTag::Undefined, napiargs::ArgTag::String, napiargs::ArgCheck::WrongType},
+        {true,  napiargs::ArgTag::Number,    napiargs::ArgTag::String, napiargs::ArgCheck::WrongType},
+        {true,  napiargs::ArgTag::String,    napiargs::ArgTag::String, napiargs::ArgCheck::Ok},
+        {true,  napiargs::ArgTag::Number,    napiargs::ArgTag::Number, napiargs::ArgCheck::Ok},
+        {true,  napiargs::ArgTag::String,    napiargs::ArgTag::Number, napiargs::ArgCheck::WrongType},
+    };
+    for (const Row &r : rows) {
+        CHECK(napiargs::checkArg(r.present, r.got, r.want) == r.expect);
+    }
+}
+
+TEST_CASE(napiArgTypeErrorMessageLocked)
+{
+    // 逐字锁定：napi_exports.cpp 抛出的 TypeError 文本必须与此完全一致
+    CHECK(napiargs::fieldTypeErrorText("deviceId", "string") ==
+          "start(config): 'deviceId' 缺失或类型错误（需要 string）");
+    // start(config) 的 5 个字符串字段 + 1 个数字字段：字段名与期望类型都必须出现在文案里
+    const char *strFields[] = {"deviceId", "deviceName", "deviceType", "certPem", "keyPem"};
+    for (const char *f : strFields) {
+        const std::string msg = napiargs::fieldTypeErrorText(f, "string");
+        CHECK(msg.find(f) != std::string::npos);
+        CHECK(msg.find("需要 string") != std::string::npos);
+    }
+    const std::string port = napiargs::fieldTypeErrorText("tcpPort", "number");
+    CHECK(port.find("tcpPort") != std::string::npos);
+    CHECK(port.find("需要 number") != std::string::npos);
 }
 
 int main()
