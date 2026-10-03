@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "napi/napi_events.h"
+#include "napi_event_contract.h"
 #include "../net/event_queue_stat.h"
 #include <chrono>
 
+#include <cassert>
 #include <memory>
 #include <mutex>
 
@@ -13,12 +15,7 @@ namespace napi_bridge {
 
 namespace {
 
-// 与 ArkTS 侧 NetEvent.type 字符串一一对应。
-// 下标 = net_types.h EventType 枚举值，顺序固定（DeviceDiscovered=0 ... Error=6），勿错位。
-const char *kEventTypeNames[] = {
-    "deviceDiscovered", "deviceLost", "connected", "disconnected",
-    "packetReceived", "pairingRequest", "error", "payloadTransfer",
-};
+// 事件类型名数组已迁到 napi_event_contract.h（T3：与 Index.d.ts 的 NetEventType 联合逐字一致，单测锁定）。
 
 struct BridgeState {
     std::mutex mu;
@@ -42,6 +39,10 @@ napi_value BuildEventObject(napi_env env, const NetEvent &event)
     napi_set_named_property(env, obj, "type", typeVal);
 
     auto setField = [env, obj](const char *key, const std::string &value) {
+#ifndef NDEBUG
+        // T3：字段名必须在契约表内（防「误用 message/code」类漂移重现，见 REVIEW §4 P1-2）
+        assert(isCanonicalEventField(key) && "event field name drifted from Index.d.ts contract");
+#endif
         napi_value v = nullptr;
         if (value.empty()) {
             napi_get_null(env, &v);
@@ -52,6 +53,9 @@ napi_value BuildEventObject(napi_env env, const NetEvent &event)
     };
 
     auto setIntField = [env, obj](const char *key, double value) {
+#ifndef NDEBUG
+        assert(isCanonicalEventField(key) && "event field name drifted from Index.d.ts contract");
+#endif
         napi_value v = nullptr;
         napi_create_double(env, value, &v);
         napi_set_named_property(env, obj, key, v);
@@ -94,9 +98,7 @@ void CallJs(napi_env env, napi_value callback, void *context, void *data)
 {
     // P2-A：事件已从 tsfn 队列取出 ⇒ 积压深度 -1（含下面 env/callback 为空的丢弃路径）。
     // 用 fetch_sub 后按下限收敛，避免计数出现负数（只为可观测量，不影响事件语义）。
-    if (kdeconnect::eventQueueDepth().fetch_sub(1, std::memory_order_relaxed) <= 0) {
-        kdeconnect::eventQueueDepth().store(0, std::memory_order_relaxed);
-    }
+    eventDequeued();   // 契约层：-1 且下限收敛到 0（T3 不变量）
     if (env == nullptr || callback == nullptr) {
         // env/callback 为空表示正在关闭，丢弃事件但必须释放 data。
         if (data != nullptr) {
@@ -165,9 +167,9 @@ void Emit(const NetEvent &event)
     }
     auto data = new std::unique_ptr<NetEvent>(std::make_unique<NetEvent>(event));
     // nonblocking：队列满时丢弃而非阻塞网络线程（queue 设为 0 不会满，防御性处理）。
-    kdeconnect::eventQueueDepth().fetch_add(1, std::memory_order_relaxed);   // P2-A：积压深度
+    eventEnqueued();   // P2-A：积压深度（契约层）
     if (napi_call_threadsafe_function(tsfn, data, napi_tsfn_nonblocking) != napi_ok) {
-        kdeconnect::eventQueueDepth().fetch_sub(1, std::memory_order_relaxed);
+        eventDequeued();
         // 事件真的被丢了：此前是静默 delete，出问题时无从判断「未派发」还是「投递丢」。
         // （tsfn 队列长度为 0 = 不限，正常不该走到这里；留痕以便 DevEco MSG24 §2 类问题定性。）
         OH_LOG_Print(LOG_APP, LOG_WARN, 0x0001, "KDEConnect",

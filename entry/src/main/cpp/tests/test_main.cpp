@@ -14,7 +14,14 @@
 #include "../net/cert_gen.h"
 #include "../net/cert_util.h"
 #include "../net/net_util.h"
+#include "../net/net_types.h"
 #include "../net/napi_args.h"
+#include "../napi/napi_event_contract.h"
+#include <cctype>
+#include <fstream>
+#include <iterator>
+#include <vector>
+#include <algorithm>
 #include "../net/packet_io.h"
 
 using namespace kdeconnect;
@@ -380,6 +387,164 @@ TEST_CASE(napiArgTypeErrorMessageLocked)
     const std::string port = napiargs::fieldTypeErrorText("tcpPort", "number");
     CHECK(port.find("tcpPort") != std::string::npos);
     CHECK(port.find("需要 number") != std::string::npos);
+}
+
+
+// —————— T3：事件桥契约（AtomCode MSG112 T3）——————
+// ① 事件类型名数组 与 Index.d.ts 的 NetEventType 联合逐字一致（顺序即契约）；
+// ② 事件对象字段名 与 NetEventBase 声明逐字一致（含双向检查：不许多、不许少）；
+// ③ 事件队列深度：入队 +1、出队 -1 且下限收敛到 0（不可为负）。
+// 生产代码（napi/napi_events.cpp）直接复用 napi_event_contract.h，故漂移会被立即拦下。
+
+namespace {
+
+std::string readContractDts()
+{
+    // 由当前工作目录逐级上溯查找（run.sh 可能从 tests/ 或构建目录运行二进制）
+    const std::string rel = "types/libkdeconnect_napi/Index.d.ts";
+    std::string up;
+    for (int i = 0; i < 6; ++i) {
+        std::ifstream f(up + rel);
+        if (f) {
+            return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        }
+        up += "../";
+    }
+    return std::string();
+}
+
+// 取 [from, to) 之间的所有 "..." 内容（按出现顺序）
+std::vector<std::string> quotedIn(const std::string &s, std::size_t from, std::size_t to)
+{
+    std::vector<std::string> out;
+    for (std::size_t i = from; i < to; ++i) {
+        if (s[i] != '"') {
+            continue;
+        }
+        const std::size_t j = s.find('"', i + 1);
+        if (j == std::string::npos || j > to) {
+            break;
+        }
+        out.push_back(s.substr(i + 1, j - i - 1));
+        i = j;
+    }
+    return out;
+}
+
+// 取接口体内每一行的「字段名」（形如 `  name?: type;` / `  name: type;`），跳过注释与空行
+std::vector<std::string> interfaceFields(const std::string &body)
+{
+    std::vector<std::string> out;
+    std::size_t p = 0;
+    while (p <= body.size()) {
+        std::size_t e = body.find('\n', p);
+        std::string line = body.substr(p, (e == std::string::npos ? body.size() : e) - p);
+        p = (e == std::string::npos) ? body.size() + 1 : e + 1;
+        const std::size_t a = line.find_first_not_of(" \t\r");
+        if (a == std::string::npos || line.compare(a, 2, "//") == 0) {
+            continue;
+        }
+        std::size_t k = a;
+        while (k < line.size() && (std::isalnum(static_cast<unsigned char>(line[k])) || line[k] == '_')) {
+            ++k;
+        }
+        if (k > a) {
+            out.push_back(line.substr(a, k - a));
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE(napiEventContractMatchesDts)
+{
+    const std::string dts = readContractDts();
+    CHECK(!dts.empty());   // 找不到 d.ts 即失败（契约门禁不可静默跳过）
+
+    // ① 类型名联合
+    const std::size_t u0 = dts.find("export type NetEventType =");
+    CHECK(u0 != std::string::npos);
+    const std::size_t u1 = dts.find(';', u0);
+    CHECK(u1 != std::string::npos);
+    const std::vector<std::string> types = quotedIn(dts, u0, u1);
+    CHECK(types.size() == napi_bridge::kEventTypeCount);
+    // 集合必须一致（类型联合的顺序无语义，d.ts 里 payloadTransfer/error 的先后与枚举不同）…
+    for (const std::string &n : types) {
+        bool found = false;
+        for (std::size_t i = 0; i < napi_bridge::kEventTypeCount; ++i) {
+            if (n == napi_bridge::kEventTypeNames[i]) { found = true; break; }
+        }
+        CHECK(found);
+    }
+    // …而 C++ 数组的**下标顺序**必须与 EventType 枚举一致（桥用它按 event.type 取名字）。
+    CHECK(napi_bridge::kEventTypeNames[static_cast<int>(EventType::DeviceDiscovered)] == std::string("deviceDiscovered"));
+    CHECK(napi_bridge::kEventTypeNames[static_cast<int>(EventType::DeviceLost)] == std::string("deviceLost"));
+    CHECK(napi_bridge::kEventTypeNames[static_cast<int>(EventType::Connected)] == std::string("connected"));
+    CHECK(napi_bridge::kEventTypeNames[static_cast<int>(EventType::Disconnected)] == std::string("disconnected"));
+    CHECK(napi_bridge::kEventTypeNames[static_cast<int>(EventType::PacketReceived)] == std::string("packetReceived"));
+    CHECK(napi_bridge::kEventTypeNames[static_cast<int>(EventType::PairingRequest)] == std::string("pairingRequest"));
+    CHECK(napi_bridge::kEventTypeNames[static_cast<int>(EventType::Error)] == std::string("error"));
+    CHECK(napi_bridge::kEventTypeNames[static_cast<int>(EventType::PayloadTransfer)] == std::string("payloadTransfer"));
+
+    // ② 字段名：双向一致
+    const std::string ifaceDecl = "export interface NetEventBase {";
+    const std::size_t i0 = dts.find(ifaceDecl);
+    CHECK(i0 != std::string::npos);
+    const std::size_t i1 = dts.find("\n}", i0);
+    CHECK(i1 != std::string::npos);
+    // 从声明行的大括号之后开始（否则 export/interface/NetEventBase 会被误当作字段名）
+    const std::size_t bodyStart = i0 + ifaceDecl.size();
+    const std::vector<std::string> fields = interfaceFields(dts.substr(bodyStart, i1 - bodyStart));
+    CHECK(fields.size() == napi_bridge::kEventFieldCount);
+    for (const std::string &f : fields) {
+        // d.ts 声明了 → 必须被桥发出（否则 JS 侧拿到 undefined 而契约写着可选字段名）
+        bool found = false;
+        for (std::size_t i = 0; i < napi_bridge::kEventFieldCount; ++i) {
+            if (f == napi_bridge::kEventFieldNames[i]) { found = true; break; }
+        }
+        CHECK(found);
+    }
+    for (std::size_t i = 0; i < napi_bridge::kEventFieldCount; ++i) {
+        bool found = false;
+        for (const std::string &f : fields) {
+            if (f == napi_bridge::kEventFieldNames[i]) { found = true; break; }
+        }
+        CHECK(found);
+    }
+
+    // 字段名自检：历史错误名必须被判为非契约（REVIEW §4 P1-2 的 message/code 漂移）
+    CHECK(napi_bridge::isCanonicalEventField("type"));
+    CHECK(napi_bridge::isCanonicalEventField("deviceId"));
+    CHECK(napi_bridge::isCanonicalEventField("payloadBytesDone"));
+    CHECK(!napi_bridge::isCanonicalEventField("message"));
+    CHECK(!napi_bridge::isCanonicalEventField("code"));
+}
+
+TEST_CASE(napiEventQueueDepthInvariant)
+{
+    // 起始归零（全局状态，测试前后保持 0）
+    while (eventQueueDepth().load() > 0) {
+        napi_bridge::eventDequeued();
+    }
+    CHECK(eventQueueDepth().load() == 0);
+
+    napi_bridge::eventEnqueued();
+    napi_bridge::eventEnqueued();
+    napi_bridge::eventEnqueued();
+    CHECK(eventQueueDepth().load() == 3);
+
+    napi_bridge::eventDequeued();
+    napi_bridge::eventDequeued();
+    CHECK(eventQueueDepth().load() == 1);
+
+    napi_bridge::eventDequeued();
+    CHECK(eventQueueDepth().load() == 0);
+
+    // 下限收敛：多减不得为负（CallJs 在 env/callback 为空时也会减一次）
+    napi_bridge::eventDequeued();
+    napi_bridge::eventDequeued();
+    CHECK(eventQueueDepth().load() == 0);
 }
 
 int main()
