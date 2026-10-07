@@ -473,4 +473,84 @@ mod tests {
         );
         assert_eq!(parse_identity("{\"id\":0"), None);
     }
+
+    // —————— T4：协议契约黄金用例（跨端 schema 一致性）——————
+    // 来源：`kdeconnect-meta/schemas/kdeconnect.identity.json`（协议规范仓，不随本仓同步）。
+    // 故把 schema 的**必需字段与类型**固化为常量（注明出处），并在本机存在该 schema 时
+    // 额外做一次「活体」交叉核对（缺失则跳过，不影响 CI）。
+
+    /// schema 顶层 required
+    const SCHEMA_TOP_REQUIRED: &[&str] = &["id", "type", "body"];
+    /// schema body.required
+    const SCHEMA_BODY_REQUIRED: &[&str] = &["deviceId", "protocolVersion"];
+    /// schema body 声明字段 → 期望类型
+    const SCHEMA_BODY_TYPES: &[(&str, &str)] = &[
+        ("deviceId", "string"),
+        ("deviceName", "string"),
+        ("deviceType", "string"),
+        ("protocolVersion", "number"),
+        ("incomingCapabilities", "array"),
+        ("outgoingCapabilities", "array"),
+    ];
+
+    /// 协议规范仓的可能位置（不在本仓内；缺失即跳过活体核对）。
+    fn identity_schema_path() -> Option<std::path::PathBuf> {
+        const CANDS: &[&str] = &[
+            "kdeconnect-meta/schemas/kdeconnect.identity.json",
+            "../../../../../../KDE_connect_hap/kdeconnect-meta/schemas/kdeconnect.identity.json",
+        ];
+        CANDS.iter().map(std::path::PathBuf::from).find(|p| p.exists())
+    }
+
+    #[test]
+    fn identity_frame_satisfies_protocol_schema() {
+        let frame = build_identity(VALID_ID, "Dev", "phone", 1716, 8, &[], &[]);
+        let v: Value = serde_json::from_str(frame.trim_end()).expect("identity 帧必须是合法 JSON");
+        for k in SCHEMA_TOP_REQUIRED {
+            assert!(v.get(k).is_some(), "缺 schema 必需字段 {k}");
+        }
+        assert_eq!(v["type"], Value::String("kdeconnect.identity".into()));
+        assert!(v["id"].is_number(), "schema: id 必须为 number");
+        let body = v.get("body").expect("缺 body");
+        for k in SCHEMA_BODY_REQUIRED {
+            assert!(body.get(k).is_some(), "body 缺 schema 必需字段 {k}");
+        }
+        for (k, t) in SCHEMA_BODY_TYPES {
+            let got = body.get(k).unwrap_or_else(|| panic!("body 缺字段 {k}"));
+            let ok = match *t {
+                "string" => got.is_string(),
+                "number" => got.is_number(),
+                "array" => got.as_array().map(|a| a.iter().all(|x| x.is_string())).unwrap_or(false),
+                other => panic!("未知期望类型 {other}"),
+            };
+            assert!(ok, "字段 {k} 的类型不符合 schema（期望 {t}）");
+        }
+    }
+
+    #[test]
+    fn identity_frame_round_trip_preserves_fields() {
+        let caps_in = vec!["kdeconnect.ping".to_string()];
+        let caps_out = vec!["kdeconnect.share.request".to_string()];
+        let frame = build_identity(VALID_ID, "My Phone", "phone", 1716, 8, &caps_in, &caps_out);
+        assert!(frame.ends_with('\n'), "帧尾必须带换行（协议以 \\n 分隔 packet）");
+        let info = parse_identity(&frame).expect("自建 identity 帧必须能被解析（跨端互操作的最低要求）");
+        assert_eq!(info.device_id, VALID_ID);
+        assert_eq!(info.device_name, "My Phone");
+        assert_eq!(info.device_type, "phone");
+        assert_eq!(info.tcp_port, 1716);
+        assert!(is_valid_device_id(&info.device_id));
+    }
+
+
+
+    /// `tcpPort`：schema **未声明**该字段（additionalProperties 未声明 ⇒ 默认允许），
+    /// 但 KDE 与 Android 参考实现**都发**（Android `LanLinkProvider`：
+    /// `identity.set("tcpPort", tcpServer.getLocalPort())`）⇒ 我们跟随参考实现。
+    /// 本用例固定「跟随参考」，schema 缺声明一事已随 MSG128 报出。
+    #[test]
+    fn identity_tcp_port_follows_reference_implementations() {
+        let frame = build_identity(VALID_ID, "D", "phone", 1739, 8, &[], &[]);
+        let v: Value = serde_json::from_str(frame.trim_end()).unwrap();
+        assert_eq!(v["body"]["tcpPort"], Value::Number(1739.into()));
+    }
 }
