@@ -95,6 +95,9 @@ TARGET=<target> tools/phone-diag.sh verdict /tmp/phone-<时间戳>.log /tmp/phon
 - 原始文件：`/tmp/phone-<时间戳>.log`、`/tmp/phone-<时间戳>.log.desktop`（桌面侧每 2s 状态）。
 
 归档必含：被测构建标识、开始/结束时刻、判定结果、任何异常行（如 `code=110`、`OnAppFrozen`、配额错误）。
+**另外（T4 跨端黄金向量）**：真机验收时请**同时记录两端显示的配对验证码**（App 配对弹窗 + 桌面通知/`kdeconnect-cli`），
+连同**双方证书**一起归档 —— 这是唯一能产出「跨端验证码黄金向量」的时机（离线不可构造，理由见 MSG128 §1），
+补进 `cert.rs` 的验证码用例后即成为可回归的不变量。
 
 ## 6. 疑难与坑（均为实测踩过）
 
