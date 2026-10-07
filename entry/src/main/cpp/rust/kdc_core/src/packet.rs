@@ -525,6 +525,25 @@ mod tests {
             };
             assert!(ok, "字段 {k} 的类型不符合 schema（期望 {t}）");
         }
+
+        // 活体核对：本机若存在协议规范仓，则直接按 schema 自身的 required 清单再核一遍
+        // （规范仓不随本仓同步 ⇒ 缺失即跳过，CI 不受影响）。
+        if let Some(path) = identity_schema_path() {
+            let raw = std::fs::read_to_string(&path).expect("读取 identity schema");
+            let sch: Value = serde_json::from_str(&raw).expect("schema 必须是合法 JSON");
+            if let Some(req) = sch.get("required").and_then(Value::as_array) {
+                for k in req {
+                    let key = k.as_str().expect("required 项应为字符串");
+                    assert!(v.get(key).is_some(), "活体 schema：缺顶层必需字段 {key}");
+                }
+            }
+            if let Some(req) = sch["properties"]["body"].get("required").and_then(Value::as_array) {
+                for k in req {
+                    let key = k.as_str().expect("body.required 项应为字符串");
+                    assert!(body.get(key).is_some(), "活体 schema：body 缺必需字段 {key}");
+                }
+            }
+        }
     }
 
     #[test]
