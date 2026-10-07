@@ -19,11 +19,14 @@ using namespace kdeconnect;
 // 例如 certPem 为空串要等到 NetStack::start() 才失败，失败原因又会被吞掉（见 JsStart）。
 // 现在：属性缺失或类型不符 → 抛 TypeError（JS 侧立刻可见），调用方随后直接返回 nullptr。
 // 文案由 net/napi_args.h 的纯函数生成（T1 单测逐字锁定该约定）。
-static void throwFieldTypeError(napi_env env, const char *field, const char *want)
+static void throwFieldTypeError(napi_env env, const char *op, const char *field, const char *want)
 {
-    const std::string msg = napiargs::fieldTypeErrorText(field, want);
+    const std::string msg = napiargs::fieldTypeErrorText(op, field, want);
     napi_throw_type_error(env, "EINVAL", msg.c_str());
 }
+
+// 字段助手的默认导出名前缀（当前字段助手仅 JsStart 使用；被其他导出复用时传各自标签）。
+static const char *const kStartOpLabel = "start(config)";
 
 // napi_valuetype → 纯判定层的类型标签（一一映射，不改变任何判定语义）。
 static napiargs::ArgTag tagOf(napi_valuetype t)
@@ -43,25 +46,26 @@ static napiargs::ArgTag tagOf(napi_valuetype t)
     }
 }
 
-static bool napiGetString(napi_env env, napi_value obj, const char *name, std::string &out)
+static bool napiGetString(napi_env env, napi_value obj, const char *name, std::string &out,
+                          const char *op = kStartOpLabel)
 {
     napi_value val = nullptr;
     const bool present = napi_get_named_property(env, obj, name, &val) == napi_ok;
     napi_valuetype type = napi_undefined;
     const bool typed = present && napi_typeof(env, val, &type) == napi_ok;
     if (napiargs::checkArg(present && typed, tagOf(type), napiargs::ArgTag::String) != napiargs::ArgCheck::Ok) {
-        throwFieldTypeError(env, name, "string");
+        throwFieldTypeError(env, op, name, "string");
         return false;
     }
     size_t len = 0;
     if (napi_get_value_string_utf8(env, val, nullptr, 0, &len) != napi_ok) {
-        throwFieldTypeError(env, name, "string");
+        throwFieldTypeError(env, op, name, "string");
         return false;
     }
     std::string s(len, '\0');
     size_t written = 0;
     if (napi_get_value_string_utf8(env, val, s.data(), len + 1, &written) != napi_ok) {
-        throwFieldTypeError(env, name, "string");
+        throwFieldTypeError(env, op, name, "string");
         return false;
     }
     s.resize(written);
@@ -69,18 +73,19 @@ static bool napiGetString(napi_env env, napi_value obj, const char *name, std::s
     return true;
 }
 
-static bool napiGetInt(napi_env env, napi_value obj, const char *name, int32_t &out)
+static bool napiGetInt(napi_env env, napi_value obj, const char *name, int32_t &out,
+                       const char *op = kStartOpLabel)
 {
     napi_value val = nullptr;
     const bool present = napi_get_named_property(env, obj, name, &val) == napi_ok;
     napi_valuetype type = napi_undefined;
     const bool typed = present && napi_typeof(env, val, &type) == napi_ok;
     if (napiargs::checkArg(present && typed, tagOf(type), napiargs::ArgTag::Number) != napiargs::ArgCheck::Ok) {
-        throwFieldTypeError(env, name, "number");
+        throwFieldTypeError(env, op, name, "number");
         return false;
     }
     if (napi_get_value_int32(env, val, &out) != napi_ok) {
-        throwFieldTypeError(env, name, "number");
+        throwFieldTypeError(env, op, name, "number");
         return false;
     }
     return true;

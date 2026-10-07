@@ -5,6 +5,11 @@
 //! - 所有返回数据的函数统一签名 `(…输入…, out: *mut u8, out_cap: usize) -> i32`：
 //!   返回值为**需要写入的字节数**；`> out_cap` 表示缓冲不足（此时**不写任何字节**），
 //!   调用方扩容后重试；**负数**表示语义失败（解析失败/无匹配 PEM 段等）。
+//!
+//!   > ⚠️ **例外（不适用「扩容重试」）**：`kdc_extract_frame` —— 它的 `Frame` 分支在 `write_out`
+//!   > 因缓冲不足未写入时，**仍会把该帧从接收缓冲前移消费**（`new_len` 已更新）⇒ 同一帧**无法重试**。
+//!   > 调用方**必须**以 `max_size` 预分配 `out`（本仓 C++ shim 即如此），否则该帧会被静默丢弃。
+//!   > 该行为已由 `tests` 中 `extract_frame_consumes_frame_even_when_out_too_small` 固定（CodeArts MSG127 裁决2）。
 //! - Rust 侧不返回堆指针 ⇒ 无跨堆释放问题（不需要 `kdc_string_free`）。
 //! - 多字段输出用 **NUL 分隔的单缓冲**（`deviceId\0deviceName\0deviceType\0`），
 //!   由 C++ shim 自行切分；这保持 ABI 表面最小。
@@ -170,6 +175,8 @@ pub extern "C" fn kdc_verification_code(
 // ————————————— packet_io.h 的对应实现 —————————————
 
 /// 三态：`>0` 完整帧长度（帧已写入 out）、`0` 半包（buf 未变）、`-2` 超限帧被丢弃、`-1` 参数错误。
+/// ⚠️ 与通用约定不同：`> out_cap`（缓冲不足）时**帧仍会被消费掉**（缓冲前移），不可扩容重试；
+///    调用方必须以 `max_size` 预分配 `out`。详见本文件头注释的「例外」小节。
 /// `buf`/`buf_len` 为**就地修改**的接收缓冲（丢帧/取帧后剩余内容写回，新的长度经 `new_len` 返回）。
 #[no_mangle]
 pub extern "C" fn kdc_extract_frame(
