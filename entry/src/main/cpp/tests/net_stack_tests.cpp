@@ -989,6 +989,100 @@ void dialUnknownPortProbesAndConnects()
 
 } // namespace
 
+// —————— T5：caps 单一来源一致性 ——————
+// 被测栈的 caps 事实来源是 ArkTS 插件注册表（经 native.setCapabilities 注入 native）。
+// 本用例验证「注入的 caps 必须原样出现在随后的 identity 帧里」，并锁住一个真实回归点：
+// ArkTS 约定在 **start() 之前**调 setCapabilities（那时 udp_ 尚为空、该次转发被丢弃），
+// 因此 NetStack::start 必须自行补发（见 net_stack.cpp:135-145），否则 caps 静默丢失。
+
+const char *kCapsPeerId = "hosttest55555555555555555555555555";
+const char *kCapsIn1 = "kdeconnect.ping";
+const char *kCapsIn2 = "kdc.caps.test.in";
+const char *kCapsOut1 = "kdc.caps.test.out";
+
+// 子进程：作为对端拨入被测栈，读取被测栈经控制链路发来的 identity 帧并校验 caps。
+// 退出码即判定（0 = 一致）。
+int runCapsPeerMode(uint16_t targetPort)
+{
+    const std::string devId = kCapsPeerId;
+    CertPair cert = CertGen::generateSelfSignedEc(devId, 10);
+    NetConfig cfg;
+    cfg.deviceId = devId;
+    cfg.deviceName = "kdc-nettest-caps";
+    cfg.deviceType = "desktop";
+    cfg.certPem = cert.certPem;
+    cfg.keyPem = cert.keyPem;
+    cfg.tcpPort = 1749;
+    cfg.udpPort = 17160;
+    cfg.spoolDir = "/tmp/kdc_nettest_spool";
+    NetStack &ns = netStack();
+    std::mutex mu;
+    std::string peerIdentity;
+    ns.setEventCallback([&mu, &peerIdentity](const NetEvent &e) {
+        if (e.type == EventType::PacketReceived &&
+            e.packet.find("\"type\":\"kdeconnect.identity\"") != std::string::npos) {
+            std::lock_guard<std::mutex> lk(mu);
+            peerIdentity = e.packet;
+        }
+    });
+    if (!ns.start(cfg)) {
+        return 1;
+    }
+    ns.connectToPeer("127.0.0.1", targetPort);
+    std::string got;
+    for (int i = 0; i < 300 && got.empty(); ++i) {   // 最多 ~6s
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            got = peerIdentity;
+        }
+        if (got.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    }
+    ns.stop();
+    if (got.empty()) {
+        std::fprintf(stderr, "[caps-peer] 未收到被测栈的 identity 帧\n");
+        return 10;
+    }
+    std::fprintf(stderr, "[caps-peer] 被测栈 identity: %s\n", got.substr(0, 260).c_str());
+    const std::string wantIn =
+        std::string("\"incomingCapabilities\":[\"") + kCapsIn1 + "\",\"" + kCapsIn2 + "\"]";
+    const std::string wantOut = std::string("\"outgoingCapabilities\":[\"") + kCapsOut1 + "\"]";
+    if (got.find(wantIn) == std::string::npos) {
+        std::fprintf(stderr, "[caps-peer] incomingCapabilities 与注入不一致，期望包含: %s\n", wantIn.c_str());
+        return 11;
+    }
+    if (got.find(wantOut) == std::string::npos) {
+        std::fprintf(stderr, "[caps-peer] outgoingCapabilities 与注入不一致，期望包含: %s\n", wantOut.c_str());
+        return 12;
+    }
+    return 0;
+}
+
+// 父进程用例：以 ArkTS 的调用顺序（start 之前）注入 caps，再让对端拨入读取网线 identity 帧。
+void capabilitiesFromArktsReachWireIdentity()
+{
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));   // 避开同 IP accept 限流
+    NetStack &ns = netStack();
+    ns.setCapabilities({kCapsIn1, kCapsIn2}, {kCapsOut1});         // 与 ArkTS 同序：**start 之前**
+    const pid_t child = ::fork();
+    CHECK_MSG(child >= 0, "fork 失败");
+    if (child < 0) {
+        return;
+    }
+    if (child == 0) {
+        ::execl("/proc/self/exe", "kdc_net_tests", "--caps-peer", "1745", nullptr);
+        ::_exit(127);
+    }
+    int status = 0;
+    ::waitpid(child, &status, 0);
+    ::kill(child, SIGKILL);   // 子进程应已自行退出；此处为防御
+    CHECK_MSG(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "对端未在被测栈的控制链路 identity 中读到注入的 caps（详见 stderr）");
+    // 还原 caps，避免同进程后续用例受污染（run.sh 逐用例进程隔离，此处仅防手工整体运行）
+    ns.setCapabilities({"kdeconnect.ping", "kdeconnect.identity", "kdeconnect.pair"}, {"kdeconnect.ping"});
+}
+
 int main(int argc, char **argv)
 {
     if (argc >= 3 && std::strcmp(argv[1], "--peer") == 0) {
@@ -1006,13 +1100,16 @@ int main(int argc, char **argv)
     if (argc >= 3 && std::strcmp(argv[1], "--mute-peer") == 0) {
         return runMutePeerMode(static_cast<uint16_t>(std::atoi(argv[2])));
     }
+    if (argc >= 3 && std::strcmp(argv[1], "--caps-peer") == 0) {
+        return runCapsPeerMode(static_cast<uint16_t>(std::atoi(argv[2])));
+    }
     struct ListDef { const char *name; };
     static const ListDef kNames[] = {
         {"connectToClosedPortReportsReason"}, {"muteePeerTimesOutBounded"},
         {"peerIdentityIsDispatchedAsPacket"},  {"sendPacketQueuesDuringHandshake"},
         {"portProbeFindsListener"},            {"dialUnknownPortProbesAndConnects"},
         {"announcedPayloadWithoutPortIsTerminal"}, {"payloadSurvivesLinkReplacement"},
-        {"deviceDownDispatchesPayloadTerminal"}, {"peerCertCnMismatchIsRejected"}, {"peerCertPinningMismatchIsRejected"},
+        {"deviceDownDispatchesPayloadTerminal"}, {"peerCertCnMismatchIsRejected"}, {"peerCertPinningMismatchIsRejected"}, {"capabilitiesFromArktsReachWireIdentity"},
     };
     if (argc >= 2 && std::strcmp(argv[1], "--list") == 0) {
         for (const ListDef &n : kNames) {
@@ -1065,10 +1162,23 @@ int main(int argc, char **argv)
         {"deviceDownDispatchesPayloadTerminal", deviceDownDispatchesPayloadTerminal},
         {"peerCertCnMismatchIsRejected", peerCertCnMismatchIsRejected},
         {"peerCertPinningMismatchIsRejected", peerCertPinningMismatchIsRejected},
-        {"peerCertPinningMismatchIsRejected", peerCertPinningMismatchIsRejected},
+        
+        {"capabilitiesFromArktsReachWireIdentity", capabilitiesFromArktsReachWireIdentity},
     };
+    int matched = 0;
     for (const CaseDef &c : kCases) {
+        const int before = g_cases;
         runCase(c.name, c.fn);
+        if (g_cases != before) {
+            ++matched;
+        }
+    }
+    // 保护（2026-10-07）：指定 --case 但没有任何用例匹配 ⇒ 必须非零退出。
+    // 否则「用例名漏进 kCases」这类错误会被门禁当成 OK（空跑退出 0）——本轮真实踩到。
+    if (g_onlyCase != nullptr && matched == 0) {
+        std::printf("no case matched --case '%s'\n", g_onlyCase);
+        ns.stop();
+        return 4;
     }
 
     ns.stop();
