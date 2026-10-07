@@ -656,11 +656,8 @@ struct Index {
 
   aboutToDisappear(): void {
     this.netWatcher.unregister();
-    try {
-      native.stop();
-    } catch (e) {
-      // ignore
-    }
+    // KI-1（真机实证 OnAppFrozen）：**不在此停栈**。页面消失 ≠ 进程结束；在此停栈会让「切后台/切页」
+    // 立即断链，后台能力（收文件/通知/剪贴板）随之全废。停栈改由 EntryAbility.onDestroy() 承担。
   }
 
   // 屏幕宽度 → vp，按 600vp 断点区分手机/平板布局

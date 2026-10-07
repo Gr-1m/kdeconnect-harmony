@@ -4,8 +4,16 @@ import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { display, window } from '@kit.ArkUI';
 import deviceInfo from '@ohos.deviceInfo';
+// KI-1 ①：短时任务（TransientTask，**免权限**）。SDK 依据见 MSG113：@ohos.resourceschedule.backgroundTaskManager
+// 的 requestSuspendDelay 属 SystemCapability.ResourceSchedule.BackgroundTaskManager.TransientTask，
+// .d.ts 上无 @permission（长时任务才需被华为驳回的 KEEP_BACKGROUND_RUNNING）。
+import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
+// KI-1 ②：停栈迁到本 Ability（页面 aboutToDisappear 不再停栈）。
+import native from 'libkdeconnect_napi.so';
 
 export default class EntryAbility extends UIAbility {
+  // KI-1 ①：本次后台会话的短时任务 id（-1 = 未申请）。
+  private transientTaskId: number = -1;
   // 手机端禁旋转（用户 2026-09-15 要求）：本 App 的「横屏」= 平板并排侧栏布局，手机上不该出现。
   // 判定：平板/2in1/桌面/电视 → 跟随系统（module.json5 的 auto_rotation）；其余（phone/wearable/未知）→ 锁竖屏。
   // deviceType 判不出来时用屏幕最小边兜底（< 600vp 视为手机）。
@@ -33,6 +41,30 @@ export default class EntryAbility extends UIAbility {
 
   onDestroy(): void {
     hilog.info(0x0000, 'testTag', '%s', 'Ability onDestroy');
+    this.cancelTransientTask();
+    // KI-1 ②：进程/Ability 真正销毁时才停栈（页面消失不再断链）。
+    try {
+      native.stop();
+      hilog.info(0x0000, 'testTag', '%s', 'native.stop on ability destroy');
+    } catch (e) {
+      hilog.error(0x0000, 'testTag', 'native.stop failed: %{public}s',
+        e instanceof Error ? e.message : 'unknown');
+    }
+  }
+
+  /** KI-1 ①：回前台/销毁时成对取消短时任务（配额只在该用的时候用）。 */
+  private cancelTransientTask(): void {
+    if (this.transientTaskId < 0) {
+      return;
+    }
+    try {
+      backgroundTaskManager.cancelSuspendDelay(this.transientTaskId);
+      hilog.info(0x0000, 'testTag', 'transient task cancelled id=%{public}d', this.transientTaskId);
+    } catch (e) {
+      hilog.warn(0x0000, 'testTag', 'cancelSuspendDelay failed: %{public}s',
+        e instanceof Error ? e.message : 'unknown');
+    }
+    this.transientTaskId = -1;
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
@@ -89,9 +121,26 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void {
     hilog.info(0x0000, 'testTag', '%s', 'Ability onForeground');
+    this.cancelTransientTask();
   }
 
   onBackground(): void {
     hilog.info(0x0000, 'testTag', '%s', 'Ability onBackground');
+    // KI-1 ①：切后台即申请短时任务，避免真机 ~18s 后被 OnAppFrozen 冻结（链路/在途传输全废）。
+    // 一次后台会话只申请一次；失败（如配额耗尽 9900002）只记日志并降级，不重试风暴。
+    try {
+      if (this.transientTaskId < 0) {
+        const info: backgroundTaskManager.DelaySuspendInfo =
+          backgroundTaskManager.requestSuspendDelay('KDE Connect 保持链路与传输', () => {
+            hilog.info(0x0000, 'testTag', '%s', 'transient task about to expire');
+          });
+        this.transientTaskId = info.requestId;
+        hilog.info(0x0000, 'testTag', 'transient task id=%{public}d delay=%{public}dms',
+          info.requestId, info.actualDelayTime);
+      }
+    } catch (e) {
+      hilog.error(0x0000, 'testTag', 'requestSuspendDelay failed: %{public}s',
+        e instanceof Error ? e.message : 'unknown');
+    }
   }
 }
