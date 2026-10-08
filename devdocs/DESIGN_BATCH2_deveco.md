@@ -1,7 +1,17 @@
 # DESIGN_BATCH2_deveco — 阶段3 批次2 接口设计（6a MPRIS / 6b Payload）
 
-> 2026-09-26。作者 DevEco。依据 CodeArts MSG62（批次2 = 6a ~599 行 / 6b ~814 行）与 Omp MSG68 §6（"先出接口设计，替换由 Omp 执行"）。
+> 2026-09-26。作者 DevEco。依据 CodeArts MSG62（批次2 = 6a ~599 行 / 6b ~814 行）与 Omp MSG68 §6（"先出接口设计"）。
 > 设计范式**对齐 `PairSession`**（MSG62 §5）：Controller 持领域状态 + 注入回调；Dialog 用 `@Prop` + 回调。
+>
+> ⚠️ **命名注记（P3-2，2026-10-07 补）**：本文档 §1.2/§2.2 列的是**设计期长名**；实现阶段按 ArkTS 惯例做了**方法名短化**
+> （如 `mprisSnap→snapshot`、`mediaAction→action`、`mprisItemOf→itemOf`、`mprisEmpty→isEmpty`、`mprisVol→vol`、
+> `setMprisList→setList`、`setMprisSnapshot→setSnapshot`、`putMpris→put`、`mprisList→playerList`、
+> `toPayloadState→toState`、`toPayloadDirection→toDirection`、`closeMprisDialog→close`、`forgetMpris→forget`、
+> `isMprisPanelFor→isPanelFor`；6a 实为 24 个短名）。**最终命名一律以代码为准**（见 REVIEW_STAGE3_BATCH2.md P3-2）；
+> 本文仅保留设计意图，勿据本文方法名做符号搜索。
+>
+> ⚠️ **分工更新（2026-09-26 用户指令）**：文中"替换由 Omp 执行"**已过期** —— 现 ArkTS 代码（含 Index.ets 接线/替换/修复）
+> **由 DevEco 本人执行**，Omp 只负责 commit + push（见 AGENTS.md「角色分工」节 / Omp MSG69 §1）。
 
 ## 0. 设计原则（与前三步一致，避免半成品/双真相）
 
@@ -114,12 +124,12 @@ onClose: () => void
 | `mprisPluginOf/sysVolumePluginOf` | 迁入 Controller（注入 `pluginsFor`）✓ |
 | 页面保留 | 生命周期装配、`build()` 骨架、4 页签、卡片动作分发、`pickAndSendFile`、`runCommand` ✓ |
 
-## 4. 拆分顺序与验收（每步 `devecocli build`，替换由 Omp 执行）
+## 4. 拆分顺序与验收（每步 `devecocli build`；**替换/接线由 DevEco 执行**，见文首分工更新）
 1. 6a-1：建 `MprisController.ets`（状态+方法+注入）→ 构建 ✓
 2. 6a-2：建 `MprisDialog.ets`（UI 原样搬）→ 构建 ✓
 3. 6b-1：建 `PayloadController.ets`（状态+方法+队列）→ 构建 ✓
 4. 6b-2：建 `ReceivedFilesDialog.ets`（UI 原样搬）→ 构建 ✓
-5. 交给 Omp 一次性替换（含页面装配与注入）→ 他跑构建 + ohemu 冒烟 + 参数级保真比对（沿用 MSG68 的方法 ✓）
+5. ~~交给 Omp 一次性替换~~ → **DevEco 自做替换**（删旧内联代码 + 装配注入）→ 通知 Omp 代提交（他跑构建 + ohemu 冒烟 + 参数级保真比对 ✓）
 **验收**：Index.ets 从 **3438 行** 降至 ~2000 行以内；`systemvolume.sinks` 单槽过滤与 MPRIS `canClaim` 等不变量保持 ✓。
 
 ## 5. 附：本机回归能力现状（如实）

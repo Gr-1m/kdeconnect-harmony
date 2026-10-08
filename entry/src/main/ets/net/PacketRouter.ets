@@ -68,15 +68,20 @@ export class PacketRouter {
   private frameWarned: Set<string> = new Set();
   private logFn: (msg: string) => void;
   private callbacks: RouterCallbacks;
+  // 发送 seam（T2 单测需要脱离真实 native 发送；生产装配不传 ⇒ 默认走 native，语义零变化）。
+  private sendFn: (deviceId: string, json: string) => boolean;
   private requestedPeers: Map<string, number> = new Map();
 
   constructor(selfDeviceId: string, selfDeviceName: string, selfDeviceType: string,
-              logFn: (msg: string) => void, callbacks: RouterCallbacks) {
+              logFn: (msg: string) => void, callbacks: RouterCallbacks,
+              sendFn?: (deviceId: string, json: string) => boolean) {
     this.selfDeviceId = selfDeviceId;
     this.selfDeviceName = selfDeviceName;
     this.selfDeviceType = selfDeviceType;
     this.logFn = logFn;
     this.callbacks = callbacks;
+    this.sendFn = sendFn !== undefined ? sendFn
+      : (deviceId: string, json: string) => native.sendPacket(deviceId, json);
   }
 
   // ---- 供 UI 调用的配对动作 ----
@@ -254,7 +259,7 @@ export class PacketRouter {
       console.info(`KDC pair OUT -> ${deviceId}: ${JSON.stringify(body)}`);
     }
     const t0: number = Date.now();
-    const ok: boolean = native.sendPacket(deviceId, JSON.stringify(pkt) + '\n');
+    const ok: boolean = this.sendFn(deviceId, JSON.stringify(pkt) + '\n');
     const dt: number = Date.now() - t0;
     // 主线程是否被 native 发包阻塞的量化证据（用户报「媒体面板连点卡死」时先看这条）
     if (dt > 100) {
