@@ -88,8 +88,8 @@ struct Index {
   // 局域网发现：网络变化监听（阶段 3 批次 1 步骤 5d ⇒ common/NetworkWatcher.ets）
   private netWatcher: NetworkWatcher = new NetworkWatcher();
   @State currentTab: number = 0;
-  // 事件日志开关：true 时打印完整事件 JSON（排查用）；常态 false ⇒ 只打轻量摘要
-  private debugEventLog: boolean = false;
+  // 事件日志开关 `debugEventLog` 已清理（2026-10-08，依 CodeArts MSG129 §1-5）：
+  // 其分支随 `faf3f1d` 消失后已成死字段 ⇒ 删除，保留"恒记轻量事件摘要"现状（见下方 console.info）。
   // 卡片忙碌态【补丁·待优化】（用户 2026-09-16 提案 / CodeArts MSG6-7 批准）：
   // 点击卡片后该卡片短期内不接受再次点击，等「弹窗已弹出」或「功能已执行」再恢复；
   // 5s 保险丝兜底（日志区分 fired by event / fired by timeout）。仅逻辑，不改视觉。

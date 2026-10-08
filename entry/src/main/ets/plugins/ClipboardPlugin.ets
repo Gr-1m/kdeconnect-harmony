@@ -11,8 +11,10 @@ interface ClipboardBody {
 // 剪贴板同步插件（kdeconnect.clipboard / .connect）——双向（MSG112 §1）。
 // - 收 `kdeconnect.clipboard`：对端剪贴板内容 → 写入系统剪贴板（桌面复制 → 手机立即可用）
 // - 收 `kdeconnect.clipboard.connect`：对端**索取**我方剪贴板。读取本机剪贴板需
-//   `ohos.permission.READ_PASTEBOARD`（system_basic，三方应用不可声明）→ 只能提示用户
-//   点 PasteButton 授权后发送，这里不自动回复。
+//   `ohos.permission.READ_PASTEBOARD` —— 该权限实为 **user_grant**（三方应用本可声明），
+//   本项目**选择不声明**：改走 PasteButton 一次性临时授权（官方推荐路径；denied 已有 toast），
+//   故这里提示用户点 PasteButton 授权后发送，不自动回复。
+//   （裁决依据：CodeArts MSG129 §1-1 / AtomCode MSG131 一.1，2026-10-07。）
 // - 发 `kdeconnect.clipboard`：本机剪贴板内容（PasteButton 授权后）
 // - 发 `kdeconnect.clipboard.connect`：**索取**对端剪贴板（timestamp=0 保证对端一定回复）
 export class ClipboardPlugin extends PluginBase {
