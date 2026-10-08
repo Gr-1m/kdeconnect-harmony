@@ -21,9 +21,19 @@ CONTROLLERS = [
 INDEX_ETS = REPO_ROOT / "entry/src/main/ets/pages/Index.ets"
 
 
+def strip_full_line_comments(text: str) -> str:
+    """剔除**整行注释**（首个非空白字符为 `//`）。
+
+    原因（Omp MSG130 §1 实测）：原实现对全文做 `re.search`，注释掉的装配语句（`// this.xxx.f = …`）
+    同样命中 ⇒ **假通过**（本轮真实踩到：注释掉 `loadPluginsIfEmpty` 装配后检查器仍 PASS）。
+    行内注释与块注释未处理（本仓无此类误装配先例；如出现再收紧）。
+    """
+    return "\n".join("" if ln.lstrip().startswith("//") else ln for ln in text.splitlines())
+
+
 def extract_injection_fields(controller_path: Path) -> list[str]:
     """提取 controller 文件中所有注入回调字段名（形如 `fieldName: (...) => ... = ...;` 的行）。"""
-    text = controller_path.read_text(encoding="utf-8")
+    text = strip_full_line_comments(controller_path.read_text(encoding="utf-8"))
     fields = []
     for m in re.finditer(
         r'^\s+(\w+)\s*:\s*\([^)]*\)\s*=>\s*[^=]+=\s*[^;]+;',
@@ -39,11 +49,11 @@ def extract_injection_fields(controller_path: Path) -> list[str]:
 
 def check_assembly(index_path: Path, controller_var: str, fields: list[str]) -> list[str]:
     """检查 Index.ets 中是否有 `this.<controller_var>.<field> =` 装配语句。返回缺失字段列表。"""
-    text = index_path.read_text(encoding="utf-8")
+    text = strip_full_line_comments(index_path.read_text(encoding="utf-8"))
     missing = []
     for f in fields:
-        pattern = rf'this\.{controller_var}\.{f}\s*='
-        if not re.search(pattern, text):
+        pattern = rf'^\s*this\.{controller_var}\.{f}\s*='
+        if not re.search(pattern, text, re.MULTILINE):
             missing.append(f)
     return missing
 
