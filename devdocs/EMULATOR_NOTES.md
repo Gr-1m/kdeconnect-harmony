@@ -203,3 +203,26 @@ v20260818 预构建镜像**无此问题**（hdc 直接可连，已实测）。�
 4. `hdc` 直接连宿主模拟器调试（`hdc tconn 127.0.0.1:5555`）
 
 **Win10 VM 路线**（第一、四节）已搁置：Hyper-V 嵌套坏机过一次，且确认不需要 IDE 后不再优先；仅当 ohemu 的 OpenHarmony 社区版 API 不满足需求、需要商用 HarmonyOS NEXT 模拟器或 DevEco IDE 特有功能时再启动（按第四节清单 + 快照纪律操作）。
+
+## 9. hypium（ohosTest）测试在 ohemu 上执行（2026-10-08 实测通过，27/27）
+
+D1（T2 PacketRouter + T6/caps）等**仪器化测试**可在本机 ohemu 上真跑，全流程（实测通过）：
+
+```bash
+# 1) 构建测试 HAP（与 DevEco 同口径）
+devecocli build --modules entry@ohosTest          # 产出 entry/build/default/outputs/ohosTest/entry-ohosTest-unsigned.hap
+# 2) 签名测试 HAP（tools/sign-debug.sh 已支持路径覆盖）
+HAP_UNSIGNED=$PWD/entry/build/default/outputs/ohosTest/entry-ohosTest-unsigned.hap \
+HAP_SIGNED=$PWD/sign/entry-ohosTest-signed.hap tools/sign-debug.sh sign-only
+# 3) 安装（前提：主 HAP 已装，bundle 同名）
+hdc install -r sign/entry-ohosTest-signed.hap
+# 4) 执行
+hdc shell "aa test -b org.kde.kdeconnect -m entry_test -s unittest OpenHarmonyTestRunner -s timeout 120000"
+```
+
+**判读**：末行应为 `OHOS_REPORT_RESULT: stream=Tests run: N, Failure: 0, Error: 0, Pass: N, Ignore: 0`
+与 `TestFinished-ResultCode: 0`；逐用例有 `OHOS_REPORT_STATUS: class=… test=… STATUS_CODE: 0`。
+
+**要点**：① 测试模块名是 `entry_test`（见 `entry/src/ohosTest/module.json5`），runner 为 `OpenHarmonyTestRunner`；
+② 本流程**不需要 uinput**（不依赖点按），是 ohemu 上少见的"真执行"通道；③ `ohosTest/resources/.../icon.png`
+等二进制必须按 blob 提交（勿经文本化钩子改写）。
