@@ -95,8 +95,11 @@ EOF
 sign_hap() {
   cd "$SIGN_DIR"
   local in_hap out_hap
-  in_hap="$PROJECT_ROOT/entry/build/default/outputs/default/entry-default-unsigned.hap"
-  out_hap="$SIGN_DIR/entry-debug-signed.hap"
+  # 默认主 HAP；可用环境变量覆盖以签**测试 HAP**（hypium 仪器化用），
+  # 例：HAP_UNSIGNED=$PROJECT_ROOT/entry/build/default/outputs/ohosTest/entry-ohosTest-unsigned.hap \
+  #     HAP_SIGNED=$SIGN_DIR/entry-ohosTest-signed.hap tools/sign-debug.sh sign-only
+  in_hap="${HAP_UNSIGNED:-$PROJECT_ROOT/entry/build/default/outputs/default/entry-default-unsigned.hap}"
+  out_hap="${HAP_SIGNED:-$SIGN_DIR/entry-debug-signed.hap}"
   java -jar "$TOOL" sign-app -mode localSign \
     -keyAlias "openharmony application release" -keyPwd "$KS_PWD" \
     -appCertFile app-release-chain.cer \
