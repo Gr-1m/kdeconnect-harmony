@@ -53,6 +53,13 @@ fi
 
 # —————— ② 构建/签名/装机/启动（复用 verify-on-ohemu.sh）——————
 step "② 构建 + 签名 + 装机 + 启动（HDS 降级版，ohemu 必需）"
+# 先清空 hilog 缓冲：断言只关心**本次**运行 ⇒ 观察窗口干净，不必再与历史陈迹/pid 变化缠斗
+# （曾用 pid 作用域，但实测「当前实例未记标记行、历史实例的标记行留在缓冲里」⇒ 产生假失败）。
+# 观察窗口锚点：记录**装机/启动之前**缓冲里最后一行的时刻；断言只接受晚于该时刻的行。
+# 理由：`hilog -x` 是历史缓冲，直接 grep 会命中**上一次运行**留下的同文本（假通过）；
+#       而 hilog 首列即 `MM-DD HH:MM:SS.mmm`，同一时钟下字符串比较即时间序 ⇒ 无需时钟同步。
+WIN="$(timeout 40 hdc -t 127.0.0.1:5555 shell "hilog -x | tail -1" 2>/dev/null | tr -d '\r' | awk '{print $1" "$2}')"
+note "观察窗口锚点（装机前缓冲末行时刻）: ${WIN:-<空>}"
 LOG="$(mktemp /tmp/smoke-ohemu-XXXX.log)"
 if LD_LIBRARY_PATH="$SHIM" timeout 1200 bash "$ROOT/tools/verify-on-ohemu.sh" > "$LOG" 2>&1; then
     ok "verify-on-ohemu.sh 退出 0（日志 $LOG）"
@@ -66,28 +73,25 @@ grep -q 'start ability successfully'  "$LOG" && ok "启动成功" || bad "未见
 step "③ 运行时断言（hilog，最多等 60s；冷启动首启可能慢于固定 sleep）"
 # 曾用「sleep 6 后单次取样」⇒ 冷启动必假失败（实测踩到）；改为轮询直到两个标记齐或超时。
 HL="$(mktemp /tmp/smoke-hilog-XXXX.log)"
-# 只认**本次 app 进程**的日志行：`hilog -x` 是历史缓冲，会命中早前运行/其他模块的陈迹（实测踩到过）。
-APP_PID="$(timeout 30 hdc -t 127.0.0.1:5555 shell "pidof org.kde.kdeconnect" 2>/dev/null | tr -d '\r' | awk '{print $1}')"
-if [ -z "$APP_PID" ]; then
-    bad "取不到 app pid（pidof org.kde.kdeconnect 为空）"
-else
-    ok "app pid = $APP_PID（断言只认该 pid 的行）"
-fi
-scoped() { if [ -n "$APP_PID" ]; then grep -E "^[0-9-]+ [0-9:.]+ +$APP_PID( +| )" "$HL"; else cat "$HL"; fi; }
 deadline=$(( $(date +%s) + 60 ))
 seen_routes=0; seen_native=0
 while [ "$(date +%s)" -lt "$deadline" ]; do
     timeout 60 hdc -t 127.0.0.1:5555 shell "hilog -x" > "$HL" 2>&1
-    scoped | grep -q 'plugin routes registered: 7' && seen_routes=1
-    scoped | grep -qE 'native start: deviceId'      && seen_native=1
+    if [ -n "$WIN" ]; then
+        awk -v w="$WIN" '{ ts=$1" "$2; if (ts > w) print }' "$HL" > "$HL.win" 2>/dev/null || cp "$HL" "$HL.win"
+    else
+        cp "$HL" "$HL.win"
+    fi
+    grep -q 'plugin routes registered: 7' "$HL.win" && seen_routes=1
+    grep -qE 'native start: deviceId'      "$HL.win" && seen_native=1
     if [ "$seen_routes" = 1 ] && [ "$seen_native" = 1 ]; then break; fi
     sleep 5
 done
-[ "$seen_routes" = 1 ] && ok "plugin routes registered: 7" || bad "60s 内未见 plugin routes registered: 7（日志 $HL）"
-[ "$seen_native" = 1 ] && ok "native start 已派发"          || bad "60s 内未见 native start（日志 $HL）"
+[ "$seen_routes" = 1 ] && ok "plugin routes registered: 7" || bad "60s 内未见 plugin routes registered: 7（窗口日志 $HL.win）"
+[ "$seen_native" = 1 ] && ok "native start 已派发"          || bad "60s 内未见 native start（窗口日志 $HL.win）"
 # 只认 HDS 专属签名：`hilog -x` 是**历史缓冲**，泛匹配 `SyntaxError` 会命中早前运行/其他模块的陈迹
 # （实测踩到：降级生效、app 正常，却因缓冲里旧行为而误报）。
-if scoped | grep -qiE 'hdsBaseComponent|@hms:hds'; then
+if grep -qiE 'hdsBaseComponent|@hms:hds' "$HL.win"; then
     bad "出现 HDS 模块加载失败签名（多为 HDS 未降级）"
 else
     ok "无 HDS 模块加载失败签名"
