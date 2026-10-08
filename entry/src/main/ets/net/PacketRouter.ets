@@ -81,7 +81,7 @@ export class PacketRouter {
     this.logFn = logFn;
     this.callbacks = callbacks;
     this.sendFn = sendFn !== undefined ? sendFn
-      : (deviceId: string, json: string) => native.sendPacket(deviceId, json);
+      : (deviceId: string, json: string): boolean => native.sendPacket(deviceId, json);
   }
 
   // ---- 供 UI 调用的配对动作 ----
