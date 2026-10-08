@@ -9,6 +9,10 @@
 
 #include <cstdio>
 #include <cstring>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 #include <string>
 
 #include "../net/cert_gen.h"
@@ -545,6 +549,102 @@ TEST_CASE(napiEventQueueDepthInvariant)
     napi_bridge::eventDequeued();
     napi_bridge::eventDequeued();
     CHECK(eventQueueDepth().load() == 0);
+}
+
+
+// —————— T8：两轮择链（findListeningTcpPort）语义锁定（MSG112 T8；P2 后半实施前必须先写）——————
+// 锁定语义：① 端口**升序**扫描 ⇒ 命中区间内**最小**可用端口；② 无监听者 ⇒ 返回 0；
+//           ③ 非法入参（非 IP 的 host / minPort==0 / maxPort<minPort）⇒ 返回 0。
+// 未作断言（时序路径，本机无法确定性构造）：两轮预算语义（第一轮用调用者预算、第二轮给仍在握手的
+//   连接 50ms 收尾窗口）与「SO_ERROR 读即清除 ⇒ 每个 fd 只判定一次」。后者是真实事故（第一次读走
+//   ECONNREFUSED、第二次误判成功），实现处有详细注释（net/net_util.cpp:101-130），改动请一并复核此处。
+
+namespace {
+
+int listenOnLoopback(uint16_t port)
+{
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return -1;
+    }
+    const int one = 1;
+    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    struct sockaddr_in a {};
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    a.sin_port = htons(port);
+    if (::bind(fd, reinterpret_cast<struct sockaddr *>(&a), sizeof(a)) != 0 || ::listen(fd, 8) != 0) {
+        ::close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+uint16_t portOf(int fd)
+{
+    struct sockaddr_in a {};
+    socklen_t len = sizeof(a);
+    if (::getsockname(fd, reinterpret_cast<struct sockaddr *>(&a), &len) != 0) {
+        return 0;
+    }
+    return ntohs(a.sin_port);
+}
+
+} // namespace
+
+TEST_CASE(findListeningTcpPortFindsSmallestInRange)
+{
+    const int fd1 = listenOnLoopback(0);            // 内核分配一个端口
+    CHECK(fd1 >= 0);
+    if (fd1 < 0) {
+        return;
+    }
+    const uint16_t p1 = portOf(fd1);
+    // 再找一个**更高**的端口并监听（升序扫描 ⇒ 必须返回 p1）
+    uint16_t p2 = 0;
+    int fd2 = -1;
+    for (uint16_t cand = static_cast<uint16_t>(p1 + 1); cand < static_cast<uint16_t>(p1 + 40); ++cand) {
+        const int f = listenOnLoopback(cand);
+        if (f >= 0) {
+            fd2 = f;
+            p2 = cand;
+            break;
+        }
+    }
+    CHECK(fd2 >= 0);
+    if (fd2 >= 0 && p2 > p1) {
+        const uint16_t got = findListeningTcpPort("127.0.0.1", p1, p2, 300);
+        if (got != p1) {
+            std::fprintf(stderr, "FAIL %s:%d findListeningTcpPort 未返回区间内最小端口（期望 %u，实际 %u，p2=%u）\n",
+                         __FILE__, __LINE__, (unsigned)p1, (unsigned)got, (unsigned)p2);
+        }
+        CHECK(got == p1);
+    }
+    ::close(fd2 >= 0 ? fd2 : -1);
+    ::close(fd1);
+}
+
+TEST_CASE(findListeningTcpPortReturnsZeroWithoutListener)
+{
+    // 取一个刚释放的端口（bind(0) 后立即关闭）；区间只有它一个 ⇒ 无监听者 ⇒ 0
+    const int probe = listenOnLoopback(0);
+    CHECK(probe >= 0);
+    if (probe < 0) {
+        return;
+    }
+    const uint16_t p = portOf(probe);
+    ::close(probe);
+    CHECK(findListeningTcpPort("127.0.0.1", p, p, 120) == 0);
+}
+
+TEST_CASE(findListeningTcpPortRejectsBadArguments)
+{
+    // 非 IP 的 host（只支持点分 IPv4；主机名不支持）
+    CHECK(findListeningTcpPort("localhost", 17000, 17010, 50) == 0);
+    CHECK(findListeningTcpPort("not-an-ip", 17000, 17010, 50) == 0);
+    // minPort == 0 与 maxPort < minPort
+    CHECK(findListeningTcpPort("127.0.0.1", 0, 100, 50) == 0);
+    CHECK(findListeningTcpPort("127.0.0.1", 200, 100, 50) == 0);
 }
 
 int main()
