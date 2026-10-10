@@ -657,9 +657,57 @@
       "name": "files_history_clear",
       "value": "清除历史"
     },
-    {
-      "name": "toast_history_cleared",
-      "value": "已清除接收历史"
-    }
-  ]
-}
+      {
+        "name": "toast_history_cleared",
+        "value": "已清除接收历史"
+      },
+      {
+        "name": "remote_input_title",
+        "value": "远程输入"
+      },
+      {
+        "name": "remote_input_touchpad",
+        "value": "触控板"
+      },
+      {
+        "name": "remote_input_keyboard",
+        "value": "键盘"
+      },
+      {
+        "name": "remote_input_kb_ready",
+        "value": "对端键盘就绪"
+      },
+      {
+        "name": "remote_input_kb_idle",
+        "value": "对端键盘未就绪"
+      },
+      {
+        "name": "remote_input_touch_hint",
+        "value": "拖动移动 · 点击左键 · 双指滚动"
+      },
+      {
+        "name": "remote_input_btn_left",
+        "value": "左键"
+      },
+      {
+        "name": "remote_input_btn_middle",
+        "value": "中键"
+      },
+      {
+        "name": "remote_input_btn_right",
+        "value": "右键"
+      },
+      {
+        "name": "remote_input_kb_hint",
+        "value": "输入的文字将作为按键发送"
+      },
+      {
+        "name": "remote_input_special_keys",
+        "value": "特殊键"
+      },
+      {
+        "name": "remote_input_no_device",
+        "value": "无已连接设备"
+      }
+    ]
+  }
