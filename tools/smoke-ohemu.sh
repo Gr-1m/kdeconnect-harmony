@@ -98,6 +98,17 @@ else
 fi
 
 # —————— ④ 还原降级 ——————
+# 守卫：检查工作区是否有未提交改动（DevEco MSG138 §4.1 建议，避免静默销毁）
+if [ -n "$( cd "$ROOT" && git status --porcelain )" ]; then
+    note "工作区有未提交改动 ⇒ stash 暂存（避免静默销毁）"
+    ( cd "$ROOT" && git stash push -u -m "smoke-ohemu.sh auto-stash $(date +%Y%m%d-%H%M%S)" 2>&1 | tail -2 | sed 's/^/    /' )
+    if [ -z "$( cd "$ROOT" && git status --porcelain )" ]; then
+        ok "工作区已暂存（恢复用 git stash pop）"
+    else
+        bad "stash 未完全清空工作区 ⇒ 中止，请手工核对"
+        exit 1
+    fi
+fi
 step "④ 还原 Index.ets（降级态不可提交）"
 ( cd "$ROOT" && git checkout -- entry/src/main/ets/pages/Index.ets 2>/dev/null )
 if [ -z "$( cd "$ROOT" && git status --porcelain | grep 'Index.ets' )" ]; then
