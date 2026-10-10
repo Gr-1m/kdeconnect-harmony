@@ -128,10 +128,12 @@ export default class EntryAbility extends UIAbility {
     hilog.info(0x0000, 'testTag', '%s', 'Ability onBackground');
     // KI-1 ①：切后台即申请短时任务，避免真机 ~18s 后被 OnAppFrozen 冻结（链路/在途传输全废）。
     // 一次后台会话只申请一次；失败（如配额耗尽 9900002）只记日志并降级，不重试风暴。
+    // reason 用**英文**（裁决：CodeArts MSG131 §3 #2 / AtomCode 两实例同建议）——该串会进系统电源
+    // 管理/任务面板，英文可避免非中文环境下的显示与编码问题。
     try {
       if (this.transientTaskId < 0) {
         const info: backgroundTaskManager.DelaySuspendInfo =
-          backgroundTaskManager.requestSuspendDelay('KDE Connect 保持链路与传输', () => {
+          backgroundTaskManager.requestSuspendDelay('KDE Connect: keep link and transfers alive', () => {
             hilog.info(0x0000, 'testTag', '%s', 'transient task about to expire');
           });
         this.transientTaskId = info.requestId;
