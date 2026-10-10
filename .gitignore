@@ -65,3 +65,6 @@ target/
 .codegraph/
 # DevEco IDE 产物目录（PROCESS §9.1，机器本地）
 /.deveco/
+
+# 评审车道产物（AtomCode 撰写，按用户 2026-10-10 指示**不纳入提交**；文件本身经 Syncthing 同步）
+devdocs/REVIEW_*.md
