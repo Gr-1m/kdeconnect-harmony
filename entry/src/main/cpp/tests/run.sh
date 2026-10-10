@@ -128,3 +128,14 @@ for h in ../net/*.h ../payload/*.h; do
 done
 echo "header self-check: failed=$hdr_fail (0=全部自足)"
 [ "$hdr_fail" = 0 ]
+
+# —— 装配契约完整性（CodeArts MSG129 F2；AtomChecker MSG119 建议2）——
+# 检查 DeviceController/DeviceActionController 声明的注入回调是否都在 Index.ets 装配。
+# 说明：本步骤读 ArkTS 侧文件，但按裁决作为 **C++ 门禁的强制收尾步骤**（本仓 C++ shim 与 ArkTS 装配同源耦合）。
+# 失败即门禁失败；脚本缺失同样失败（不得静默跳过——「假通过」已在本轮被证明是真风险）。
+INJ="$PWD/../../../../../tools/check-injection-contract.py"
+if [ ! -f "$INJ" ]; then
+    echo "injection contract checker not found: tools/check-injection-contract.py"
+    exit 1
+fi
+python3 "$INJ"

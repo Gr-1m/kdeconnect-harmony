@@ -45,13 +45,13 @@ inline ArgCheck checkArg(bool present, ArgTag got, ArgTag want)
     return got == want ? ArgCheck::Ok : ArgCheck::WrongType;
 }
 
-// 纯文案：与既有 TypeError 文案**逐字一致**（测试即锁定该约定）。
-// 注：前缀 "start(config)" 为历史遗留（原实现只在 JsStart 内使用后被各导出复用）；
-//     是否改为「按导出名»由 CodeArts 裁决，本层只负责保持现有文案不变。
-inline std::string fieldTypeErrorText(const char *field, const char *want)
+// 纯文案：`op` = **导出名标签**（如 "start(config)" / "sendPayload"），由调用方按导出传入。
+// 背景（CodeArts MSG127 裁决1）：前缀曾硬编码 "start(config)"；虽当时字段助手仅 JsStart 使用（未实际串错），
+// 但助手是共享 static，将来被别的导出复用即会显示错误前缀 ⇒ 参数化以杜绝。文案格式与旧实现逐字一致。
+inline std::string fieldTypeErrorText(const char *op, const char *field, const char *want)
 {
     char msg[160];
-    std::snprintf(msg, sizeof(msg), "start(config): '%s' 缺失或类型错误（需要 %s）", field, want);
+    std::snprintf(msg, sizeof(msg), "%s: '%s' 缺失或类型错误（需要 %s）", op, field, want);
     return std::string(msg);
 }
 

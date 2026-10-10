@@ -378,19 +378,22 @@ TEST_CASE(napiArgCheckTruthTable)
 
 TEST_CASE(napiArgTypeErrorMessageLocked)
 {
-    // 逐字锁定：napi_exports.cpp 抛出的 TypeError 文本必须与此完全一致
-    CHECK(napiargs::fieldTypeErrorText("deviceId", "string") ==
+    // 逐字锁定：napi_exports.cpp 抛出的 TypeError 文本必须与此完全一致（op = 导出名标签）
+    CHECK(napiargs::fieldTypeErrorText("start(config)", "deviceId", "string") ==
           "start(config): 'deviceId' 缺失或类型错误（需要 string）");
     // start(config) 的 5 个字符串字段 + 1 个数字字段：字段名与期望类型都必须出现在文案里
     const char *strFields[] = {"deviceId", "deviceName", "deviceType", "certPem", "keyPem"};
     for (const char *f : strFields) {
-        const std::string msg = napiargs::fieldTypeErrorText(f, "string");
+        const std::string msg = napiargs::fieldTypeErrorText("start(config)", f, "string");
         CHECK(msg.find(f) != std::string::npos);
         CHECK(msg.find("需要 string") != std::string::npos);
     }
-    const std::string port = napiargs::fieldTypeErrorText("tcpPort", "number");
+    const std::string port = napiargs::fieldTypeErrorText("start(config)", "tcpPort", "number");
     CHECK(port.find("tcpPort") != std::string::npos);
     CHECK(port.find("需要 number") != std::string::npos);
+    // 裁决1：标签必须按导出走 —— 非 start 的标签要原样出现在文案里（杜绝历史硬编码串错）
+    CHECK(napiargs::fieldTypeErrorText("sendPayload", "host", "string") ==
+          "sendPayload: 'host' 缺失或类型错误（需要 string）");
 }
 
 
