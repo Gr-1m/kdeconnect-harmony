@@ -515,4 +515,37 @@ mod tests {
         assert!(pem_to_der(&cert_pem, "EC PRIVATE KEY").is_empty());
         assert!(pem_to_der(&key_pem, "CERTIFICATE").is_empty());
     }
+    // —————— T4（续）：SAS 黄金向量（跨端核对）——————
+    // 源：`docs/kdeconnect-oh/06-coding-standards.md §2.5`（两把 P-256 公钥 SPKI DER，由 OpenSSL 生成、
+    // `openssl dgst -sha256` 独立复核；AtomCode 另以 python3 独立复算吻合，见其 MSG138 §一.3）。
+    // 意义：把「与上游三端**同一拼接顺序**」钉成回归网——顺序写反会得到 71A26CF5（哨兵断言必须 !=）。
+    const SAS_A_SPKI_DER: &str = "3059301306072a8648ce3d020106082a8648ce3d0301070342000488f63038e53859087a4a092f00d1f0f7eb082d7d2479bfa7dc1226a9a58ca84d9715365f20dbe8b11e5f4a5bf8d8dee881a4c16612bca9740c40fccb79f0efe1";
+    const SAS_B_SPKI_DER: &str = "3059301306072a8648ce3d020106082a8648ce3d03010703420004a5fdc7ce3f137c788a6450ff797a4444e116af1c55b3244a8ea14fe0738cbcf9cce0dc1b921641316635d0c191f62b06ab96d34b38de2840b5877b2a31bf6139";
+    const SAS_TS: i64 = 1_700_000_000;
+
+    fn unhex_local(s: &str) -> Vec<u8> {
+        let b = s.as_bytes();
+        (0..b.len() / 2)
+            .map(|i| {
+                let hi = (b[2 * i] as char).to_digit(16).expect("hex") as u8;
+                let lo = (b[2 * i + 1] as char).to_digit(16).expect("hex") as u8;
+                (hi << 4) | lo
+            })
+            .collect()
+    }
+
+    #[test]
+    fn verification_code_matches_upstream_golden_vector() {
+        let a = unhex_local(SAS_A_SPKI_DER);
+        let b = unhex_local(SAS_B_SPKI_DER);
+        assert_eq!(a.len(), 91, "SPKI DER 长度应为 91 字节");
+        assert_eq!(b.len(), 91);
+        // 期望值（较大者在前 ⇒ B||A||"1700000000"）
+        assert_eq!(compute_verification_code(&a, &b, SAS_TS), "A82E8F8A");
+        // 对称：交换入参结果不变（签名语义即 order-independent）
+        assert_eq!(compute_verification_code(&b, &a, SAS_TS), "A82E8F8A");
+        // 顺序写反的哨兵：实现若丢掉「大者在前」的排序，会命中该值 ⇒ 必须不等
+        assert_ne!(compute_verification_code(&a, &b, SAS_TS), "71A26CF5");
+    }
+
 }
