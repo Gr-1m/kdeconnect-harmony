@@ -41,6 +41,8 @@ export class DeviceActionController {
   setDeviceSection: (section: number) => void = () => {};
   pruneActionGate: () => void = () => {};
   getMprisPluginOf: (deviceId: string) => MprisPlugin | undefined = () => undefined;
+  // 远程输入（阶段4 方向B）：页面负责取该设备的 RemoteInputPlugin 并打开全屏对话框
+  openRemoteInputDialog: (deviceId: string) => void = () => {};
 
   onDeviceAction(key: string): void {
     if (key === 'send_file') {
@@ -96,6 +98,13 @@ export class DeviceActionController {
       this.setRunCommandState(id, this.commandsOf(id), true);
       this.log(`run command dialog: ${this.commandsOf(id).length} entries for ${id}`);
       this.clearCardBusy('run_command');
+      return;
+    }
+    if (key === 'remote_input') {
+      // 触控板/键盘全屏对话框（AtomCode MSG134 §三.1 裁决的入口形态）。
+      // 手势节流与组帧分别在 MousepadInputPipeline / RemoteInputPlugin，本层只负责开合。
+      this.openRemoteInputDialog(id);
+      this.clearCardBusy('remote_input');
       return;
     }
     if (key === 'media') {

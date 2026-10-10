@@ -8,6 +8,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import { RemoteInputPlugin } from '../../../main/ets/plugins/RemoteInputPlugin';
 import { MousepadInputPipeline, MousepadButton } from '../../../main/ets/plugins/MousepadInput';
+import { PluginEvent } from '../../../main/ets/plugins/PluginEvent';
 
 const DEVICE: string = 'peer1111111111111111111111111111';
 const PACKET_REQUEST: string = 'kdeconnect.mousepad.request';
@@ -82,7 +83,7 @@ function bound(cap: Capture): RemoteInputPlugin {
     return true;
   }, (m: string): void => {
     cap.logs.push(m);
-  }, (deviceId: string, ev): void => {
+  }, (deviceId: string, ev: PluginEvent): void => {
     cap.events.push({ kind: ev.kind, data: ev.text ?? '' });
   });
   return p;

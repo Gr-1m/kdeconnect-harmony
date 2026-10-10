@@ -677,9 +677,57 @@
       "name": "files_history_clear",
       "value": "Clear history"
     },
-    {
-      "name": "toast_history_cleared",
-      "value": "Received history cleared"
-    }
-  ]
-}
+      {
+        "name": "toast_history_cleared",
+        "value": "Received history cleared"
+      },
+      {
+        "name": "remote_input_title",
+        "value": "Remote input"
+      },
+      {
+        "name": "remote_input_touchpad",
+        "value": "Touchpad"
+      },
+      {
+        "name": "remote_input_keyboard",
+        "value": "Keyboard"
+      },
+      {
+        "name": "remote_input_kb_ready",
+        "value": "Peer keyboard ready"
+      },
+      {
+        "name": "remote_input_kb_idle",
+        "value": "Peer keyboard idle"
+      },
+      {
+        "name": "remote_input_touch_hint",
+        "value": "Drag to move - tap to click - two fingers to scroll"
+      },
+      {
+        "name": "remote_input_btn_left",
+        "value": "Left"
+      },
+      {
+        "name": "remote_input_btn_middle",
+        "value": "Middle"
+      },
+      {
+        "name": "remote_input_btn_right",
+        "value": "Right"
+      },
+      {
+        "name": "remote_input_kb_hint",
+        "value": "Typed text is sent as keystrokes"
+      },
+      {
+        "name": "remote_input_special_keys",
+        "value": "Special keys"
+      },
+      {
+        "name": "remote_input_no_device",
+        "value": "No connected device"
+      }
+    ]
+  }
