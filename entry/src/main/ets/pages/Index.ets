@@ -25,6 +25,7 @@ import { ConnectivityReportPlugin } from '../plugins/ConnectivityReportPlugin';
 import { SystemVolumePlugin } from '../plugins/SystemVolumePlugin';
 import { MprisPlugin } from '../plugins/MprisPlugin';
 import { RemoteInputPlugin } from '../plugins/RemoteInputPlugin';
+import { MousepadInputPipeline, MousepadButton } from '../plugins/MousepadInput';
 import { NotificationPlugin } from '../plugins/NotificationPlugin';
 import { DeviceItem, BatteryItem } from '../model/DeviceModels';
 import { PayloadTransfer } from '../model/PayloadModels';
@@ -37,6 +38,7 @@ import { PairConfirmDialog } from '../components/PairConfirmDialog';
 import { RunCommandDialog } from '../components/RunCommandDialog';
 import { MprisDialog } from '../components/MprisDialog';
 import { ReceivedFilesDialog } from '../components/ReceivedFilesDialog';
+import { RemoteInputDialog } from '../components/RemoteInputDialog';
 import { NotificationHelper } from '../common/NotificationHelper';
 import { NetworkWatcher } from '../common/NetworkWatcher';
 import { colorModeOf, languageOf, LANG_SYSTEM, THEME_FOLLOW_SYSTEM, systemDeviceName } from '../common/AppSettings';
@@ -112,6 +114,14 @@ struct Index {
   @State pairSession: PairSession = new PairSession();
   // 插件事件路由表（阶段 2 步骤 4，state/PluginEventBus.ets）：本批先加字段，装配在下一步。
   private eventBus: PluginEventBus = new PluginEventBus();
+  // 远程输入（阶段4 方向B）：入口 = 第 6 个功能卡片（DevicesTab 已有 `remote_input`），载体 = 全屏对话框
+  // （AtomCode MSG134 §三.1 裁决的入口形态）。
+  @State remoteInputOpen: boolean = false;
+  @State remoteInputReady: boolean = false;   // 对端 `kdeconnect.mousepad.keyboardstate` 的 state
+  @State remoteInputDeviceId: string = '';
+  // 该设备的触控板输入管线（增量换算 + 合并节流，输出到 RemoteInputPlugin 的 sink）；
+  // 仅在对话框打开期间持有 ⇒ 关闭即释放，不跨设备串用。
+  private remoteInputPipeline: MousepadInputPipeline | undefined = undefined;
   // 顶部临时提示（连接中/连接成功/连接失败/配对成功…）
   @State noticeKey: string = '';
   // 手机窄屏侧栏抽屉：**必须在根 Stack（全屏）渲染**——放在内容区会因 padding(16) 内缩，
@@ -338,6 +348,12 @@ struct Index {
     this.eventBus.on('mpris.playerUpdate', (id: string, ev: PluginEvent): void => { this.onMprisPlayerUpdate(id, ev); });
     this.eventBus.on('systemvolume.sinks', (id: string, ev: PluginEvent): void => { this.onSystemVolumeSinks(id, ev); });
     this.eventBus.on('battery', (id: string, ev: PluginEvent): void => { this.pluginHandlers.onBattery(id, ev); });
+    // 远程输入：对端键盘 ready/idle（仅当前对话框设备有效；design §1.2/§3）
+    this.eventBus.on('mousepadKeyboardState', (id: string, ev: PluginEvent): void => {
+      if (this.remoteInputOpen && id === this.remoteInputDeviceId) {
+        this.remoteInputReady = ev.text === 'ready';
+      }
+    });
 
     // 阶段 3 批次 1 装配（步骤 5c/5d）：把页面能力注入抽出的模块（模块自身不碰 Context/UI/native）。
     // 5c NotificationHelper：日志与提示文案在模块里，页面只提供"必须有 Context/UI 才能做"的四件事。
@@ -587,6 +603,7 @@ struct Index {
     this.actionController.setDeviceSection = (section: number): void => { this.deviceController.deviceSection = section; };
     this.actionController.pruneActionGate = (): void => { this.pruneActionGate(); };
     this.actionController.getMprisPluginOf = (deviceId: string): MprisPlugin | undefined => this.mprisController.mprisPluginOf(deviceId);
+    this.actionController.openRemoteInputDialog = (deviceId: string): void => { this.openRemoteInput(deviceId); };
     this.actionController.getRunCommandDeviceId = (): string => this.runCommandDeviceId;
     // 装配自检：注册数与清单一致（7）。**同时写 hilog**（页面 log() 只进 app 内 LogStore，机器不可见）
     // ⇒ 漏注册/多注册可在 `hdc shell hilog` 里直接机检（devdocs/PLUGIN_ROUTE_INVENTORY.md §5）。
@@ -809,6 +826,49 @@ struct Index {
    * 各 kind 的处理器在装配期注册（见 aboutToAppear/initPluginRoutes）；未注册 kind 走 bus 兜底（只记日志，绝不静默丢弃）。
    * 路由清单与不变量见 devdocs/PLUGIN_ROUTE_INVENTORY.md。
    */
+  // ---- 远程输入（阶段4 方向B / B4 接线）----
+  // 打开：解析目标设备 → 取该设备的 RemoteInputPlugin 输入管线 → 亮出全屏对话框。
+  // 设备目标（AtomCode MSG134 §三.1）：selectedDeviceId → 回退首个"已配对且在线" → 无则 toast。
+  private openRemoteInput(deviceId: string): void {
+    let target: string = deviceId;
+    if (target.length === 0) {
+      const live: DeviceItem[] = this.deviceController.connectedShown();
+      if (live.length === 0) {
+        this.notify.toast(this.notify.resText($r('app.string.remote_input_no_device').id));
+        return;
+      }
+      target = live[0].id;
+    }
+    let pipe: MousepadInputPipeline | undefined = undefined;
+    const list: PluginBase[] = this.pluginHost === undefined ? [] : this.pluginHost.pluginsFor(target);
+    for (const p of list) {
+      if (p instanceof RemoteInputPlugin) {
+        pipe = p.input();
+      }
+    }
+    if (pipe === undefined) {
+      this.notify.toast(this.notify.resText($r('app.string.toast_plugin_unavailable').id));
+      this.notify.log(`remote input unavailable for ${target} (RemoteInputPlugin not loaded)`);
+      return;
+    }
+    this.remoteInputPipeline = pipe;
+    this.remoteInputDeviceId = target;
+    this.remoteInputReady = false;   // 置为 idle，等对端 keyboardstate 刷新
+    this.remoteInputOpen = true;
+    this.notify.log(`remote input opened for ${target}`);
+  }
+
+  private closeRemoteInput(): void {
+    const pipe: MousepadInputPipeline | undefined = this.remoteInputPipeline;
+    if (pipe !== undefined) {
+      // 手势中途关窗：丢弃残留增量（不补发），避免下次打开"继承"上一次的位移
+      pipe.cancelDrag();
+    }
+    this.remoteInputPipeline = undefined;
+    this.remoteInputOpen = false;
+    this.remoteInputReady = false;
+  }
+
   private onPluginEvent(deviceId: string, ev: PluginEvent): void {
     this.eventBus.dispatch(deviceId, ev);
   }
@@ -1473,6 +1533,66 @@ struct Index {
       if (this.payloadController.dialogOpen) {
         ReceivedFilesDialog({
           payload: this.payloadController
+        })
+      }
+
+      // 远程输入全屏对话框（阶段4 方向B / B2+B3；components/RemoteInputDialog.ets）
+      // ⚠️ 组件自带全屏遮罩，这里不要再包 Column/遮罩。手势 → 管线（增量换算 + 60Hz 合并节流）→ 插件 sink。
+      if (this.remoteInputOpen) {
+        RemoteInputDialog({
+          deviceName: this.deviceController.displayNameOf(this.remoteInputDeviceId),
+          keyboardReady: this.remoteInputReady,
+          onPanBegin: (): void => {
+            const pipe: MousepadInputPipeline | undefined = this.remoteInputPipeline;
+            if (pipe !== undefined) {
+              pipe.beginDrag();
+            }
+          },
+          onPanUpdate: (offsetX: number, offsetY: number): void => {
+            const pipe: MousepadInputPipeline | undefined = this.remoteInputPipeline;
+            if (pipe !== undefined) {
+              pipe.dragTo(offsetX, offsetY, Date.now());
+            }
+          },
+          onPanEnd: (): void => {
+            const pipe: MousepadInputPipeline | undefined = this.remoteInputPipeline;
+            if (pipe !== undefined) {
+              pipe.endDrag(Date.now());
+            }
+          },
+          onPanCancel: (): void => {
+            const pipe: MousepadInputPipeline | undefined = this.remoteInputPipeline;
+            if (pipe !== undefined) {
+              pipe.cancelDrag();
+            }
+          },
+          onTap: (button: MousepadButton): void => {
+            const pipe: MousepadInputPipeline | undefined = this.remoteInputPipeline;
+            if (pipe !== undefined) {
+              pipe.tap(button);
+            }
+          },
+          onScroll: (dx: number, dy: number): void => {
+            const pipe: MousepadInputPipeline | undefined = this.remoteInputPipeline;
+            if (pipe !== undefined) {
+              pipe.scrollBy(dx, dy);
+            }
+          },
+          onTypeText: (text: string): void => {
+            const pipe: MousepadInputPipeline | undefined = this.remoteInputPipeline;
+            if (pipe !== undefined) {
+              pipe.typeText(text);
+            }
+          },
+          onSpecialKey: (code: number): void => {
+            const pipe: MousepadInputPipeline | undefined = this.remoteInputPipeline;
+            if (pipe !== undefined) {
+              pipe.typeSpecialKey(code);
+            }
+          },
+          onClose: (): void => {
+            this.closeRemoteInput();
+          }
         })
       }
 
