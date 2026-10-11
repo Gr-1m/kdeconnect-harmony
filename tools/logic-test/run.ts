@@ -12,10 +12,12 @@ import mousepadThrottleTest from './MousepadThrottle.test';
 import mousepadInputTest from './MousepadInput.test';
 import remoteInputKeymapTest from './RemoteInputKeymap.test';
 import remoteInputPluginTest from './RemoteInputPlugin.test';
+import notificationTest from './Notification.test';
 
 mousepadThrottleTest();
 mousepadInputTest();
 remoteInputKeymapTest();
 remoteInputPluginTest();
+notificationTest();
 
 runAll();

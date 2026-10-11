@@ -47,6 +47,7 @@ $utf8 = New-Object System.Text.UTF8Encoding($false)   # 无 BOM；显式编码 �
 
 $pluginsDir = Join-Path $repo 'entry\src\main\ets\plugins'
 $modelDir = Join-Path $repo 'entry\src\main\ets\model'
+$commonDir = Join-Path $repo 'entry\src\main\ets\common'
 $testDir = Join-Path $repo 'entry\src\ohosTest\ets\test'
 
 # 扁平复制的清单（源文件 + 目的名）
@@ -59,10 +60,13 @@ $copies = @(
   @{ from = "$pluginsDir\RemoteInputPlugin.ets";  to = 'RemoteInputPlugin.ts' },
   @{ from = "$modelDir\MprisModels.ets";          to = 'MprisModels.ts' },
   @{ from = "$modelDir\SystemVolumeModels.ets";   to = 'SystemVolumeModels.ts' },
+  @{ from = "$modelDir\NotificationModels.ets";   to = 'NotificationModels.ts' },
+  @{ from = "$commonDir\NotificationStore.ets";   to = 'NotificationStore.ts' },
   @{ from = "$testDir\MousepadThrottle.test.ets";   to = 'MousepadThrottle.test.ts' },
   @{ from = "$testDir\MousepadInput.test.ets";      to = 'MousepadInput.test.ts' },
   @{ from = "$testDir\RemoteInputKeymap.test.ets";  to = 'RemoteInputKeymap.test.ts' },
-  @{ from = "$testDir\RemoteInputPlugin.test.ets";  to = 'RemoteInputPlugin.test.ts' }
+  @{ from = "$testDir\RemoteInputPlugin.test.ets";  to = 'RemoteInputPlugin.test.ts' },
+  @{ from = "$testDir\Notification.test.ets";       to = 'Notification.test.ts' }
 )
 
 foreach ($c in $copies) {
@@ -76,7 +80,9 @@ foreach ($c in $copies) {
   # 重写 2：扁平化 main 侧 import（../model/X、../../../main/ets/plugins/X → ./X）
   $text = $text -replace "from '\.\./\.\./\.\./main/ets/plugins/", "from './"
   $text = $text -replace "from '\.\./\.\./\.\./main/ets/model/", "from './"
+  $text = $text -replace "from '\.\./\.\./\.\./main/ets/common/", "from './"
   $text = $text -replace "from '\.\./model/", "from './"
+  $text = $text -replace "from '\.\./common/", "from './"
   [System.IO.File]::WriteAllText((Join-Path $src $c.to), $text, $utf8)
 }
 
