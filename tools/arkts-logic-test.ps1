@@ -61,12 +61,15 @@ $copies = @(
   @{ from = "$modelDir\MprisModels.ets";          to = 'MprisModels.ts' },
   @{ from = "$modelDir\SystemVolumeModels.ets";   to = 'SystemVolumeModels.ts' },
   @{ from = "$modelDir\NotificationModels.ets";   to = 'NotificationModels.ts' },
+  @{ from = "$modelDir\TrustModels.ets";          to = 'TrustModels.ts' },
   @{ from = "$commonDir\NotificationStore.ets";   to = 'NotificationStore.ts' },
+  @{ from = "$commonDir\TrustCodec.ets";        to = 'TrustCodec.ts' },
   @{ from = "$testDir\MousepadThrottle.test.ets";   to = 'MousepadThrottle.test.ts' },
   @{ from = "$testDir\MousepadInput.test.ets";      to = 'MousepadInput.test.ts' },
   @{ from = "$testDir\RemoteInputKeymap.test.ets";  to = 'RemoteInputKeymap.test.ts' },
   @{ from = "$testDir\RemoteInputPlugin.test.ets";  to = 'RemoteInputPlugin.test.ts' },
-  @{ from = "$testDir\Notification.test.ets";       to = 'Notification.test.ts' }
+  @{ from = "$testDir\Notification.test.ets";       to = 'Notification.test.ts' },
+  @{ from = "$testDir\TrustCodec.test.ets";       to = 'TrustCodec.test.ts' }
 )
 
 foreach ($c in $copies) {
@@ -91,7 +94,28 @@ Copy-Item (Join-Path $repo 'tools\logic-test\hypium.ts') (Join-Path $src 'hypium
 Copy-Item (Join-Path $repo 'tools\logic-test\arkui-shim.ts') (Join-Path $src 'arkui-shim.ts') -Force
 Copy-Item (Join-Path $repo 'tools\logic-test\run.ts') (Join-Path $src 'run.ts') -Force
 
-# --- 3) 编译 ---
+# --- 3) 运行 ---
+# 首选 **bun**（原生跑 TS，无需编译步骤；与 docs/kdeconnect-oh/09 §5 及 Linux 侧同构）。
+# 找不到 bun 时**兜底**：DevEco 自带 tsc 编译 → Node 运行（零安装路径，CI/裸机可用）。
+$bunCandidates = @(
+  "$env:USERPROFILE\.bun\bin\bun.exe",
+  "$env:LOCALAPPDATA\bun\bun.exe",
+  "$env:USERPROFILE\.npm-global\node_modules\bun\bin\bun.exe",
+  'C:\Program Files\bun\bun.exe'
+)
+$bun = $bunCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $bun) {
+  $bunCmd = Get-Command bun -ErrorAction SilentlyContinue
+  if ($bunCmd) { $bun = $bunCmd.Source }
+}
+
+if ($bun) {
+  Write-Host "[logic-test] runner = bun ($bun)"
+  & $bun run (Join-Path $src 'run.ts')
+  exit $LASTEXITCODE
+}
+
+Write-Host "[logic-test] runner = tsc+node（未找到 bun，走兜底路径）"
 $files = Get-ChildItem $src -Filter *.ts | ForEach-Object { $_.FullName }
 & $nodeExe $tsc --outDir $out --module commonjs --target es2020 --moduleResolution node `
   --esModuleInterop --skipLibCheck --strict false --noImplicitAny false --experimentalDecorators $files
@@ -99,7 +123,5 @@ if ($LASTEXITCODE -ne 0) {
   Write-Host '[logic-test] TypeScript 编译失败' -ForegroundColor Red
   exit 1
 }
-
-# --- 4) 运行 ---
 & $nodeExe (Join-Path $out 'run.js')
 exit $LASTEXITCODE

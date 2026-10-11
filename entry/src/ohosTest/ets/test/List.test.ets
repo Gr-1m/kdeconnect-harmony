@@ -11,6 +11,8 @@ import remoteInputKeymapTest from './RemoteInputKeymap.test';
 import remoteInputPluginTest from './RemoteInputPlugin.test';
 import notificationTest from './Notification.test';
 import notificationPluginTest from './NotificationPlugin.test';
+import payloadControllerTest from './PayloadController.test';
+import trustCodecTest from './TrustCodec.test';
 
 export default function testsuite(): void {
   packetRouterTest();
@@ -22,4 +24,6 @@ export default function testsuite(): void {
   remoteInputPluginTest();
   notificationTest();
   notificationPluginTest();
+  payloadControllerTest();
+  trustCodecTest();
 }

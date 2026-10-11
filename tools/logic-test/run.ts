@@ -13,11 +13,13 @@ import mousepadInputTest from './MousepadInput.test';
 import remoteInputKeymapTest from './RemoteInputKeymap.test';
 import remoteInputPluginTest from './RemoteInputPlugin.test';
 import notificationTest from './Notification.test';
+import trustCodecTest from './TrustCodec.test';
 
 mousepadThrottleTest();
 mousepadInputTest();
 remoteInputKeymapTest();
 remoteInputPluginTest();
 notificationTest();
+trustCodecTest();
 
 runAll();
