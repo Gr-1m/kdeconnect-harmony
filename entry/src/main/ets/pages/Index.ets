@@ -27,6 +27,8 @@ import { MprisPlugin } from '../plugins/MprisPlugin';
 import { RemoteInputPlugin } from '../plugins/RemoteInputPlugin';
 import { MousepadInputPipeline, MousepadButton } from '../plugins/MousepadInput';
 import { NotificationPlugin } from '../plugins/NotificationPlugin';
+import { NotificationItem } from '../model/NotificationModels';
+import { NotificationStore } from '../common/NotificationStore';
 import { DeviceItem, BatteryItem } from '../model/DeviceModels';
 import { PayloadTransfer } from '../model/PayloadModels';
 import { MprisSnapshot } from '../model/MprisModels';
@@ -39,6 +41,7 @@ import { RunCommandDialog } from '../components/RunCommandDialog';
 import { MprisDialog } from '../components/MprisDialog';
 import { ReceivedFilesDialog } from '../components/ReceivedFilesDialog';
 import { RemoteInputDialog } from '../components/RemoteInputDialog';
+import { NotificationList } from '../components/NotificationList';
 import { NotificationHelper } from '../common/NotificationHelper';
 import { NetworkWatcher } from '../common/NetworkWatcher';
 import { colorModeOf, languageOf, LANG_SYSTEM, THEME_FOLLOW_SYSTEM, systemDeviceName } from '../common/AppSettings';
@@ -122,6 +125,9 @@ struct Index {
   // 该设备的触控板输入管线（增量换算 + 合并节流，输出到 RemoteInputPlugin 的 sink）；
   // 仅在对话框打开期间持有 ⇒ 关闭即释放，不跨设备串用。
   private remoteInputPipeline: MousepadInputPipeline | undefined = undefined;
+  // 通知读取（阶段4 方向C / A2）：store 由**页面持有**（插件只上抛类型化事件，不持 UI 状态）。
+  // 会话内存储、不持久化、每设备上限 50 条（见 common/NotificationStore.ets）。
+  private notificationStore: NotificationStore = new NotificationStore();
   // 顶部临时提示（连接中/连接成功/连接失败/配对成功…）
   @State noticeKey: string = '';
   // 手机窄屏侧栏抽屉：**必须在根 Stack（全屏）渲染**——放在内容区会因 padding(16) 内缩，
@@ -354,6 +360,14 @@ struct Index {
         this.remoteInputReady = ev.text === 'ready';
       }
     });
+    // 通知读取（A2）：插件只上抛类型化事件，页面写 store（与 systemvolume.sinks 同构）
+    this.eventBus.on('notification', (id: string, ev: PluginEvent): void => {
+      const n: NotificationItem | undefined = ev.notification;
+      if (n === undefined) {
+        return;   // 前向兼容：缺字段不抛
+      }
+      this.notificationStore.put(n);
+    });
 
     // 阶段 3 批次 1 装配（步骤 5c/5d）：把页面能力注入抽出的模块（模块自身不碰 Context/UI/native）。
     // 5c NotificationHelper：日志与提示文案在模块里，页面只提供"必须有 Context/UI 才能做"的四件事。
@@ -522,6 +536,8 @@ struct Index {
       }
       this.mprisController.forget(deviceId);
       this.payloadController.forgetSendQueue(deviceId);
+      // 6. 通知读取（A2）：断链即清该设备通知，避免列表残留死设备条目
+      this.notificationStore.clearDevice(deviceId);
     };
     this.deviceController.onDeviceLostCleanup = (deviceId: string): void => {
       this.mprisController.forget(deviceId);
@@ -1301,6 +1317,14 @@ struct Index {
                 sideBySide: this.sideBySide,
                 requestedPairIds: this.pairSession.requestedPeers,
                 batteryItems: this.batteryItems,
+                // 通知读取（A2）：只传"当前选中设备"的通知；关闭=纯本地移除
+                notifications: this.notificationStore.listOf(this.deviceController.selectedDeviceId),
+                onDismissNotification: (deviceId: string, id: string): void => {
+                  this.notificationStore.remove(deviceId, id);
+                },
+                onClearNotifications: (deviceId: string): void => {
+                  this.notificationStore.clearDevice(deviceId);
+                },
                 controller: this.deviceController,
                 onUnpairDevice: (d: DeviceItem): void => {
                   this.deviceController.unpairDevice(d);

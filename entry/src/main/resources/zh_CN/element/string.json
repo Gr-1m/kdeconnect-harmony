@@ -708,6 +708,30 @@
       {
         "name": "remote_input_no_device",
         "value": "无已连接设备"
+      },
+      {
+        "name": "notification_count_suffix",
+        "value": "条通知"
+      },
+      {
+        "name": "notification_clear_all",
+        "value": "清空"
+      },
+      {
+        "name": "notification_empty",
+        "value": "暂无通知"
+      },
+      {
+        "name": "notification_unknown_app",
+        "value": "未知应用"
+      },
+      {
+        "name": "notification_dismiss",
+        "value": "关闭"
+      },
+      {
+        "name": "notification_section_title",
+        "value": "通知"
       }
     ]
   }

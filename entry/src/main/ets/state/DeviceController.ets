@@ -57,6 +57,7 @@ export class DeviceController {
   //   3. pluginHost.unloadForDevice(did)（AP-4 插件卸载）
   //   4. mprisController.forget(did)（P2 MSG132 §2 媒体面板清账）
   //   5. payloadController.forgetSendQueue(did)（P3 清发送队列）
+  //   6. notificationStore.clearDevice(did)（A2：清该设备通知列表）
   onDisconnectedCleanup: (deviceId: string) => void = () => {};
   // deviceLost 清账清单（接线时页面侧承接）：
   //   1. mprisController.forget(lid)（P2 MSG132 §2 媒体面板清账）

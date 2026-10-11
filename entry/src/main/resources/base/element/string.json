@@ -728,6 +728,30 @@
       {
         "name": "remote_input_no_device",
         "value": "No connected device"
+      },
+      {
+        "name": "notification_count_suffix",
+        "value": "notifications"
+      },
+      {
+        "name": "notification_clear_all",
+        "value": "Clear all"
+      },
+      {
+        "name": "notification_empty",
+        "value": "No notifications yet"
+      },
+      {
+        "name": "notification_unknown_app",
+        "value": "Unknown app"
+      },
+      {
+        "name": "notification_dismiss",
+        "value": "Dismiss"
+      },
+      {
+        "name": "notification_section_title",
+        "value": "Notifications"
       }
     ]
   }

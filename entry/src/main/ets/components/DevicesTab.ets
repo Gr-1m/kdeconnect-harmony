@@ -3,7 +3,9 @@
 import { DeviceController } from '../state/DeviceController';
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import { DeviceItem, RememberedDevice, BatteryItem } from '../model/DeviceModels';
+import { NotificationItem } from '../model/NotificationModels';
 import { GlassCard } from './GlassCard';
+import { NotificationList } from './NotificationList';
 
 // 设备详情页大按钮卡片的**统一高度**（vp）：6 张卡等高才对齐；
 // 剪贴板卡内含安全控件，故控件贴底 + 副标题限 1 行来适配这个高度。
@@ -31,6 +33,14 @@ export struct DevicesTab {
   @Prop requestedPairIds: string[] = [];
   // 插件推来的展示项（电量）
   @Prop batteryItems: BatteryItem[] = [];
+  // 通知读取（A2；CodeArts MSG137 裁决1 = 设备详情内「通知」折叠区块）：
+  // 页面传入**已选中设备**的通知列表（store.listOf(selectedDeviceId)）与两个回调。
+  @Prop notifications: NotificationItem[] = [];
+  onDismissNotification: (deviceId: string, id: string) => void = () => {
+  };
+  onClearNotifications: (deviceId: string) => void = () => {
+  };
+  @State notificationOpen: boolean = false;
   cardMaterial: uiMaterial.Material | undefined = undefined;
   onUnpairDevice: (d: DeviceItem) => void = () => {
   };
@@ -769,6 +779,46 @@ export struct DevicesTab {
         .width('100%')
         .alignItems(VerticalAlign.Top)
       }
+
+      // 通知区块（A2；CodeArts MSG137 裁决1）：设备详情内**折叠**区块，不占页签/栅格。
+      // 折叠头显示条数；展开后由 NotificationList 渲染（关闭=纯本地，不发包）。
+      Column({ space: 10 }) {
+        Row() {
+          Text($r('app.string.notification_section_title'))
+            .fontSize(14)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+          Text(`(${this.notifications.length})`)
+            .fontSize(12)
+            .fontColor($r('app.color.text_muted'))
+            .margin({ left: 4 })
+          Blank()
+          Text(this.notificationOpen ? '▲' : '▼')
+            .fontSize(10)
+            .fontColor($r('app.color.text_muted'))
+        }
+        .width('100%')
+        .onClick(() => {
+          this.notificationOpen = !this.notificationOpen;
+        })
+
+        if (this.notificationOpen) {
+          NotificationList({
+            items: this.notifications,
+            onDismiss: (id: string): void => {
+              this.onDismissNotification(d.id, id);
+            },
+            onClearAll: (): void => {
+              this.onClearNotifications(d.id);
+            }
+          })
+        }
+      }
+      .width('100%')
+      .padding({ left: 14, right: 14, top: 12, bottom: 12 })
+      .borderRadius(16)
+      .backgroundColor($r('app.color.card_bg'))
+      .border({ width: 1, color: $r('app.color.card_border') })
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)

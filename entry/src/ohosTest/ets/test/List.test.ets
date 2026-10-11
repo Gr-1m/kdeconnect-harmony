@@ -10,6 +10,7 @@ import mousepadInputTest from './MousepadInput.test';
 import remoteInputKeymapTest from './RemoteInputKeymap.test';
 import remoteInputPluginTest from './RemoteInputPlugin.test';
 import notificationTest from './Notification.test';
+import notificationPluginTest from './NotificationPlugin.test';
 
 export default function testsuite(): void {
   packetRouterTest();
@@ -20,4 +21,5 @@ export default function testsuite(): void {
   remoteInputKeymapTest();
   remoteInputPluginTest();
   notificationTest();
+  notificationPluginTest();
 }

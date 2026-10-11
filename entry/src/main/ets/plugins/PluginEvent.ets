@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { MprisSnapshot } from '../model/MprisModels';
 import { SystemSinkUi } from '../model/SystemVolumeModels';
+import { NotificationItem } from '../model/NotificationModels';
 
 // 批1 根治（CodeArts MSG16 授权 / ARKTS_PERF_ROADMAP §2）：插件 → UI 的**类型化事件**。
 //
@@ -20,6 +21,8 @@ export interface PluginEvent {
   svSinks?: SystemSinkUi[];
   battery?: BatteryPayload;
   runOutput?: RunOutputPayload;
+  // 阶段4 方向C（A2）：对端通知（单条；每个 kdeconnect.notification 包 = 一条）
+  notification?: NotificationItem;
   text?: string;
 }
 
