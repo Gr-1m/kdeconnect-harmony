@@ -9,7 +9,7 @@ description = "R1：packet_io / cert_util 两个纯函数模块的 Rust 实现�
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-base64 = "0.22"
+ring = { version = "0.17", default-features = false }
 
 [lib]
 name = "kdc_core"
