@@ -7,7 +7,7 @@ import { preferences } from '@kit.ArkData';
 import { Context, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { display, SymbolGlyphModifier } from '@kit.ArkUI';
-import { HdsTabs, HdsTabsController, hdsMaterial } from '@kit.UIDesignKit';
+import { HdsTabs, HdsTabsController, hdsMaterial, HdsNavigation, HdsNavigationTitleMode, ScrollEffectType, HdsNavigationMenuContentOptions, HdsNavigationMenuItemOptions, HdsNavigationTitleBarOptions } from '@kit.UIDesignKit';
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import deviceInfo from '@ohos.deviceInfo';
 import { PacketRouter, RouterCallbacks } from '../net/PacketRouter';
@@ -155,6 +155,9 @@ struct Index {
   // 需 HarmonyOS 运行时（@kit.UIDesignKit 属 HMS/商用 SDK）。
   // 卡片等非 TabBar 区域不在沉浸光感生效范围，仍走毛玻璃。
   private tabsController: HdsTabsController = new HdsTabsController();
+  // 设备页（竖屏）整页滚动器：HdsNavigation.titleBar 的「滚动渐变模糊」由
+  // bindToScrollable 绑定此实例触发 ⇒ 必须由页面持有，不能在被 List 化的子组件里新建。
+  private deviceScroller: Scroller = new Scroller();
   private deviceId: string = '';
   private certPem: string = '';
   private keyPem: string = '';
@@ -1180,6 +1183,139 @@ struct Index {
     });
   }
 
+  // 运行状态条（单行）：抽为 builder 便于后续移入滚动内容（当前仅等价重构，布局不变）。
+  @Builder
+  statusBar() {
+    Row({ space: 10 }) {
+      Circle({ width: 10, height: 10 })
+        .fill(this.status.startsWith('running') ? $r('app.color.dot_connected') : $r('app.color.danger_text'))
+      Text(this.status.startsWith('running') ? $r('app.string.status_running') : this.status)
+        .fontSize(14)
+        .fontColor($r('app.color.text_primary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+      Text(this.deviceId)
+        .fontSize(11)
+        .fontColor($r('app.color.text_muted'))
+        .fontFamily('monospace')
+        .maxLines(1)
+    }
+    .width('100%')
+    .padding({ left: 14, right: 14, top: 10, bottom: 10 })
+    .borderRadius(18)
+    .backgroundBlurStyle(undefined)
+    .backgroundColor($r('app.color.card_bg'))
+    .border({ width: 1, color: $r('app.color.card_border') })
+  }
+
+  // 底部避让：给内容末尾留出「胶囊高度」的空白，保证最后一块内容不被悬浮胶囊遮住。
+  // 用 List.contentEndOffset（只在末尾留空、不进入视口）而**不是** padding
+  // （padding 的空白会随内容滚进视口，出现"空白带"）。
+  // 口径与下方 barFloatingStyle.barBottomMargin 一致，保留平板 navBarHeightPx 常为 0 的坑修复；
+  // 56 为 HDS 胶囊高度口径值 + 12 余量（按截图量取后可回填）。
+  private bottomAvoidVp(): number {
+    return this.getUIContext().px2vp(this.navBarHeightPx) + 28 + 56 + 12;
+  }
+
+  // 标题栏右侧菜单项：竖屏保留汉堡（抽屉唯一入口；平板有常驻侧栏故不显示）。
+  private titleBarMenuOptions(): HdsNavigationMenuContentOptions {
+    const items: Array<HdsNavigationMenuItemOptions> = [];
+    if (!this.sideBySide) {
+      const item: HdsNavigationMenuItemOptions = {
+        content: {
+          icon: $r('sys.symbol.text_alignleft'),
+          label: 'menu',
+          isEnabled: true,
+          action: (): void => {
+            this.openDrawer();
+          }
+        }
+      };
+      items.push(item);
+    }
+    const opts: HdsNavigationMenuContentOptions = { value: items, maxCount: 3 };
+    return opts;
+  }
+
+  // 标题栏配置：MINI 紧凑态 + 沉浸安全区 + 滚动渐变模糊（朦胧半透明）+ 沉浸光感材质。
+  private titleBarOptions(): HdsNavigationTitleBarOptions {
+    const opts: HdsNavigationTitleBarOptions = {
+      avoidLayoutSafeArea: true,
+      enableComponentSafeArea: true,
+      style: {
+        scrollEffectOpts: {
+          enableScrollEffect: true,
+          scrollEffectType: ScrollEffectType.IMMERSIVE_GRADIENT_BLUR
+        },
+        systemMaterialEffect: {
+          materialType: hdsMaterial.MaterialType.ADAPTIVE,
+          materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+        }
+      },
+      content: {
+        title: { mainTitle: 'KDE Connect' },
+        menu: this.titleBarMenuOptions()
+      }
+    };
+    return opts;
+  }
+
+  // 设备页主体（抽为 builder：竖屏/平板两种宿主结构共用同一份参数接线）。
+  @Builder
+  deviceTabView() {
+    DevicesTab({
+      // 三态互斥派生列表（见 connectedShown/discoveredShown/offlineKnownShown）
+      connectedDevices: this.deviceController.connectedShown(),
+      discoveredDevices: this.deviceController.discoveredShown(),
+      rememberedDevices: this.deviceController.offlineKnownShown(),
+      rememberedAll: this.deviceController.rememberedDevices,
+      immersive: this.immersiveSupported,
+      sideBySide: this.sideBySide,
+      requestedPairIds: this.pairSession.requestedPeers,
+      batteryItems: this.batteryItems,
+      // 通知读取（A2）：只传"当前选中设备"的通知；关闭=纯本地移除
+      notifications: this.notificationStore.listOf(this.deviceController.selectedDeviceId),
+      onDismissNotification: (deviceId: string, id: string): void => {
+        this.notificationStore.remove(deviceId, id);
+      },
+      onClearNotifications: (deviceId: string): void => {
+        this.notificationStore.clearDevice(deviceId);
+      },
+      controller: this.deviceController,
+      onUnpairDevice: (d: DeviceItem): void => {
+        this.deviceController.unpairDevice(d);
+      },
+      onManualConnect: (host: string, port: number): void => {
+        this.actionController.manualConnect(host, port);
+      },
+      selectedDeviceId: this.deviceController.selectedDeviceId,
+      onPlaceholderAction: (key: string): void => {
+        // 走卡片忙碌态入口（【补丁·待优化】，视觉无变化）
+        this.actionController.runCardAction(key);
+      },
+      // 发送文件卡内按钮 = 文件页「选择文件并发送」同一动作
+      onSendFilePick: (): void => {
+        this.actionController.pickAndSendFile();
+      },
+      onOpenDevice: (d: DeviceItem): void => {
+        this.actionController.openDeviceDetail(d);
+      },
+      onClipboardPaste: (granted: boolean): void => {
+        this.actionController.onClipboardPasteResult(granted);
+      },
+      onClipboardRequest: (): void => {
+        this.actionController.onDeviceAction('clipboard_request');
+      },
+      onRefreshDiscovery: (): void => {
+        this.triggerDiscoveryBroadcast();
+      },
+      onPairDevice: (d: DeviceItem): void => {
+        this.deviceController.requestPairWith(d);
+      }
+    })
+  }
+
   private pickDrawerSection(index: number): void {
     this.deviceController.deviceSection = index;
     this.closeDrawer();
@@ -1256,111 +1392,80 @@ struct Index {
 
       // 内容层：标题 + 状态条 → Tab 内容 → 底部悬浮栏
       Column() {
-        // 标题区（对齐参考稿：汉堡按钮紧挨标题左侧）
-        Row({ space: 10 }) {
-          // 横屏平板用常驻侧栏，不再需要抽屉汉堡；竖屏一律汉堡拉抽屉
-          if (!this.sideBySide) {
-            this.menuButton()
+        // 竖屏设备页签改由 HdsNavigation 标题栏承载 ⇒ 本块在该场景隐藏（状态条改为 List 首个 ListItem）；
+        // 平板与其余页签沿用原文案，待后续推广后整体删除。
+        if (this.sideBySide || this.currentTab !== 0) {
+          // 标题区（对齐参考稿：汉堡按钮紧挨标题左侧）
+          Row({ space: 10 }) {
+            // 横屏平板用常驻侧栏，不再需要抽屉汉堡；竖屏一律汉堡拉抽屉
+            if (!this.sideBySide) {
+              this.menuButton()
+            }
+            Text('KDE Connect')
+              .fontSize(26)
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.text_primary'))
+            Text('HarmonyOS')
+              .fontSize(11)
+              .fontColor($r('app.color.text_secondary'))
+              .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+              .borderRadius(999)
+              .border({ width: 1, color: $r('app.color.card_border') })
+              .backgroundColor($r('app.color.chip_bg'))
           }
-          Text('KDE Connect')
-            .fontSize(26)
-            .fontWeight(FontWeight.Bold)
-            .fontColor($r('app.color.text_primary'))
-          Text('HarmonyOS')
-            .fontSize(11)
-            .fontColor($r('app.color.text_secondary'))
-            .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-            .borderRadius(999)
-            .border({ width: 1, color: $r('app.color.card_border') })
-            .backgroundColor($r('app.color.chip_bg'))
-        }
-        .width('100%')
-        .alignItems(VerticalAlign.Center)
-        .padding({ top: this.getUIContext().px2vp(this.statusBarHeightPx) + 14 })
+          .width('100%')
+          .alignItems(VerticalAlign.Center)
+          .padding({ left: 16, right: 16, top: this.getUIContext().px2vp(this.statusBarHeightPx) + 14 })
 
-        // 状态条（单行）
-        Row({ space: 10 }) {
-          Circle({ width: 10, height: 10 })
-            .fill(this.status.startsWith('running') ? $r('app.color.dot_connected') : $r('app.color.danger_text'))
-          Text(this.status.startsWith('running') ? $r('app.string.status_running') : this.status)
-            .fontSize(14)
-            .fontColor($r('app.color.text_primary'))
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .layoutWeight(1)
-          Text(this.deviceId)
-            .fontSize(11)
-            .fontColor($r('app.color.text_muted'))
-            .fontFamily('monospace')
-            .maxLines(1)
+          // 状态条（单行）
+          Column() {
+            this.statusBar()
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16 })
         }
-        .width('100%')
-        .padding({ left: 14, right: 14, top: 10, bottom: 10 })
-        .borderRadius(18)
-        .backgroundBlurStyle(undefined)
-        .backgroundColor($r('app.color.card_bg'))
-        .border({ width: 1, color: $r('app.color.card_border') })
 
         // 内容区 + 底部页签：HdsTabs 悬浮胶囊（官方最佳实践 bpta-spatiality-immersive）
         // barOverlap(true) 使页签悬浮于内容之上，barFloatingStyle 提供悬浮胶囊 +
         // 渐变遮罩 + systemMaterialEffect 沉浸光感（材质等级自适应设备算力）。
         HdsTabs({ controller: this.tabsController }) {
           TabContent() {
-            Column() {
-              DevicesTab({
-                // 三态互斥派生列表（见 connectedShown/discoveredShown/offlineKnownShown）
-                connectedDevices: this.deviceController.connectedShown(),
-                discoveredDevices: this.deviceController.discoveredShown(),
-                rememberedDevices: this.deviceController.offlineKnownShown(),
-                rememberedAll: this.deviceController.rememberedDevices,
-                immersive: this.immersiveSupported,
-                sideBySide: this.sideBySide,
-                requestedPairIds: this.pairSession.requestedPeers,
-                batteryItems: this.batteryItems,
-                // 通知读取（A2）：只传"当前选中设备"的通知；关闭=纯本地移除
-                notifications: this.notificationStore.listOf(this.deviceController.selectedDeviceId),
-                onDismissNotification: (deviceId: string, id: string): void => {
-                  this.notificationStore.remove(deviceId, id);
-                },
-                onClearNotifications: (deviceId: string): void => {
-                  this.notificationStore.clearDevice(deviceId);
-                },
-                controller: this.deviceController,
-                onUnpairDevice: (d: DeviceItem): void => {
-                  this.deviceController.unpairDevice(d);
-                },
-                onManualConnect: (host: string, port: number): void => {
-                  this.actionController.manualConnect(host, port);
-                },
-                selectedDeviceId: this.deviceController.selectedDeviceId,
-                onPlaceholderAction: (key: string): void => {
-                  // 走卡片忙碌态入口（【补丁·待优化】，视觉无变化）
-                  this.actionController.runCardAction(key);
-                },
-                // 发送文件卡内按钮 = 文件页「选择文件并发送」同一动作
-                onSendFilePick: (): void => {
-                  this.actionController.pickAndSendFile();
-                },
-                onOpenDevice: (d: DeviceItem): void => {
-                  this.actionController.openDeviceDetail(d);
-                },
-                onClipboardPaste: (granted: boolean): void => {
-                  this.actionController.onClipboardPasteResult(granted);
-                },
-                onClipboardRequest: (): void => {
-                  this.actionController.onDeviceAction('clipboard_request');
-                },
-                onRefreshDiscovery: (): void => {
-                  this.triggerDiscoveryBroadcast();
-                },
-                onPairDevice: (d: DeviceItem): void => {
-                  this.deviceController.requestPairWith(d);
+            // 竖屏（手机）：页面级 HdsNavigation(MINI) 沉浸标题栏 + 唯一滚动面 List；
+            // 「朦胧半透明」由 bindToScrollable(this.deviceScroller) 随滚动触发（scrollEffectOpts）。
+            // 平板（sideBySide）：暂沿用原结构 —— 30%/70% 双栏依赖有界父容器，
+            // 放进内容驱动的 ListItem 会退化（2026-10-12 实证，见 DESIGN §13），待竖屏路径验过后同构化。
+            if (this.sideBySide) {
+              Column() {
+                this.deviceTabView()
+              }
+              .width('100%')
+              .height('100%')
+              .padding({ left: 16, right: 16, top: 12, bottom: 108 })
+            } else {
+              HdsNavigation() {
+                List({ scroller: this.deviceScroller }) {
+                  ListItem() {
+                    this.statusBar()
+                  }
+                  ListItem() {
+                    this.deviceTabView()
+                  }
                 }
-              })
+                .width('100%')
+                .height('100%')
+                // 横向 16vp 内边距放在**内容层**（List 上），标题栏因此保持通栏。
+                .padding({ left: 16, right: 16 })
+                .contentEndOffset(this.bottomAvoidVp())
+                .edgeEffect(EdgeEffect.Spring)
+                .scrollBar(BarState.Off)
+              }
+              .titleMode(HdsNavigationTitleMode.MINI)
+              .hideBackButton(true)
+              .bindToScrollable([this.deviceScroller])
+              .titleBar(this.titleBarOptions())
+              .width('100%')
+              .height('100%')
             }
-            .width('100%')
-            .height('100%')
-            .padding({ top: 12, bottom: 108 })
           }
           .tabBar(BottomTabBarStyle.of(
             {
@@ -1397,7 +1502,7 @@ struct Index {
                     }
                   })
             }
-            .padding({ top: 12, bottom: 108 })
+            .padding({ left: 16, right: 16, top: 12, bottom: 108 })
           }
           .tabBar(BottomTabBarStyle.of(
             {
@@ -1431,7 +1536,7 @@ struct Index {
                 }
               })
             }
-            .padding({ top: 12, bottom: 108 })
+            .padding({ left: 16, right: 16, top: 12, bottom: 108 })
           }
           .tabBar(BottomTabBarStyle.of(
             {
@@ -1448,7 +1553,7 @@ struct Index {
                   immersive: this.immersiveSupported
                 })
             }
-            .padding({ top: 12, bottom: 108 })
+            .padding({ left: 16, right: 16, top: 12, bottom: 108 })
           }
           .tabBar(BottomTabBarStyle.of(
             {
@@ -1496,7 +1601,9 @@ struct Index {
       }
       .width('100%')
       .height('100%')
-      .padding({ left: 16, right: 16 })
+      // 本层**不留**横向内边距：HdsNavigation 标题栏必须通栏 —— 左右内缩会让标题栏
+      // 模糊背景的边界在两侧露成两条竖线（2026-10-12 用户实测反馈）。
+      // 16vp 横向内边距已下移到各页签内容容器（列表/表单/card）。
       .onAreaChange((_old: Area, area: Area) => {
         this.onRootArea(area);
       })

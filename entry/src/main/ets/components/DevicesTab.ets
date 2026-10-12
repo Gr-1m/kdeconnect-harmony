@@ -918,6 +918,10 @@ export struct DevicesTab {
       if (this.controller.deviceSection === 0) {
         // 已连接设备只保留「详情/功能页」，默认直接用（自动选中第一台已连接设备）
         if (this.selectedDeviceVisible()) {
+          // 回退（用户 2026-10-11 指示「改回让你滑动之前」）：撤掉我加的 Scroll 包装，恢复原始结构。
+          // 滚动方案草稿已另存（%TEMP%\deveco\scroll-draft-20261011\DevicesTab.ets），
+          // 架构级改法（OHOTP：TabContent 下直接 List + contentEndOffset + HdsNavigation 标题栏模糊）
+          // 见 devdocs/ 与 MSG151/152，待裁定后另行实施。
           ForEach(this.selectedDeviceList(),
             (d: DeviceItem) => {
               this.deviceDetail(d)
@@ -930,40 +934,20 @@ export struct DevicesTab {
         if (this.sideBySide) {
           this.emptyHint($r('app.string.select_device_hint'))
         } else {
-        // 下拉刷新：手动触发一次 identity 广播（对端后启动/丢包时用）。
-        // 用官方组合 Refresh + List：List 是可滚动子组件（下拉手势生效），且内容**从顶部排列**
-        // （此前 Refresh + Scroll + height('100%') 高度解析失败 → 内容被垂直居中，用户反馈"从中间开始"）。
-        Refresh({ refreshing: $$this.discoveryRefreshing }) {
-          Scroll() {
-            Column({ space: 8 }) {
-              if (this.discoveredDevices.length === 0) {
-                this.emptyHint($r('app.string.discovered_hint'))
-              }
-              ForEach(this.discoveredDevices, (d: DeviceItem) => {
-                this.discoveredRow(d)
-              }, (d: DeviceItem) => d.id)
-            }
-            .width('100%')
-            // 关键：填满 Scroll 并顶部对齐。若不给高度，Scroll 会把内容**垂直居中**
-            // （真机/模拟器实测：卡片内只剩 77px 内容却居中在卡片中间 → 用户反馈"列表从中间开始"）。
-            .height('100%')
-            .alignItems(HorizontalAlign.Start)
-            .justifyContent(FlexAlign.Start)
+        // 竖屏宿主已改为页面级 List（整页滚动，见 Index.ets 设备页签 / DESIGN §13）：
+        // 这里**不能再嵌套 Scroll** —— 嵌套 Scroll 的 height('100%') 在内容驱动高度的
+        // ListItem 内解析失败会让发现列表塌缩，且下拉手势与页面级 List 抢手势。
+        // 故直接按内容高排布；滚动交给页面级 List，刷新仍可走侧栏抽屉的下拉刷新。
+        Column({ space: 8 }) {
+          if (this.discoveredDevices.length === 0) {
+            this.emptyHint($r('app.string.discovered_hint'))
           }
-          .width('100%')
-          .height('100%')
-          .scrollBar(BarState.Off)
-          .edgeEffect(EdgeEffect.Spring)
+          ForEach(this.discoveredDevices, (d: DeviceItem) => {
+            this.discoveredRow(d)
+          }, (d: DeviceItem) => d.id)
         }
         .width('100%')
-        // 不再 layoutWeight(1)：Refresh 按内容高度布局（撑满时其内部会把内容垂直居中，
-        // 实测表现为「列表从卡片中间开始」）；内容高度即下拉手势区域。
-        .onRefreshing(() => {
-          this.onRefreshDiscovery();
-          setTimeout((): void => {
-            this.discoveryRefreshing = false;
-          }, 1500);
-        })
+        .alignItems(HorizontalAlign.Start)
         }
       } else if (this.controller.deviceSection === 2) {
         if (this.rememberedDevices.length === 0) {
@@ -983,15 +967,20 @@ export struct DevicesTab {
   @Builder
   mainArea() {
     // fill：并排侧栏模式下卡片填满主区高度（与侧栏等高，避免底部空出一块）
+    // 回退（用户 2026-10-11）：恢复原始 `fill: this.sideBySide`（`fill: true` 属同一轮滚动实验，
+    // 其草稿另存于 %TEMP%\deveco\scroll-draft-20261011\）。
     GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial, fill: this.sideBySide }) {
       this.sectionContent()
     }
   }
 
   build() {
-    Stack({ alignContent: Alignment.TopStart }) {
-      if (this.sideBySide) {
-        // 横屏平板：侧栏常驻占 30%（已连接 / 发现 均为可点设备列表），右侧主区
+    if (this.sideBySide) {
+      // 横屏平板：侧栏常驻占 30%（已连接 / 发现 均为可点设备列表），右侧主区。
+      // ⚠️ 本分支依赖**有界父容器**（height('100%') + layoutWeight）——放进内容驱动高度的
+      // ListItem 会退化（2026-10-12 实证，见 devdocs/DESIGN_TITLEBAR_IMMERSIVE_deveco.md §13），
+      // 故平板暂不由页面级 List 承载，待竖屏路径验证通过后再同构化。
+      Stack({ alignContent: Alignment.TopStart }) {
         Row({ space: 12 }) {
           Column({ space: 2 }) {
             this.sidePanel()
@@ -1019,25 +1008,25 @@ export struct DevicesTab {
         .width('100%')
         .layoutWeight(1)
         .alignItems(VerticalAlign.Top)
-      } else {
-        // 竖屏（手机与平板竖屏同款）：标题旁汉堡拉抽屉（Index），此处只剩主区单列
-        Column({ space: 10 }) {
-          Column() {
-            this.mainArea()
-          }
-          .width('100%')
-          .layoutWeight(1)
-          .alignItems(HorizontalAlign.Start)
-          .onAreaChange((_old: Area, area: Area) => {
-            this.onPaneArea(area);
-          })
+      }
+      .width('100%')
+      .height('100%')
+    } else {
+      // 竖屏（手机与平板竖屏同款）：**内容高**布局 —— 由页面级 List 承载整页滚动。
+      // 不能再用 height('100%')/layoutWeight(1)：那会让本组件填满 ListItem 的视口，
+      // 页面级 List 反而无内容可滚（位于底部的「通知」区块将不可达）。
+      Column({ space: 10 }) {
+        Column() {
+          this.mainArea()
         }
         .width('100%')
-        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start)
+        .onAreaChange((_old: Area, area: Area) => {
+          this.onPaneArea(area);
+        })
       }
-
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
     }
-    .width('100%')
-    .height('100%')
   }
 }
