@@ -699,7 +699,7 @@
       },
       {
         "name": "remote_input_kb_idle",
-        "value": "Peer keyboard idle"
+        "value": "Peer keyboard idle (typing still works)"
       },
       {
         "name": "remote_input_touch_hint",

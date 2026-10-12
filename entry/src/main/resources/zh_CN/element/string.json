@@ -679,7 +679,7 @@
       },
       {
         "name": "remote_input_kb_idle",
-        "value": "对端键盘未就绪"
+        "value": "对端键盘未就绪（仍可输入）"
       },
       {
         "name": "remote_input_touch_hint",

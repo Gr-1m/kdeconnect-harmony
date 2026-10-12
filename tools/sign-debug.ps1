@@ -27,7 +27,10 @@
 
 param(
   [ValidateSet('all', 'sign-only', 'install')]
-  [string]$Mode = 'all'
+  [string]$Mode = 'all',
+  # 可选：目标设备（hdc 的 -t 值，如 '127.0.0.1:5555' = 模拟器）。
+  # 多设备在线时**必须**指定，否则 `bm get --udid` 无目标 ⇒ 取空串而报错（2 台设备时实测）。
+  [string]$Device = ''
 )
 
 # 注意：外部命令（devecocli/java/hdc）会把进度信息写到 stderr，若用 Stop 会被当成致命错误 ⇒ 用 Continue + 显式检查
@@ -74,7 +77,8 @@ function Prepare-Materials {
 }
 
 function Sign-Profile {
-  $udid = (& $Hdc shell "bm get --udid" 2>&1 | Select-Object -Last 1).ToString().Trim()
+  $udidArgs = if ($Device -ne '' ) { @('-t', $Device) } else { @() }
+$udid = (& $Hdc @udidArgs shell "bm get --udid" 2>&1 | Select-Object -Last 1).ToString().Trim()
   if ($udid.Length -ne 64) { throw "UDID 获取失败（长度 $($udid.Length)）：$udid" }
   # 用 ConvertFrom-Json 解析（比正则稳；app.json5 此处是标准双引号 JSON）
   $appJson = ([System.IO.File]::ReadAllText((Join-Path $ProjectRoot 'AppScope\app.json5'), [System.Text.Encoding]::UTF8) | ConvertFrom-Json).app
@@ -121,7 +125,7 @@ function Sign-Hap {
 
 function Install-Hap {
   $hap = Join-Path $SignDir 'entry-debug-signed.hap'
-  & $Hdc install $hap 2>&1 | Select-Object -Last 2 | ForEach-Object { Write-Host ('  ' + $_) }
+  & $Hdc @udidArgs install -r $hap 2>&1 | Select-Object -Last 2 | ForEach-Object { Write-Host ('  ' + $_) }
 }
 
 switch ($Mode) {
