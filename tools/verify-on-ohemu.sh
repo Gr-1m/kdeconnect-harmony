@@ -3,13 +3,12 @@
 #
 # verify-on-ohemu.sh —— 在 ohemu（OpenHarmony 模拟器）上跑通 UI 的**可重复**流程
 #
-# 背景（2026-09-23 实测）：工程现为 `runtimeOS: "HarmonyOS"`，而 ohemu 是 OpenHarmony 镜像 ⇒
-#   Index.ets 顶部**静态导入** `@kit.UIDesignKit`（HDS：HdsTabs/hdsMaterial）会解析到 HMS 模块，
-#   在 ohemu 上**模块加载即失败** ⇒ 白屏（app 进程在、原生栈不启动）：
-#     E ArkCompiler: SyntaxError: '@hms:hds.hdsBaseComponent' does not provide an export name 'HdsTabsController'
-#   静态导入无法运行期 catch，ArkTS 的 builder 也是编译期概念 ⇒ **无法做运行期降级**。
-#   => 本脚本做**构建期降级**（临时、不提交）：把 HdsTabs 换成标准 Tabs、去掉 barFloatingStyle，
-#      跑「构建 → 签名 → 安装 → 启动 → 截图 → 日志取证」，结束后可用 --revert 还原。
+# 背景（2026-10-12）：设备页已增加 HdsNavigation（标题栏滚动模糊），未来 0.8.2
+# 还会接入 HdsSideBar。ohemu 没有 HMS/HDS 运行时，因此降级必须覆盖现有 HdsNavigation；
+# HdsSideBar 目前尚未进入主线，若未来出现则脚本会明确拒绝继续，避免静默白屏，待补充
+# 对应的标准 SideBarContainer 构建期替换。
+# => 本脚本做**构建期降级**（临时、不提交）：HdsTabs → Tabs、HdsNavigation → Column，
+#    去掉 HDS 专属修饰器；HdsSideBar 当前按“未使用透传”处理。
 #
 # 用法：
 #   tools/verify-on-ohemu.sh            # 施加降级 → 构建/签名/安装/启动 → 截图 + 关键日志
@@ -39,29 +38,117 @@ if ! git diff --quiet -- "$IDX"; then
   exit 1
 fi
 
-echo "[verify-on-ohemu] 施加构建期降级（HDS → 标准 Tabs）"
+echo "[verify-on-ohemu] 施加构建期降级（HDS → 标准 ArkUI）"
 python3 - "$IDX" <<'PY'
 import pathlib, re, sys
 p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding='utf-8')
 
-stub = """// ⚠️ ohemu 验证用降级（tools/verify-on-ohemu.sh 施加，**勿提交**）：ohemu 是 OpenHarmony 镜像，
-// 运行时无 HMS/HDS ⇒ 静态导入 @kit.UIDesignKit 会让 Index 模块加载失败（白屏）。此处以最小替身顶替。
-class HdsTabsController {
-  changeIndex(index: number): void {
-  }
-}"""
+def remove_call(text: str, name: str) -> tuple[str, bool]:
+    """Remove chained .name(...) calls while respecting nested parentheses."""
+    needle = '.' + name + '('
+    changed = False
+    while needle in text:
+        start = text.index(needle)
+        pos = start + len(needle)
+        depth = 1
+        quote = None
+        escaped = False
+        while pos < len(text) and depth:
+            ch = text[pos]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif ch == '\\':
+                    escaped = True
+                elif ch == quote:
+                    quote = None
+            elif ch in ('"', "'"):
+                quote = ch
+            elif ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+            pos += 1
+        if depth:
+            raise SystemExit(f'未闭合 .{name}(...)')
+        text = text[:start] + text[pos:]
+        changed = True
+    return text, changed
 
-s = s.replace("import { HdsTabs, HdsTabsController, hdsMaterial } from '@kit.UIDesignKit';\n", "")
+# HDS imports are static; remove the complete UIDesignKit import line during
+# the temporary source rewrite. Standard ArkUI globals remain available.
+s, import_removed = re.subn(r"^import \{[^\n]*\} from '@kit\.UIDesignKit';\n", "", s, flags=re.M)
+if not import_removed:
+    raise SystemExit('未找到 UIDesignKit import')
+
+if 'HdsSideBar' in s or 'HdsSideMenu' in s:
+    raise SystemExit('当前源码已使用 HdsSideBar/HdsSideMenu；ohemu 降级尚未实现，请勿运行，避免白屏')
+
 assert 'HdsTabs(' in s, '未找到 HdsTabs 用法'
 s = s.replace("HdsTabs({ controller: this.tabsController }) {", "Tabs({ barPosition: BarPosition.End, index: this.currentTab }) {", 1)
-s2 = re.sub(r"\n *\.barFloatingStyle\(\{[\s\S]*?\n *\}\)", "", s, count=1)
-assert s2 != s, '未找到 barFloatingStyle'
-s = s2
-# 替身类放到 import 区之后（ArkTS 不允许 import 出现在语句之后）
-m = list(re.finditer(r'^import .*$', s, re.M))[-1]
-s = s[:m.end()] + "\n\n" + stub + s[m.end():]
+s, removed = remove_call(s, 'barFloatingStyle')
+if not removed:
+    raise SystemExit('未找到 barFloatingStyle')
+
+# HdsNavigation's builder body maps to a plain Column in the OpenHarmony smoke
+# build. Strip its HDS-only modifiers using balanced-parenthesis parsing.
+if 'HdsNavigation() {' in s:
+    s = s.replace('HdsNavigation() {', 'Column() {')
+else:
+    raise SystemExit('未找到 HdsNavigation() builder')
+for method in ('titleMode', 'hideBackButton', 'bindToScrollable', 'titleBar'):
+    s, _ = remove_call(s, method)
+
+# Drop HDS-only configuration helpers. Their only consumers were the HdsNavigation
+# titleBar, removed above. Keep an ordinary controller stub for tab switching.
+def remove_block(text: str, signature: str) -> str:
+    start = text.find(signature)
+    if start < 0:
+        raise SystemExit(f'未找到待降级方法: {signature}')
+    brace = text.find('{', start)
+    if brace < 0:
+        raise SystemExit(f'方法缺少 body: {signature}')
+    depth = 0
+    quote = None
+    escaped = False
+    pos = brace
+    while pos < len(text):
+        ch = text[pos]
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == quote:
+                quote = None
+        elif ch in ('"', "'", '`'):
+            quote = ch
+        elif ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return text[:start] + text[pos + 1:]
+        pos += 1
+    raise SystemExit(f'未闭合方法体: {signature}')
+
+s = remove_block(s, 'private titleBarMenuOptions():')
+s = remove_block(s, 'private titleBarOptions():')
+s = s.replace('HdsTabsController', 'OhemuTabsController')
+stub = "\nclass OhemuTabsController {\n  changeIndex(_index: number): void {\n  }\n}\n"
+last_import = list(re.finditer(r'^import .*$', s, re.M))[-1]
+s = s[:last_import.end()] + stub + s[last_import.end():]
+
+# Fail closed on actual HDS code references; ignore comments and quoted strings.
+code = re.sub(r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', ' ', s)
+for symbol in ('HdsNavigation', 'HdsTabs', 'HdsSideBar', 'HdsSideMenu', 'HdsNavigationTitleMode',
+               'ScrollEffectType', 'HdsNavigationMenuContentOptions', 'HdsNavigationMenuItemOptions',
+               'HdsNavigationTitleBarOptions', 'HdsTabsController', 'hdsMaterial'):
+    if re.search(r'\b' + symbol + r'\b', code):
+        raise SystemExit(f'HDS symbol remains after downgrade: {symbol}; update the downgrade before using ohemu')
+
 p.write_text(s, encoding='utf-8')
-print("  已改为标准 Tabs（barFloatingStyle 已移除）")
+print("  已改为标准 Tabs/Column（HDS imports、组件、配置方法和类型均已降级）")
 PY
 
 echo "[verify-on-ohemu] 构建 + 签名 + 安装"

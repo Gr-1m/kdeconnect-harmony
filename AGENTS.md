@@ -63,12 +63,9 @@ packet 以换行分隔的 JSON 字符串发送：`{"id", "type", "body", "versio
 
 ## 模拟器调试（ohemu，本机兜底路线）
 
-> **2026-09-23 实测（重要）**：工程现为 **`runtimeOS: "HarmonyOS"`**（`build-profile.json5` 两处），而 ohemu 是
-> **OpenHarmony** 镜像 ⇒ `Index.ets` 顶部**静态导入** `@kit.UIDesignKit`（HDS：`HdsTabs`/`hdsMaterial`）会让
-> **Index 模块加载失败**（hilog: `SyntaxError: '@hms:hds.hdsBaseComponent' does not provide an export name 'HdsTabsController'`），
-> 表现为**白屏**（app 进程在、native 不初始化）。**静态导入无法在运行期 catch** ⇒ 要在这台模拟器上跑 UI，
-> 必须先去掉/降级 HDS 依赖（实测：临时把 `HdsTabs` 换成标准 `Tabs` + 去掉 `barFloatingStyle` 后，
-> app **安装/启动/UI/原生栈全部正常**：`tcp listening` / `udp discovery init` / `native start ok` / `KDC-NETLOOP` 遥测可见）。
+> **2026-09-23 实测背景**：工程使用 `runtimeOS: "HarmonyOS"`，ohemu 是 OpenHarmony 镜像。`Index.ets` 静态导入 `@kit.UIDesignKit` 会使 Index 模块加载失败（实测缺 `HdsTabsController`）。故脚本用构建期降级，主线仍保留商用 HDS 实现。
+> **HDS 降级范围（2026-10-12）**：`tools/verify-on-ohemu.sh` 将当前 `HdsTabs` 降级为标准 `Tabs`，并将 `HdsNavigation` 降级为标准 `Column`（删除 HDS 专属修饰器与类型 helper）。当前主线尚未使用 `HdsSideBar`/`HdsSideMenu`；若源码出现这些组件，脚本会 fail closed，接入前必须先补标准 `SideBarContainer`/菜单替换并做构建验证。
+> **降级脚本静态验证**：HdsNavigation 转换和未来 HdsSideBar fail-closed 已在 2026-10-12 通过隔离 worktree 的转换测试；OpenHarmony 编译 `assembleHap` 成功。此刻 ohemu 未连接，未跑安装/启动链。
 > **ohemu 上无法做「点击级」UI 验证（2026-09-26 实测）**：镜像内**没有 `uinput`**（`which uinput` 为空）⇒ 只能 `snapshot_display` 取**首屏**截图，不能模拟点按/滑动。=> 依赖交互的验收（切页签、弹窗、toast）在 ohemu 上**不可自动化**，须由人在真机/模拟器上确认，或在有对端设备的场景下走真机回归；提交前请勿把"截图"当作交互类验证的证据。
 > **「HDS 双变体」不可用 target/sourceRoots 实现（2026-09-23 实证）**：hvigor 模块级 `targets[].source.sourceRoots`
 > 确实存在（schema 描述为"Stage 模型下指定 Ability 的**扩展**源代码目录"），但实测**追加语义、不能覆盖同名文件**
