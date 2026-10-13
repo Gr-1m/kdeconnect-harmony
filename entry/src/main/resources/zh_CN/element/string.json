@@ -679,7 +679,7 @@
       },
       {
         "name": "remote_input_kb_idle",
-        "value": "对端键盘未就绪"
+        "value": "对端键盘未就绪（仍可输入）"
       },
       {
         "name": "remote_input_touch_hint",
@@ -732,6 +732,26 @@
       {
         "name": "notification_section_title",
         "value": "通知"
+      },
+      {
+        "name": "menu_unpair",
+        "value": "取消配对"
+      },
+      {
+        "name": "menu_send_ping",
+        "value": "发送 Ping"
+      },
+      {
+        "name": "menu_refresh",
+        "value": "刷新"
+      },
+      {
+        "name": "menu_add_by_ip",
+        "value": "通过 IP 添加"
+      },
+      {
+        "name": "msg_no_actions",
+        "value": "暂无操作"
       }
     ]
   }

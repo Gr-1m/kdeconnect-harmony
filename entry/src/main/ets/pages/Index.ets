@@ -6,7 +6,7 @@ import { util } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
 import { Context, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
-import { display, SymbolGlyphModifier } from '@kit.ArkUI';
+import { display, SymbolGlyphModifier, promptAction } from '@kit.ArkUI';
 import { HdsTabs, HdsTabsController, hdsMaterial, HdsNavigation, HdsNavigationTitleMode, ScrollEffectType, HdsNavigationMenuContentOptions, HdsNavigationMenuItemOptions, HdsNavigationTitleBarOptions } from '@kit.UIDesignKit';
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import deviceInfo from '@ohos.deviceInfo';
@@ -155,9 +155,12 @@ struct Index {
   // 需 HarmonyOS 运行时（@kit.UIDesignKit 属 HMS/商用 SDK）。
   // 卡片等非 TabBar 区域不在沉浸光感生效范围，仍走毛玻璃。
   private tabsController: HdsTabsController = new HdsTabsController();
-  // 设备页（竖屏）整页滚动器：HdsNavigation.titleBar 的「滚动渐变模糊」由
-  // bindToScrollable 绑定此实例触发 ⇒ 必须由页面持有，不能在被 List 化的子组件里新建。
+  // 各页签整页滚动器：外层 HdsNavigation.titleBar 的「滚动渐变模糊」由
+  // bindToScrollable 绑定这些实例触发 ⇒ 必须由页面持有，不能在被 List 化的子组件里新建。
   private deviceScroller: Scroller = new Scroller();
+  private filesScroller: Scroller = new Scroller();
+  private settingsScroller: Scroller = new Scroller();
+  private logsScroller: Scroller = new Scroller();
   private deviceId: string = '';
   private certPem: string = '';
   private keyPem: string = '';
@@ -1141,46 +1144,14 @@ struct Index {
   // 避免自绘时 selected 态与沉浸光感材质叠出两套高亮。
   // 各 Tab 的图标仍取本工程的 tabIcon(index)。
 
-  // 汉堡按钮（三条横线自绘，不依赖资源）：放在标题旁边（对齐参考稿）
-  @Builder
-  menuButton() {
-    Column({ space: 4 }) {
-      Row()
-        .width(18)
-        .height(2)
-        .borderRadius(1)
-        .backgroundColor($r('app.color.text_primary'))
-      Row()
-        .width(18)
-        .height(2)
-        .borderRadius(1)
-        .backgroundColor($r('app.color.text_primary'))
-      Row()
-        .width(18)
-        .height(2)
-        .borderRadius(1)
-        .backgroundColor($r('app.color.text_primary'))
-    }
-    .padding({ left: 8, right: 8, top: 10, bottom: 10 })
-    .borderRadius(10)
-    .backgroundColor($r('app.color.chip_bg'))
-    .onClick(() => {
-      this.openDrawer();
-    })
-  }
-
-  // ---- 手机侧栏抽屉（全屏渲染；iOS 观感：面板左贴边滑入 + 背景浅色变暗淡入） ----
+  // ---- 侧栏抽屉控制 ----
 
   private openDrawer(): void {
-    animateTo({ duration: 280, curve: Curve.EaseOut }, () => {
-      this.drawerOpen = true;
-    });
+    this.drawerOpen = true;
   }
 
   private closeDrawer(): void {
-    animateTo({ duration: 220, curve: Curve.EaseIn }, () => {
-      this.drawerOpen = false;
-    });
+    this.drawerOpen = false;
   }
 
   // 运行状态条（单行）：抽为 builder 便于后续移入滚动内容（当前仅等价重构，布局不变）。
@@ -1218,28 +1189,93 @@ struct Index {
     return this.getUIContext().px2vp(this.navBarHeightPx) + 28 + 56 + 12;
   }
 
-  // 标题栏右侧菜单项：竖屏保留汉堡（抽屉唯一入口；平板有常驻侧栏故不显示）。
-  private titleBarMenuOptions(): HdsNavigationMenuContentOptions {
+  // 标题栏右侧四点按钮：页签级操作菜单入口。
+  // 设备页：加密信息/取消配对/发送Ping（按配对状态两套）；其他页：占位。
+  private titleBarMenuOptions(tabIndex: number): HdsNavigationMenuContentOptions {
     const items: Array<HdsNavigationMenuItemOptions> = [];
-    if (!this.sideBySide) {
-      const item: HdsNavigationMenuItemOptions = {
-        content: {
-          icon: $r('sys.symbol.text_alignleft'),
-          label: 'menu',
-          isEnabled: true,
-          action: (): void => {
-            this.openDrawer();
-          }
+    const item: HdsNavigationMenuItemOptions = {
+      content: {
+        icon: $r('sys.symbol.more'),
+        label: 'actions',
+        isEnabled: true,
+        action: (): void => {
+          this.openTabActions(tabIndex);
         }
-      };
-      items.push(item);
-    }
+      }
+    };
+    items.push(item);
     const opts: HdsNavigationMenuContentOptions = { value: items, maxCount: 3 };
     return opts;
   }
 
+  // 页签级操作菜单分发
+  private openTabActions(tabIndex: number): void {
+    if (tabIndex === 0) {
+      this.openDeviceActions();
+    } else {
+      this.getUIContext().getPromptAction().showToast({ message: $r('app.string.msg_no_actions') });
+    }
+  }
+
+  // 设备操作菜单（按配对状态两套）
+  private openDeviceActions(): void {
+    const deviceId: string = this.deviceController.selectedDeviceId;
+    const paired: boolean = deviceId.length > 0 && this.deviceController.isPairedId(deviceId);
+    const title: string = paired
+      ? this.deviceController.displayNameOf(deviceId)
+      : this.notify.resText($r('app.string.tab_devices').id);
+
+    let buttons: [promptAction.Button, promptAction.Button];
+    if (paired) {
+      buttons = [
+        { text: $r('app.string.menu_unpair'), color: '#EF4444' },
+        { text: $r('app.string.menu_send_ping'), color: '#3B82F6' }
+      ];
+    } else {
+      buttons = [
+        { text: $r('app.string.menu_refresh'), color: '#3B82F6' },
+        { text: $r('app.string.menu_add_by_ip'), color: '#3B82F6' }
+      ];
+    }
+
+    this.getUIContext().getPromptAction().showActionMenu({ title: title, buttons: buttons })
+      .then((res: promptAction.ActionMenuSuccessResponse): void => {
+        if (paired) {
+          if (res.index === 0) {
+            const pools: DeviceItem[][] = [
+              this.deviceController.connectedShown(),
+              this.deviceController.discoveredShown()
+            ];
+            for (const pool of pools) {
+              for (const d of pool) {
+                if (d.id === deviceId) {
+                  this.deviceController.unpairDevice(d);
+                  return;
+                }
+              }
+            }
+          } else if (res.index === 1) {
+            this.actionController.runCardAction('find_device');
+          }
+        } else {
+          if (res.index === 0) {
+            this.triggerDiscoveryBroadcast();
+          } else if (res.index === 1) {
+            this.actionController.runCardAction('manual_connect');
+          }
+        }
+      });
+  }
+
   // 标题栏配置：MINI 紧凑态 + 沉浸安全区 + 滚动渐变模糊（朦胧半透明）+ 沉浸光感材质。
-  private titleBarOptions(): HdsNavigationTitleBarOptions {
+  // tabIndex 驱动标题文字 + 四点按钮菜单内容随页签切换。
+  private titleBarOptions(tabIndex: number): HdsNavigationTitleBarOptions {
+    const titles: ResourceStr[] = [
+      'KDE Connect',
+      $r('app.string.tab_files'),
+      $r('app.string.tab_settings'),
+      $r('app.string.tab_logs')
+    ];
     const opts: HdsNavigationTitleBarOptions = {
       avoidLayoutSafeArea: true,
       enableComponentSafeArea: true,
@@ -1248,14 +1284,55 @@ struct Index {
           enableScrollEffect: true,
           scrollEffectType: ScrollEffectType.IMMERSIVE_GRADIENT_BLUR
         },
+        // 【用户 2026-10-13 细节 1】标题栏配色改用**系统颜色资源**（随主题自适应：浅色主题自动取
+        // 深色文字/图标、深色主题取浅色）——不手绘、不写死颜色，全部走系统 semantic color。
+        originalStyle: {
+          contentStyle: {
+            titleStyle: {
+              mainTitleColor: $r('sys.color.font_primary'),
+              subTitleColor: $r('sys.color.font_secondary')
+            },
+            menuStyle: {
+              backgroundColor: Color.Transparent,
+              iconColor: $r('sys.color.icon_primary')
+            },
+            backIconStyle: {
+              iconColor: $r('sys.color.icon_primary')
+            }
+          }
+        },
+        // 滚动后保持同一套系统配色（否则滚过模糊阈值后文字/图标会回落默认色）
+        scrollEffectStyle: {
+          contentStyle: {
+            titleStyle: {
+              mainTitleColor: $r('sys.color.font_primary'),
+              subTitleColor: $r('sys.color.font_secondary')
+            },
+            menuStyle: {
+              backgroundColor: Color.Transparent,
+              iconColor: $r('sys.color.icon_primary')
+            },
+            backIconStyle: {
+              iconColor: $r('sys.color.icon_primary')
+            }
+          }
+        },
         systemMaterialEffect: {
           materialType: hdsMaterial.MaterialType.ADAPTIVE,
           materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
         }
       },
       content: {
-        title: { mainTitle: 'KDE Connect' },
-        menu: this.titleBarMenuOptions()
+        title: { mainTitle: titles[tabIndex] },
+        backIcon: {
+          icon: $r('sys.symbol.text_alignleft'),
+          label: 'menu',
+          isEnabled: true,
+          action: (): void => {
+            this.openDrawer();
+          }
+        },
+        menu: this.titleBarMenuOptions(tabIndex)
       }
     };
     return opts;
@@ -1313,6 +1390,67 @@ struct Index {
       onPairDevice: (d: DeviceItem): void => {
         this.deviceController.requestPairWith(d);
       }
+    })
+  }
+
+  @Builder
+  filesTabView() {
+    FilesTab({
+      connectedCount: this.deviceController.connectedDevices.length,
+      immersive: this.immersiveSupported,
+      payloads: this.payloadController.payloads,
+      onSavePayload: (p: PayloadTransfer): void => {
+        this.payloadController.savePayload(p);
+      },
+      onDiscardPayload: (p: PayloadTransfer): void => {
+        this.payloadController.discardPayload(p);
+      },
+      onCancelPayload: (p: PayloadTransfer): void => {
+        this.payloadController.cancelPayload(p);
+      },
+      onSendFile: (): void => {
+        this.actionController.pickAndSendFile();
+      },
+      onOpenReceivedFiles: (): void => {
+        this.payloadController.dialogOpen = true;
+      },
+      onOpenPayload: (tid: number): void => {
+        this.payloadController.detailId = tid;
+        this.payloadController.detailOpen = true;
+      }
+    })
+  }
+
+  @Builder
+  settingsTabView() {
+    SettingsTab({
+      deviceId: this.deviceId,
+      deviceName: this.settingsController.deviceName,
+      systemName: this.systemName,
+      statusText: this.status,
+      themeMode: this.settingsController.themeMode,
+      language: this.settingsController.language,
+      immersive: this.immersiveSupported,
+      onRenameDevice: (name: string): void => {
+        this.settingsController.renameDevice(name);
+      },
+      onUseSystemName: (): void => {
+        this.useSystemDeviceName();
+      },
+      onThemeChange: (mode: number): void => {
+        this.settingsController.applyTheme(mode, true);
+      },
+      onLanguageChange: (lang: string): void => {
+        this.settingsController.applyLanguage(lang, true);
+      }
+    })
+  }
+
+  @Builder
+  logsTabView() {
+    LogsTab({
+      logStore: this.notify.logStore,
+      immersive: this.immersiveSupported
     })
   }
 
@@ -1390,50 +1528,12 @@ struct Index {
         })
         .position({ x: -110, y: '76%' })
 
-      // 内容层：标题 + 状态条 → Tab 内容 → 底部悬浮栏
-      Column() {
-        // 竖屏设备页签改由 HdsNavigation 标题栏承载 ⇒ 本块在该场景隐藏（状态条改为 List 首个 ListItem）；
-        // 平板与其余页签沿用原文案，待后续推广后整体删除。
-        if (this.sideBySide || this.currentTab !== 0) {
-          // 标题区（对齐参考稿：汉堡按钮紧挨标题左侧）
-          Row({ space: 10 }) {
-            // 横屏平板用常驻侧栏，不再需要抽屉汉堡；竖屏一律汉堡拉抽屉
-            if (!this.sideBySide) {
-              this.menuButton()
-            }
-            Text('KDE Connect')
-              .fontSize(26)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_primary'))
-            Text('HarmonyOS')
-              .fontSize(11)
-              .fontColor($r('app.color.text_secondary'))
-              .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-              .borderRadius(999)
-              .border({ width: 1, color: $r('app.color.card_border') })
-              .backgroundColor($r('app.color.chip_bg'))
-          }
-          .width('100%')
-          .alignItems(VerticalAlign.Center)
-          .padding({ left: 16, right: 16, top: this.getUIContext().px2vp(this.statusBarHeightPx) + 14 })
-
-          // 状态条（单行）
-          Column() {
-            this.statusBar()
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16 })
-        }
-
-        // 内容区 + 底部页签：HdsTabs 悬浮胶囊（官方最佳实践 bpta-spatiality-immersive）
-        // barOverlap(true) 使页签悬浮于内容之上，barFloatingStyle 提供悬浮胶囊 +
-        // 渐变遮罩 + systemMaterialEffect 沉浸光感（材质等级自适应设备算力）。
+      // 内容层：单一外层 HdsNavigation(MINI) 包住 HdsTabs
+      // 解决多标题栏叠置问题（DevEco MSG156 根因）：全屏只有一个标题栏，
+      // 标题随 currentTab 切换，bindToScrollable 绑定所有页签 Scroller。
+      HdsNavigation() {
         HdsTabs({ controller: this.tabsController }) {
           TabContent() {
-            // 竖屏（手机）：页面级 HdsNavigation(MINI) 沉浸标题栏 + 唯一滚动面 List；
-            // 「朦胧半透明」由 bindToScrollable(this.deviceScroller) 随滚动触发（scrollEffectOpts）。
-            // 平板（sideBySide）：暂沿用原结构 —— 30%/70% 双栏依赖有界父容器，
-            // 放进内容驱动的 ListItem 会退化（2026-10-12 实证，见 DESIGN §13），待竖屏路径验过后同构化。
             if (this.sideBySide) {
               Column() {
                 this.deviceTabView()
@@ -1442,29 +1542,22 @@ struct Index {
               .height('100%')
               .padding({ left: 16, right: 16, top: 12, bottom: 108 })
             } else {
-              HdsNavigation() {
-                List({ scroller: this.deviceScroller }) {
-                  ListItem() {
-                    this.statusBar()
-                  }
-                  ListItem() {
-                    this.deviceTabView()
-                  }
+              List({ scroller: this.deviceScroller }) {
+                ListItem() {
+                  this.statusBar()
                 }
-                .width('100%')
-                .height('100%')
-                // 横向 16vp 内边距放在**内容层**（List 上），标题栏因此保持通栏。
-                .padding({ left: 16, right: 16 })
-                .contentEndOffset(this.bottomAvoidVp())
-                .edgeEffect(EdgeEffect.Spring)
-                .scrollBar(BarState.Off)
+                ListItem() {
+                  this.deviceTabView()
+                }
               }
-              .titleMode(HdsNavigationTitleMode.MINI)
-              .hideBackButton(true)
-              .bindToScrollable([this.deviceScroller])
-              .titleBar(this.titleBarOptions())
               .width('100%')
               .height('100%')
+              .padding({ left: 16, right: 16 })
+              .contentEndOffset(this.bottomAvoidVp())
+              .edgeEffect(EdgeEffect.Spring)
+              .scrollBar(BarState.Off)
+              .clip(false)
+              .cachedCount(3, true)
             }
           }
           .tabBar(BottomTabBarStyle.of(
@@ -1476,33 +1569,19 @@ struct Index {
             .verticalAlign(VerticalAlign.Center))
 
           TabContent() {
-            Column() {
-              FilesTab({
-                    connectedCount: this.deviceController.connectedDevices.length,
-                    immersive: this.immersiveSupported,
-                    payloads: this.payloadController.payloads,
-                    onSavePayload: (p: PayloadTransfer): void => {
-                      this.payloadController.savePayload(p);
-                    },
-                    onDiscardPayload: (p: PayloadTransfer): void => {
-                      this.payloadController.discardPayload(p);
-                    },
-                    onCancelPayload: (p: PayloadTransfer): void => {
-                      this.payloadController.cancelPayload(p);
-                    },
-                    onSendFile: (): void => {
-                      this.actionController.pickAndSendFile();
-                    },
-                    onOpenReceivedFiles: (): void => {
-                      this.payloadController.dialogOpen = true;
-                    },
-                    onOpenPayload: (tid: number): void => {
-                      this.payloadController.detailId = tid;
-                      this.payloadController.detailOpen = true;
-                    }
-                  })
+            List({ scroller: this.filesScroller }) {
+              ListItem() {
+                this.filesTabView()
+              }
             }
-            .padding({ left: 16, right: 16, top: 12, bottom: 108 })
+            .width('100%')
+            .height('100%')
+            .padding({ left: 16, right: 16 })
+            .contentEndOffset(this.bottomAvoidVp())
+            .edgeEffect(EdgeEffect.Spring)
+            .scrollBar(BarState.Off)
+            .clip(false)
+            .cachedCount(3, true)
           }
           .tabBar(BottomTabBarStyle.of(
             {
@@ -1513,30 +1592,19 @@ struct Index {
             .verticalAlign(VerticalAlign.Center))
 
           TabContent() {
-            Column() {
-              SettingsTab({
-                deviceId: this.deviceId,
-                deviceName: this.settingsController.deviceName,
-                systemName: this.systemName,
-                statusText: this.status,
-                themeMode: this.settingsController.themeMode,
-                language: this.settingsController.language,
-                immersive: this.immersiveSupported,
-                onRenameDevice: (name: string): void => {
-                  this.settingsController.renameDevice(name);
-                },
-                onUseSystemName: (): void => {
-                  this.useSystemDeviceName();
-                },
-                onThemeChange: (mode: number): void => {
-                  this.settingsController.applyTheme(mode, true);
-                },
-                onLanguageChange: (lang: string): void => {
-                  this.settingsController.applyLanguage(lang, true);
-                }
-              })
+            List({ scroller: this.settingsScroller }) {
+              ListItem() {
+                this.settingsTabView()
+              }
             }
-            .padding({ left: 16, right: 16, top: 12, bottom: 108 })
+            .width('100%')
+            .height('100%')
+            .padding({ left: 16, right: 16 })
+            .contentEndOffset(this.bottomAvoidVp())
+            .edgeEffect(EdgeEffect.Spring)
+            .scrollBar(BarState.Off)
+            .clip(false)
+            .cachedCount(3, true)
           }
           .tabBar(BottomTabBarStyle.of(
             {
@@ -1547,13 +1615,19 @@ struct Index {
             .verticalAlign(VerticalAlign.Center))
 
           TabContent() {
-            Column() {
-                LogsTab({
-                  logStore: this.notify.logStore,
-                  immersive: this.immersiveSupported
-                })
+            List({ scroller: this.logsScroller }) {
+              ListItem() {
+                this.logsTabView()
+              }
             }
-            .padding({ left: 16, right: 16, top: 12, bottom: 108 })
+            .width('100%')
+            .height('100%')
+            .padding({ left: 16, right: 16 })
+            .contentEndOffset(this.bottomAvoidVp())
+            .edgeEffect(EdgeEffect.Spring)
+            .scrollBar(BarState.Off)
+            .clip(false)
+            .cachedCount(3, true)
           }
           .tabBar(BottomTabBarStyle.of(
             {
@@ -1566,20 +1640,13 @@ struct Index {
         .barPosition(BarPosition.End)
         .vertical(false)
         .barOverlap(true)
-        // 以下一组对齐参考实现（ohtotptoken）：blur 底栏 + 固定模式 + 300ms 切换动画
         .barMode(BarMode.Fixed)
         .barBackgroundBlurStyle(BlurStyle.Regular)
         .animationDuration(300)
-        // TabBar 自身背景置透明：否则暗色下会在材质层下压出一块深灰底
         .barBackgroundColor(Color.Transparent)
         .barFloatingStyle({
-          // 离底边距离：参考稿是固定 28vp；本工程保留「设备导航条高度 + 28」的自适应写法——
-          // 平板实测 navBarHeightPx 常为 0，纯固定值会让胶囊贴边（用户 2026-09-15 反馈）。
           barBottomMargin: this.getUIContext().px2vp(this.navBarHeightPx) + 28,
-          // 显式给全透明遮罩：覆盖 HdsTabs 默认的底部渐隐（暗色下会呈一条渐黑带）
           gradientMask: { maskColor: '#00000000', maskHeight: 96 },
-          // 沉浸光感材质：2026-09-16 做过「关掉它」的对照实验，确认与主线程卡顿无关，
-          // 按用户要求恢复（关掉时胶囊观感变平，用户明确要还原）。
           systemMaterialEffect: {
             materialType: hdsMaterial.MaterialType.ADAPTIVE,
             materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
@@ -1589,16 +1656,19 @@ struct Index {
         .width('100%')
         .onChange((index: number) => {
           this.currentTab = index;
-          // 切回「设备」页签时主动广播一次（3s 门控内自动跳过），让列表尽快有内容
           if (index === 0) {
             this.triggerDiscoveryBroadcast();
           }
-          // ARKTS_ANALYSIS §8-A：切到「日志」页签时补一次 flush（页面不可见期间日志只进缓冲、不写 @State）
           if (index === 3) {
             this.notify.flushLog();
           }
         })
       }
+      .titleMode(HdsNavigationTitleMode.MINI)
+      .mode(NavigationMode.Stack)
+      .hideBackButton(false)
+      .bindToScrollable([this.deviceScroller, this.filesScroller, this.settingsScroller, this.logsScroller])
+      .titleBar(this.titleBarOptions(this.currentTab))
       .width('100%')
       .height('100%')
       // 本层**不留**横向内边距：HdsNavigation 标题栏必须通栏 —— 左右内缩会让标题栏

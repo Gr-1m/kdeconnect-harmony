@@ -699,7 +699,7 @@
       },
       {
         "name": "remote_input_kb_idle",
-        "value": "Peer keyboard idle"
+        "value": "Peer keyboard idle (typing still works)"
       },
       {
         "name": "remote_input_touch_hint",
@@ -752,6 +752,26 @@
       {
         "name": "notification_section_title",
         "value": "Notifications"
+      },
+      {
+        "name": "menu_unpair",
+        "value": "Unpair"
+      },
+      {
+        "name": "menu_send_ping",
+        "value": "Send Ping"
+      },
+      {
+        "name": "menu_refresh",
+        "value": "Refresh"
+      },
+      {
+        "name": "menu_add_by_ip",
+        "value": "Add by IP"
+      },
+      {
+        "name": "msg_no_actions",
+        "value": "No actions available"
       }
     ]
   }

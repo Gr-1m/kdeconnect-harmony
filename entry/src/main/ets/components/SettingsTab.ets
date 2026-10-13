@@ -144,8 +144,7 @@ export struct SettingsTab {
   // 选中态一律用子组件 OptionPill（@Prop 驱动）——不要用 @Builder 传值：
   // @Builder 的参数不变时会跳过重建，表现为"点击有效但高亮不跟随"。
   build() {
-    Scroll() {
-      Column({ space: 12 }) {
+    Column({ space: 12 }) {
         // 设备名称（可自定义）
         GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
           Column({ space: 10 }) {
@@ -350,13 +349,7 @@ export struct SettingsTab {
           .alignItems(HorizontalAlign.Start)
         }
       }
-      .width('100%')
-      .alignItems(HorizontalAlign.Start)
-    }
     .width('100%')
-    .layoutWeight(1)
-    .scrollBar(BarState.Off)
-    .edgeEffect(EdgeEffect.Spring)
-    .align(Alignment.TopStart)
+    .alignItems(HorizontalAlign.Start)
   }
 }

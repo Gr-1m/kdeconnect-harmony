@@ -64,8 +64,7 @@ export struct FilesTab {
   }
 
   build() {
-    Scroll() {
-      Column({ space: 12 }) {
+    Column({ space: 12 }) {
         // 发送文件（M2：选文件 → native.sendPayload；需已连接设备）
         GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
           Column({ space: 8 }) {
@@ -169,13 +168,7 @@ export struct FilesTab {
           }
         }
       }
-      .width('100%')
-      .alignItems(HorizontalAlign.Start)
-    }
     .width('100%')
-    .layoutWeight(1)
-    .scrollBar(BarState.Off)
-    .edgeEffect(EdgeEffect.Spring)
-    .align(Alignment.TopStart)
+    .alignItems(HorizontalAlign.Start)
   }
 }

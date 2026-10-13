@@ -222,13 +222,45 @@ ring = { version = "0.17", default-features = false }
 
 ## 六、执行说明（两层，向量集相同）
 
-| 层 | 命令 | 验证什么 | 谁 |
+| 层 | 命令 | 验证什么 | 状态 |
 |---|---|---|---|
-| ① 宿主预验 | `cargo test`（host，glibc） | 向量集本身正确 + 代码可编译 + host ring 行为（**AtomCode 已跑：7/7 绿，2026-10-11**） | Omp 替换文件后复跑确认（预期 45/45） |
-| ② ohemu 终验 | `tools/verify-on-ohemu.sh` 链路（交叉编译进 `.so`，设备侧调起断言） | **ring 在 OHOS musl 的运行时正确性 = G2 关闭条件**（V1–V6 固定值断言 + V10 自洽性） | Omp 排期（需模拟器窗口；执行载体可沿用 MSG140 §三.2 设计：`#[no_mangle]` 导出 + NAPI/hypium 调起，或 Omp 自选等效方案） |
+| ① 宿主预验 | `cargo test`（host，glibc） | 向量集本身正确 + 代码可编译 + host ring 行为 | ✅ 45/45（2026-10-11 Omp 替换文件后复跑；终审另独立亲跑） |
+| ② ohemu 终验 | hdc 直跑（§6.1 标准方式） | **ring 在 OHOS musl 的运行时正确性 = G2 关闭条件**（V1–V6 固定值断言 + V10 自洽性） | ✅ 45/45（2026-10-11 Omp 执行，x86_64）⇒ **G2 正式关闭（CodeArts MSG141 §1）** |
 
-判定：② 中 7 个测试函数（V1–V10）全过 → **G2 关闭**（Rust 路线工具链风险全部清零）；任一失败 → 取 hilog/core 定根因
+### 6.1 ② 标准执行方式：hdc 直跑（无需 NAPI/hypium）
+
+不写 NAPI 桥接或 hypium 调起，直接把 `kdc_core` 的 **test 二进制交叉编译成 OHOS musl 可执行文件**，
+push 到设备执行（Omp MSG150 §1 实测，2026-10-11 定为标准方式）：
+
+```bash
+cd entry/src/main/cpp/rust/kdc_core
+export PATH="$(cd ../wrappers && pwd):$PATH"
+cargo test --release --no-run --target x86_64-unknown-linux-ohos --config ../wrappers/.cargo/config.toml
+hdc file send target/x86_64-unknown-linux-ohos/release/deps/kdc_core-<hash> /data/local/tmp/kdc-vec
+hdc shell "chmod 755 /data/local/tmp/kdc-vec && /data/local/tmp/kdc-vec --test-threads=1"
+```
+
+预期输出：`test result: ok. 45 passed; 0 failed`（其中 crypto_vectors 7 项 = V1–V10，
+其余 38 项 = R1 packet/cert/ffi，musl 运行时一并通过），`EXIT=0`。
+
+踩坑（留档，Omp 实测）：
+- **必须带 `--config ../wrappers/.cargo/config.toml`**：不带时 cargo 用宿主 `cc`（GNU ld）链接，
+  报 `undefined reference to _Unwind_Resume`。wrapper 用 OHOS clang 驱动，自动链 SDK 的
+  `libunwind.a`。（`[profile.test] panic="abort"` 会被 cargo 忽略——`panic setting is ignored
+  for test profile`——不要试图用 panic 策略绕过。）
+- 宿主 glibc 编译的二进制在 ohemu 上报 `No such file or directory`（缺 glibc loader），
+  不能替代交叉编译。
+- 设备 `/tmp` 只读，可写目录是 `/data/local/tmp`。
+- 模拟器需先连接（`hdc tconn 127.0.0.1:5555`，流程见 `devdocs/EMULATOR_NOTES.md`）。
+
+### 6.2 判定与关闭记录
+
+判定：② 中 7 个测试函数（V1–V10）全过 → **G2 关闭**；任一失败 → 取 hilog/core 定根因
 （候选：musl 兼容 / ring 汇编路径 / 内存布局）。
+
+**关闭记录（2026-10-11）**：② 45/45 全绿（x86_64，hdc 直跑）→ G2 按原关闭条件满足、正式关闭
+（CodeArts MSG141 §1）。aarch64 仅交叉编译验证，未真机运行。
+**回溯条款**：0.9.0 TLS 接入如发现 ring/rustls 运行时异常，回溯本 G2 记录并重开。
 
 **X25519 验证边界（如实声明）**：spike（V10）能证明「X25519 C 代码在 musl 可执行 + 结构自洽」，
 **不能**证明「与 RFC 参考值一致」（公共 API 无固定密钥入口，非疏漏，是 ring 的设计）；
