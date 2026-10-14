@@ -7,7 +7,7 @@ import { preferences } from '@kit.ArkData';
 import { Context, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { display, SymbolGlyphModifier, promptAction } from '@kit.ArkUI';
-import { HdsTabs, HdsTabsController, hdsMaterial, HdsNavigation, HdsNavigationTitleMode, ScrollEffectType, HdsNavigationMenuContentOptions, HdsNavigationMenuItemOptions, HdsNavigationTitleBarOptions } from '@kit.UIDesignKit';
+import { HdsTabs, HdsTabsController, hdsMaterial, HdsNavigation, HdsNavigationTitleMode, ScrollEffectType, HdsNavigationMenuContentOptions, HdsNavigationMenuItemOptions, HdsNavigationTitleBarOptions, HdsSideBar } from '@kit.UIDesignKit';
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import deviceInfo from '@ohos.deviceInfo';
 import { PacketRouter, RouterCallbacks } from '../net/PacketRouter';
@@ -47,6 +47,7 @@ import { NetworkWatcher } from '../common/NetworkWatcher';
 import { colorModeOf, languageOf, LANG_SYSTEM, THEME_FOLLOW_SYSTEM, systemDeviceName } from '../common/AppSettings';
 import { DevicesTab } from '../components/DevicesTab';
 import { DrawerOverlay } from '../components/DrawerOverlay';
+import { SideBarPanelHost } from '../components/SideBarPanelHost';
 import { FilesTab } from '../components/FilesTab';
 import { SettingsTab } from '../components/SettingsTab';
 import { LogsTab } from '../components/LogsTab';
@@ -132,7 +133,14 @@ struct Index {
   @State noticeKey: string = '';
   // 手机窄屏侧栏抽屉：**必须在根 Stack（全屏）渲染**——放在内容区会因 padding(16) 内缩，
   // 表现为「面板不贴边 + 遮罩是内缩的直角暗层」（用户实测反馈）。
-  @State drawerOpen: boolean = false;
+  // 【修 B / 方案 1（用户 2026-10-13 选定）】侧栏面板数据快照：
+  // 页面级 @State ⇒ 赋值即触发**页面重跑** ⇒ HdsSideBar 的 builder 参数（sideBarPanel）重新求值，
+  // 抽拉栏才能拿到最新列表。根因：原先面板内容直接读 `@Observed` 控制器的内部数据，
+  // 这不会让页面重跑 ⇒ builder 闭包只求值一次 ⇒ 抽拉栏永远停在首次快照的空态。
+  @State sideConnected: DeviceItem[] = [];
+  @State sideDiscovered: DeviceItem[] = [];
+  // 拉开/收起抽屉时同步一次（用户拉开抽屉 = 本次要修的场景）
+  @State @Watch('onDrawerStateChanged') drawerOpen: boolean = false;
   // 抽屉里「展开 ⌄」只用于**已连接设备列表**（对齐参考稿「我的产品」：先露前几个，点开看全部）
   @State drawerExpanded: boolean = false;
   private noticeTimerId: number = -1;
@@ -181,6 +189,8 @@ struct Index {
   async aboutToAppear(): Promise<void> {
     this.initImmersiveMaterial();
     this.detectScreenWidth();
+    // 侧栏面板初始数据快照（之后由抽屉开合 @Watch 的 onDrawerStateChanged 继续同步）
+    this.syncSideBarLists();
 
     // 优先取 UI host context（getContext 已弃用）；页面级 aboutToAppear 时必然可用
     const hostCtx: Context | undefined = this.getUIContext().getHostContext();
@@ -1150,6 +1160,40 @@ struct Index {
     this.drawerOpen = true;
   }
 
+  // 同步侧栏面板所需列表到页面 @State（**仅在内容变化时赋值**，避免无谓重绘）
+  private syncSideBarLists(): void {
+    const c: DeviceItem[] = this.deviceController.connectedShown();
+    const d: DeviceItem[] = this.deviceController.discoveredShown();
+    if (!this.sameDeviceIds(c, this.sideConnected)) {
+      this.sideConnected = c;
+    }
+    if (!this.sameDeviceIds(d, this.sideDiscovered)) {
+      this.sideDiscovered = d;
+    }
+    // 【修 B】同时写入 AppStorage：`HdsSideBar` 会缓存面板子树（父级重跑也不重新求值）
+    // ⇒ 面板宿主 `SideBarPanelHost` 必须靠 AppStorage 订阅（@StorageLink）才能拿到新数据。
+    AppStorage.setOrCreate('sideConnectedList', c);
+    AppStorage.setOrCreate('sideDiscoveredList', d);
+    AppStorage.setOrCreate('sideRememberedCount', this.deviceController.offlineKnownShown().length);
+    AppStorage.setOrCreate('sideDeviceSection', this.deviceController.deviceSection);
+  }
+
+  private sameDeviceIds(a: DeviceItem[], b: DeviceItem[]): boolean {
+    if (a.length !== b.length) {
+      return false;
+    }
+    for (let i = 0; i < a.length; i++) {
+      if (a[i].id !== b[i].id) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private onDrawerStateChanged(): void {
+    this.syncSideBarLists();
+  }
+
   private closeDrawer(): void {
     this.drawerOpen = false;
   }
@@ -1195,7 +1239,9 @@ struct Index {
     const items: Array<HdsNavigationMenuItemOptions> = [];
     const item: HdsNavigationMenuItemOptions = {
       content: {
-        icon: $r('sys.symbol.more'),
+        // 【用户 2026-10-13】四点图标改**系统统一样式**：改用 dot grid（4 个圆点），
+        // 原先 sys.symbol.more 是 2×2 圆角方块，与系统「文件管理」那种四点不一致。
+        icon: $r('sys.symbol.dot_grid_2x2'),
         label: 'actions',
         isEnabled: true,
         action: (): void => {
@@ -1329,7 +1375,8 @@ struct Index {
           label: 'menu',
           isEnabled: true,
           action: (): void => {
-            this.openDrawer();
+            // 【修】汉堡必须是**切换**：此前只调 openDrawer() ⇒ 展开后再点收不回去（用户 2026-10-13 实测）
+            this.drawerOpen = !this.drawerOpen;
           }
         },
         menu: this.titleBarMenuOptions(tabIndex)
@@ -1467,20 +1514,14 @@ struct Index {
 
 
   @Builder
-  drawerOverlay() {
-    // 合并裁定 #13：设备抽屉抽为 DrawerOverlay 组件（来自 AtomCode 副本）——
-    // 页面只传派生列表与回调，UI/交互细节收敛到组件内。
-    DrawerOverlay({
-      connectedList: this.deviceController.connectedShown(),
-      discoveredList: this.deviceController.discoveredShown(),
-      rememberedCount: this.deviceController.offlineKnownShown().length,
+  sideBarPanel() {
+    // 【修 B】面板数据由宿主 `SideBarPanelHost` 通过 **AppStorage（@StorageLink）** 订阅 ——
+    // HdsSideBar 会缓存本 builder 构建出的子树，父级怎么重跑都不会重新求值，
+    // 因此数据必须来自面板自身订阅的数据源（页面在 syncSideBarLists() 内写入 AppStorage）。
+    SideBarPanelHost({
       selectedDeviceId: this.deviceController.selectedDeviceId,
       requestedPairIds: this.pairSession.requestedPeers,
-      deviceSection: this.deviceController.deviceSection,
       drawerExpanded: this.drawerExpanded,
-      onClose: (): void => {
-        this.closeDrawer();
-      },
       onOpenDevice: (d: DeviceItem): void => {
         this.actionController.openDeviceDetail(d);
         this.closeDrawer();
@@ -1498,9 +1539,9 @@ struct Index {
     })
   }
 
-  build() {
+  @Builder
+  contentPanel() {
     Stack({ alignContent: Alignment.TopStart }) {
-      // 背景层：渐变 + 两团柔光（光感基底，卡片在其上做磨砂/材质）
       Column()
         .width('100%')
         .height('100%')
@@ -1528,9 +1569,6 @@ struct Index {
         })
         .position({ x: -110, y: '76%' })
 
-      // 内容层：单一外层 HdsNavigation(MINI) 包住 HdsTabs
-      // 解决多标题栏叠置问题（DevEco MSG156 根因）：全屏只有一个标题栏，
-      // 标题随 currentTab 切换，bindToScrollable 绑定所有页签 Scroller。
       HdsNavigation() {
         HdsTabs({ controller: this.tabsController }) {
           TabContent() {
@@ -1671,28 +1709,15 @@ struct Index {
       .titleBar(this.titleBarOptions(this.currentTab))
       .width('100%')
       .height('100%')
-      // 本层**不留**横向内边距：HdsNavigation 标题栏必须通栏 —— 左右内缩会让标题栏
-      // 模糊背景的边界在两侧露成两条竖线（2026-10-12 用户实测反馈）。
-      // 16vp 横向内边距已下移到各页签内容容器（列表/表单/card）。
       .onAreaChange((_old: Area, area: Area) => {
         this.onRootArea(area);
       })
 
-      // 手机侧栏抽屉（全屏覆盖）：必须在根 Stack 渲染，否则被内容区 padding(16) 内缩
-      if (this.drawerOpen) {
-        this.drawerOverlay()
-      }
-
-      // 配对确认弹窗（需求 4.3）：本侧点已连接行「配对」或对端发起时都走这里；
-      // 显示验证码，两端核对一致后确认 → 配对成功。
-      // 阶段 3 批次 1 步骤 5a：UI 抽到 components/PairConfirmDialog.ets（纯 UI，状态仍全在 pairSession）。
-      // ⚠️ 组件**自带全屏遮罩**，这里不要再包一层 Column/遮罩（否则双遮罩、要点两次才关）。
       if (this.pairSession.stage === 'prompt' || this.pairSession.stage === 'awaiting') {
         PairConfirmDialog({
           peerRequested: this.pairSession.peerRequested,
           peerName: this.pairSession.peerName,
           deviceId: this.pairSession.deviceId,
-          // 设备 ID 在弹窗里核对（列表里只显示 IP:端口，用户 2026-09-14）；组件不依赖 Context ⇒ 页面算好传入
           deviceIdLabel: this.notify.resText($r('app.string.settings_device_id').id),
           code: this.pairSession.code,
           awaiting: this.pairSession.stage === 'awaiting',
@@ -1706,7 +1731,6 @@ struct Index {
         })
       }
 
-      // 媒体控制面板（阶段 3 批次 2 步骤 6a-2 ⇒ components/MprisDialog.ets）
       if (this.mprisController.dialogOpen) {
         MprisDialog({
           mpris: this.mprisController,
@@ -1714,9 +1738,6 @@ struct Index {
         })
       }
 
-      // 远程命令弹窗（P1，MSG112 §1）：展示对端下发的预设命令列表，点一条即请求执行。
-      // 阶段 3 批次 1 步骤 5b：UI 抽到 components/RunCommandDialog.ets（页面的 runCommand() 仍留本页，
-      // 它要经 PluginHost 发请求 + 释放卡片忙碌态）。⚠️ 组件自带遮罩，不要外再包一层。
       if (this.runCommandDialogOpen) {
         RunCommandDialog({
           deviceName: this.deviceController.displayNameOf(this.runCommandDeviceId),
@@ -1730,15 +1751,12 @@ struct Index {
         })
       }
 
-      // 「查看已接收」弹窗（阶段 3 批次 2 步骤 6b-2 ⇒ components/ReceivedFilesDialog.ets）
       if (this.payloadController.dialogOpen) {
         ReceivedFilesDialog({
           payload: this.payloadController
         })
       }
 
-      // 远程输入全屏对话框（阶段4 方向B / B2+B3；components/RemoteInputDialog.ets）
-      // ⚠️ 组件自带全屏遮罩，这里不要再包 Column/遮罩。手势 → 管线（增量换算 + 60Hz 合并节流）→ 插件 sink。
       if (this.remoteInputOpen) {
         RemoteInputDialog({
           deviceName: this.deviceController.displayNameOf(this.remoteInputDeviceId),
@@ -1818,11 +1836,33 @@ struct Index {
           }
         })
       }
-
     }
     .width('100%')
     .height('100%')
-    // 兜底底色：暗色下窗口默认背景为黑，若底部安全区未被渐变覆盖会露出一条黑带
+  }
+
+  build() {
+    Stack() {
+      HdsSideBar({
+        sideBarPanelBuilder: (): void => {
+          this.sideBarPanel()
+        },
+        contentPanelBuilder: (): void => {
+          this.contentPanel()
+        },
+        sideBarContainerType: SideBarContainerType.AUTO,
+        isShowSideBar: this.drawerOpen,
+        $isShowSideBar: (isShowSideBar: boolean): void => {
+          this.drawerOpen = isShowSideBar;
+        },
+        contentAreaMask: true,
+        autoHide: true,
+        sideBarWidth: 300,
+        isSideBarBlur: true
+      })
+    }
+    .width('100%')
+    .height('100%')
     .backgroundColor($r('app.color.bg_grad_bottom'))
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
