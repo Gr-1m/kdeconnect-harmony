@@ -2,7 +2,7 @@
 
 > **2026-09-12 迁移说明（zcode 落地）**：本文件自旧工作区拷入**仓库根**（新正本，Syncthing 双机可见；旧工作区已降级为只读参考）。阅读下文时按此映射：
 > - 「主开发对象 `kdeconnect-harmony-PreDev/`」→ **现在就是本仓库根**（重建后的工程直接位于仓库根：`entry/`、`AppScope/`、`tools/`…）；
-> - 「中心仓库 gitcode 尚未同步 / 不 add remote」→ 本仓库已 clone 自 gitcode（remote origin 已配置，分支 `dev/zcodeinit`），**提交/推送纪律（2026-09-23 用户指令更新）**：主线 `commit` 由 Omp 自主执行、**不再需要总指挥（CodeArts）授权**；`push` 由 Omp 在「合并/同步」时执行（保持两远端与 Win10 侧同步）；
+> - 「中心仓库 gitcode 尚未同步 / 不 add remote」→ 本仓库已 clone 自 gitcode（remote origin 已配置，分支 `dev/zcodeinit`），**提交/推送纪律（2026-10-21 用户指令更新）**：`commit` 与 `push` 统一由**总指挥 AtomCode** 执行；Omp 不再负责提交/推送，只做 Native C++ 实现、构建与验证（CodeArts 专职 ArkTS）；
 > - 「两机协作走共享目录/DevEco 副本」→ **已废弃**，改为 Syncthing 实时同步（机器本地产物以两侧 `.stignore` 排除）；
 > - 参考实现（`kdeconnect-meta/` 等）仍在旧工作区，Win10 不可达——需要查 schema/上游源码时请 Linux 侧 agent（zcode / CodeArts）代查。
 > C++ 侧规范见 `devdocs/CPP_GUIDE.md`；ArkTS 侧见 `devdocs/ARKTS_GUIDE.md`；工作流见 `devdocs/PROCESS.md`。
@@ -51,8 +51,8 @@ packet 以换行分隔的 JSON 字符串发送：`{"id", "type", "body", "versio
 
 ## 双机协作（gitcode 中心仓库 + 本机开发 / Win10 DevEco 验证，2026-09-12 起）
 
-- **中心仓库**：<https://gitcode.com/Gr1m/kdeconnect-harmony>（GPL-2.0-or-later，2026-09-19 由 GPL-3.0 变更）。**版权署名（2026-09-22 用户指令）**：**暂留占位** `SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors`（官方产品名 + 移植限定词 + 集体主体，**不落个人**）；**定稿前冻结、不来回改**；正式筹备 KDE 孵化 checklist 时再改为真实作者署名。**已同步（2026-09-15）**：`main` 与本机工程**同根**（初始提交 `8d6c639`），本机开发分支 `dev/zcodeinit` 已 push（首个 push 2026-09-15，`71c7b46..3c34001`），`main` 已推进到与 `dev/zcodeinit` 一致。开发仍在 `dev/zcodeinit`，**提交/推送纪律（2026-09-23 用户指令更新）**：`commit` 自主、无需 CodeArts 授权；`push` 由 Omp 在合并/同步时执行。**仍需先确认**的动作：回退/删除他人改动、跨车道合并、改他人在途文件。仓库范围**只有 `kdeconnect-harmony-PreDev/` 工程**（meta/android/kde 参考仓库与根 `docs/` 不入仓库）。
-- **GitHub 镜像（2026-09-15 建）**：<https://github.com/Gr-1m/kdeconnect-harmony>（GPL-2.0-or-later，2026-09-19 由 GPL-3.0 变更）。本机已配置第二远端 **`github`**（SSH；`~/.ssh/config` 需有 `github.com` → `IdentityFile ~/.ssh/github_ed25519`，否则报 `Permission denied (publickey)` —— 2026-09-15 踩过）。该仓库初始只是 `LICENSE` 空壳、与本机历史**无关**，已用 gitcode 侧历史**强推覆盖**（`git push --force github main:main`，`dev/zcodeinit` 一并新推；两分支与 gitcode 指向同一提交）。日常 push 仍走授权；两个远端内容应保持一致。
+- **中心仓库**：<https://gitcode.com/Gr1m/kdeconnect-harmony>（GPL-2.0-or-later，2026-09-19 由 GPL-3.0 变更）。**版权署名（2026-09-22 用户指令）**：**暂留占位** `SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors`（官方产品名 + 移植限定词 + 集体主体，**不落个人**）；**定稿前冻结、不来回改**；正式筹备 KDE 孵化 checklist 时再改为真实作者署名。**已同步（2026-09-15）**：`main` 与本机工程**同根**（初始提交 `8d6c639`），本机开发分支 `dev/zcodeinit` 已 push（首个 push 2026-09-15，`71c7b46..3c34001`），`main` 已推进到与 `dev/zcodeinit` 一致。开发仍在 `dev/zcodeinit`，**提交/推送纪律（2026-10-21 用户指令更新）**：`commit` 与 `push` 统一由总指挥 AtomCode 执行；Omp 不再负责提交/推送。**仍需先确认**的动作：回退/删除他人改动、跨车道合并、改他人在途文件。仓库范围**只有 `kdeconnect-harmony-PreDev/` 工程**（meta/android/kde 参考仓库与根 `docs/` 不入仓库）。
+- **GitHub 镜像（2026-09-15 建）**：<https://github.com/Gr-1m/kdeconnect-harmony>（GPL-2.0-or-later，2026-09-19 由 GPL-3.0 变更）。本机已配置第二远端 **`github`**（SSH；`~/.ssh/config` 需有 `github.com` → `IdentityFile ~/.ssh/github_ed25519`，否则报 `Permission denied (publickey)` —— 2026-09-15 踩过）。该仓库初始只是 `LICENSE` 空壳、与本机历史**无关**，已用 gitcode 侧历史**强推覆盖**（`git push --force github main:main`，`dev/zcodeinit` 一并新推；两分支与 gitcode 指向同一提交）。日常 push 由 AtomCode 执行；两个远端内容应保持一致。
 - **本机 CachyOS** 为开发正本；**Win10**（LTSC 21H1，DevEco Studio 26.0.0.821）用 DevEco 构建、跑模拟器做验证。**同一文件不要两台机器同时改**。
 - 同步约定：改前先 pull、提交后 push；换行符：Win10 设 `core.autocrlf true`、本机设 `core.autocrlf input`，避免 CRLF diff 噪音。
 - **共享目录的版本标记（2026-09-14 起）**：`.git` **不同步**——Syncthing 搬不动活着的 git 仓库（`index`/`refs` 靠原子重命名与锁，冲突副本无法像普通文件那样手工合并，且会让两台机器都「看起来拥有历史」而破坏单写者不变式）。Win10 侧改用 `AgentsConversion/GIT_REVISION.md` 判断「同步过来的文件对应哪个提交」：由 `tools/sync-revision.sh` 在本机每次提交/合并/切分支后自动刷新（git hook）。新机器/新克隆需执行一次 `tools/sync-revision.sh --install`（hook 只写在本机 `.git/hooks`，不随同步）。该标记文件不是仓库内容，勿手改。
@@ -96,18 +96,17 @@ QEMU 手机镜像跑在宿主（非真机、非 IDE）：镜像/日志放 `~/Wor
 
 以下每条都来自 2026-09-21/22 的**实际摩擦**（附实例），跨机协作一律照此执行：
 
-### 角色分工（2026-09-26 用户指令，最高优先）
+### 角色分工（2026-10-21 用户指令，最高优先）
 | 角色 | 职责 |
 |---|---|
-| **DevEco**（Win10/DevEco） | 写**所有** ArkTS/UI 代码：新文件 + **Index.ets 接线/替换/修复** |
-| **Omp**（本机原生线） | **只负责 commit + push**，外加：构建验证（`assembleHap`）、ohemu 验证（`tools/verify-on-ohemu.sh`）、分支归一、`GIT_REVISION.md` 刷新 |
-| **CodeArts** | 协调各方消息规划、推进开发进程（不做代码） |
-| **AtomCode** | 评审各方代码 |
-> ⇒ 自 2026-09-26 起：**代码替换/接线不再由 Omp 执行**（批 1 曾因 DevEco 无 git 而由 Omp 代做，该模式已终止）；
-> DevEco 直接改 `Index.ets`，改完通知 Omp 代提交；Omp 验收口径 = 参数级保真比对 + 构建 + ohemu 冒烟。
+| **AtomCode** | **总指挥** + **唯一 commit/push 执行者**；协调各方、分配任务、构建到模拟器验证 |
+| **CodeArts** | **全权负责 ArkTS/UI 代码**：Index.ets、DevicesTab、侧栏与页面接线 |
+| **Omp**（本机原生线） | **只负责 Native C++**：网络栈/协议实现、`entry/src/main/cpp/**`、native 测试；**不再 commit/push** |
+| **DevEco** | 暂停参与；仅真机验证时临时启用 |
+> ⇒ 自 2026-10-21 起：Omp 不修改 ArkTS/UI，不执行 `git commit`/`git push`；需要提交的改动由对应 owner 通知 AtomCode 执行。
+> 工作区未提交改动由各车道 owner 负责内容正确性，AtomCode 负责统一提交与推送。
 
-1. **分车道 + 单写者**：主线 `dev/zcodeinit` 只由本机原生线（Omp）提交；ArkTS 车道 `refactor/arkts-codearts`
-   只由 DevEco 提交；**不跨车道改文件**。任何跨车道动作（切分支、回退、push）前先发 `TO_<owner>` 消息。
+1. **分车道 + 单写者**：主线 `dev/zcodeinit` 的提交/推送统一由**总指挥 AtomCode** 执行；ArkTS 代码由 CodeArts 维护，Native C++ 由 Omp 维护；**不跨车道改文件**。任何跨车道动作（切分支、回退、push）前先发 `TO_<owner>` 消息。
 2. **回退他人改动必须按 hunk 审，禁止无脑整文件 checkout**：同一文件常混有多类改动。
    实例：回退 2 处权限改动时，`git checkout -- Index.ets` 会连带吞掉 DevEco 新加的 SPDX 版权行
    => 正确做法：先 `git diff` 看清 hunk；若已整文件回退，必须**补回被误删的他方改动**并在消息里声明。
@@ -121,7 +120,7 @@ QEMU 手机镜像跑在宿主（非真机、非 IDE）：镜像/日志放 `~/Wor
 6. **同一字符串/同一批文件不做"来回改"**：一旦冻结（如版权署名占位）就等统一时机一次性替换，
    避免两车道反复改动同一批文件。
 7. **分支方向与合并门禁**：只做"车道 → 主线"单向合并；主线**不**反向 merge 进车道。合并前后必须跑
-   `hvigorw assembleHap` 与 `entry/src/main/cpp/tests/run.sh`，通过后再 push（push 按「提交/推送纪律」执行：Omp 自主，用于保持同步）。
+   `hvigorw assembleHap` 与 `entry/src/main/cpp/tests/run.sh`，通过后由 AtomCode 提交并 push（按「提交/推送纪律」执行）。
 
 ## sudo / root 政策（2026-09-26 用户指令）
 
