@@ -49,6 +49,10 @@ public:
     // 立即发一次 UDP 发现广播（UI「扫描/下拉刷新」入口，CodeArts MSG73_TO_OMP 修复 4）
     void triggerBroadcast();
 
+    // 实际监听端口（0 = 未启动）。目标端口被占时 TcpServer::listen 会向后回退，
+    // 对端必须拨这个值；测试 harness 用它把子进程拨号目标与真实端口对齐。
+    uint16_t boundTcpPort() const { return boundTcpPort_.load(std::memory_order_relaxed); }
+
     // —— WP-2 安全加固 ——
     // 信任设备证书钉扎（内存态；持久化由 ArkTS TrustStore/Preferences 负责，启动时回灌）。
     // 已登记 deviceId 的后续连接：对端证书与登记不符 → 断链 + error 事件。
@@ -134,6 +138,8 @@ private:
 
     int epollFd_ = -1;
     std::atomic<bool> running_{false};
+    // tcpServer_->port() 的线程安全快照（测试/诊断可在任意线程读）
+    std::atomic<uint16_t> boundTcpPort_{0};
     std::thread loopThread_;
     EventCallback eventCallback_;
     std::mutex callbackMutex_;

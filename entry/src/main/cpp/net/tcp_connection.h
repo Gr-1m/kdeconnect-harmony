@@ -54,6 +54,12 @@ public:
     // EPOLLET 下「注册了 EPOLLOUT 却无可写内容」的 fd 会被 epoll_wait 每轮重复上报 ⇒ 空转烧核。
     bool wantsWrite() const
     {
+        // 出向连接在 TCP 连接完成前就已注册 EPOLLOUT（等 connect 结果 + 首帧明文 identity）。
+        // 若此时返回 false，tick 的 updateWriteInterest 会把兴趣摘掉；一旦 connect 完成事件
+        // 尚未被处理（EPOLLET 边沿），就永远不会再收到可写事件 ⇒ identity 不发出、对端超时。
+        if (!isIncoming() && state_ == ConnectionState::Idle && !plainIdentityQueued_) {
+            return true;
+        }
         return plainPending() || txPending() || (tls_ && tls_->wantsWrite());
     }
     // 对端证书 CN 是否已与 deviceId 校验过（控制链路的协议硬约束，见 NetStack::drainEncrypted）

@@ -52,6 +52,10 @@ std::atomic<int64_t> g_peerSendTotal{0};
 constexpr const char *kMutePeerId = "hosttest33333333333333333333333333";
 // main() 里启动用的基础配置：需要改配置重启 net stack 的用例（端口探测）用完要还原
 NetConfig g_baseCfg;
+// 被测栈**实际**绑定的 TCP 端口（start 后由 boundTcpPort() 回填；子进程拨同一值）。
+// 固定 1745 的旧写法在端口被占时 TcpServer 会静默回退到 1746+，而子进程仍拨 1745
+// ⇒ 连到残留/其他监听者，表现为「connect 成功但父进程收不到 identity」。
+uint16_t g_parentTcpPort = 1745;
 
 #define CHECK(cond) \
     do { \
@@ -76,6 +80,12 @@ int64_t nowMs()
 {
     using namespace std::chrono;
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+// 子进程拨入用的父栈端口（execl 是可变参数，临时 std::string 生命周期覆盖整个调用表达式）
+std::string parentPortArg()
+{
+    return std::to_string(g_parentTcpPort);
 }
 
 std::mutex g_mu;
@@ -243,7 +253,7 @@ void peerIdentityIsDispatchedAsPacket()
     }
     if (child == 0) {
         // 子进程：对端栈，拨入父进程（被测栈）
-        ::execl("/proc/self/exe", "kdc_net_tests", "--peer", "1745", nullptr);
+        ::execl("/proc/self/exe", "kdc_net_tests", "--peer", parentPortArg().c_str(), nullptr);
         ::_exit(127);
     }
 
@@ -402,6 +412,7 @@ std::string g_peerSeenDevice;
 // 回归 harness（CodeArts MSG22 §2）：模拟 KDE「收广播后新建链路并销毁同设备旧链路」，
 // 用于验证 31d9f49（链路替换不得中止在传载荷）。
 constexpr const char *kHarnessPeerPemPath = "/tmp/kdc_harness_peer.pem";
+constexpr const char *kHarnessPeerPortPath = "/tmp/kdc_harness_peer_port.txt";
 constexpr const char *kHarnessSrcPath = "/tmp/kdc_harness_src.bin";
 const char *kPeerLinksDeviceId = "hosttest33333333333333333333333333";
 
@@ -430,8 +441,8 @@ int runPeerLinksMode(uint16_t targetPort)
     cfg.deviceType = "desktop";
     cfg.certPem = cert.certPem;
     cfg.keyPem = cert.keyPem;
-    cfg.tcpPort = 1747;
-    cfg.udpPort = 17160;
+    cfg.tcpPort = 1747;   // 起始端口；实际值（可能回退）经 kHarnessPeerPortPath 告知父进程
+    cfg.udpPort = 17161;   // 子进程独立 UDP 端口：避免与被测栈(17160)互相发现 ⇒ 双连接竞态（见 runPeerMode 注释）
     cfg.spoolDir = "/tmp/kdc_nettest_spool";
     NetStack &ns = netStack();
     ns.setEventCallback([](const NetEvent &e) {
@@ -449,7 +460,14 @@ int runPeerLinksMode(uint16_t targetPort)
                          e.errorMessage.c_str());
         }
     });
+    ::unlink(kHarnessPeerPortPath);
     if (!ns.start(cfg)) return 1;
+    {
+        std::FILE *f = std::fopen(kHarnessPeerPortPath, "w");
+        if (f == nullptr) return 1;
+        std::fprintf(f, "%u", (unsigned) ns.boundTcpPort());
+        std::fclose(f);
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));   // 等被测栈读到证书并建立信任
     ns.connectToPeer("127.0.0.1", targetPort);
     std::string peerDev;
@@ -493,7 +511,7 @@ int runPeerMismatchMode(uint16_t targetPort)
     cfg.certPem = cert.certPem;
     cfg.keyPem = cert.keyPem;
     cfg.tcpPort = 1748;
-    cfg.udpPort = 17160;
+    cfg.udpPort = 17162;   // 子进程独立 UDP 端口（同上，避免双连接竞态）
     cfg.spoolDir = "/tmp/kdc_nettest_spool";
     NetStack &ns = netStack();
     if (!ns.start(cfg)) {
@@ -516,9 +534,10 @@ int runPeerMode(uint16_t targetPort, bool announcePayload = false)
     cfg.certPem = cert.certPem;
     cfg.keyPem = cert.keyPem;
     cfg.tcpPort = 1746;
-    // 与主测试栈同用非标准 UDP 端口：否则本对端会在真实局域网广播/被真实桌面吸引
-    // ⇒ 既是真机 hilog 噪声源（DevEco MSG4 §3），也是 peerIdentityIsDispatchedAsPacket 偶发失败的根因。
-    cfg.udpPort = 17160;
+    // 子进程使用**独立**非标准 UDP 端口：既避免在真实局域网广播（DevEco MSG4 §3），
+    // 也避免与被测栈(17160)互相发现产生额外链路。identity 偶发丢失的真正根因是
+    // tick 摘掉出向连接初始 EPOLLOUT（见 tcp_connection.h wantsWrite 注释）。
+    cfg.udpPort = 17161;
     cfg.spoolDir = "/tmp/kdc_nettest_spool";
 
     NetStack &ns = netStack();
@@ -595,7 +614,7 @@ void announcedPayloadWithoutPortIsTerminal()
         return;
     }
     if (child == 0) {
-        ::execl("/proc/self/exe", "kdc_net_tests", "--peer-announce", "1745", nullptr);
+        ::execl("/proc/self/exe", "kdc_net_tests", "--peer-announce", parentPortArg().c_str(), nullptr);
         ::_exit(127);
     }
 
@@ -645,11 +664,12 @@ void announcedPayloadWithoutPortIsTerminal()
 void payloadSurvivesLinkReplacement()
 {
     ::unlink(kHarnessPeerPemPath);
+    ::unlink(kHarnessPeerPortPath);
     const pid_t child = ::fork();
     CHECK_MSG(child >= 0, "fork 失败");
     if (child < 0) return;
     if (child == 0) {
-        ::execl("/proc/self/exe", "kdc_net_tests", "--peer-links", "1745", nullptr);
+        ::execl("/proc/self/exe", "kdc_net_tests", "--peer-links", parentPortArg().c_str(), nullptr);
         ::_exit(127);
     }
     std::string pem;
@@ -684,7 +704,23 @@ void payloadSurvivesLinkReplacement()
         }
     }
     CHECK_MSG(seenTotal > 0 && seenDone > 0, "harness 前置失败：未见接收进度（载荷根本没起来）");
-    netStack().connectToPeer("127.0.0.1", 1747);   // 对端 control 端口（runPeerLinksMode 固定 1747）
+    // 对端 control 端口由子进程实际绑定后写入文件（固定 1747 在端口被占时会回退 ⇒ 拨错）。
+    uint16_t peerPort = 0;
+    for (int i = 0; i < 250 && peerPort == 0; ++i) {
+        std::FILE *f = std::fopen(kHarnessPeerPortPath, "r");
+        if (f != nullptr) {
+            unsigned v = 0;
+            if (std::fscanf(f, "%u", &v) == 1 && v > 0 && v <= 65535) {
+                peerPort = static_cast<uint16_t>(v);
+            }
+            std::fclose(f);
+        }
+        if (peerPort == 0) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    CHECK_MSG(peerPort != 0, "harness 前置失败：未取到对端 control 端口");
+    if (peerPort != 0) {
+        netStack().connectToPeer("127.0.0.1", peerPort);
+    }
     std::fprintf(stderr, "  [dbg] dialed peer at progress %lld/%lld\n", (long long) seenDone,
                  (long long) seenTotal);
 
@@ -723,7 +759,7 @@ void deviceDownDispatchesPayloadTerminal()
     CHECK_MSG(child >= 0, "fork 失败");
     if (child < 0) return;
     if (child == 0) {
-        ::execl("/proc/self/exe", "kdc_net_tests", "--peer-links", "1745", nullptr);
+        ::execl("/proc/self/exe", "kdc_net_tests", "--peer-links", parentPortArg().c_str(), nullptr);
         ::_exit(127);
     }
     std::string pem;
@@ -794,7 +830,7 @@ void peerCertCnMismatchIsRejected()
     CHECK_MSG(child >= 0, "fork 失败");
     if (child < 0) return;
     if (child == 0) {
-        ::execl("/proc/self/exe", "kdc_net_tests", "--peer-mismatch", "1745", nullptr);
+        ::execl("/proc/self/exe", "kdc_net_tests", "--peer-mismatch", parentPortArg().c_str(), nullptr);
         ::_exit(127);
     }
     bool sawError = false;
@@ -836,7 +872,7 @@ void peerCertPinningMismatchIsRejected()
     CHECK_MSG(child >= 0, "fork 失败");
     if (child < 0) return;
     if (child == 0) {
-        ::execl("/proc/self/exe", "kdc_net_tests", "--peer", "1745", nullptr);
+        ::execl("/proc/self/exe", "kdc_net_tests", "--peer", parentPortArg().c_str(), nullptr);
         ::_exit(127);
     }
     bool sawError = false;
@@ -1013,7 +1049,7 @@ int runCapsPeerMode(uint16_t targetPort)
     cfg.certPem = cert.certPem;
     cfg.keyPem = cert.keyPem;
     cfg.tcpPort = 1749;
-    cfg.udpPort = 17160;
+    cfg.udpPort = 17161;   // 子进程独立 UDP 端口（同上，避免双连接竞态）
     cfg.spoolDir = "/tmp/kdc_nettest_spool";
     NetStack &ns = netStack();
     std::mutex mu;
@@ -1071,7 +1107,7 @@ void capabilitiesFromArktsReachWireIdentity()
         return;
     }
     if (child == 0) {
-        ::execl("/proc/self/exe", "kdc_net_tests", "--caps-peer", "1745", nullptr);
+        ::execl("/proc/self/exe", "kdc_net_tests", "--caps-peer", parentPortArg().c_str(), nullptr);
         ::_exit(127);
     }
     int status = 0;
@@ -1128,11 +1164,11 @@ int main(int argc, char **argv)
     cfg.deviceType = "phone";
     cfg.certPem = cert.certPem;
     cfg.keyPem = cert.keyPem;
-    cfg.tcpPort = 1745;                      // 避开 1716（可能与在跑的桌面 daemon 冲突）
+    // 起始端口固定在 KDE 端口段内；若被占 TcpServer 会回退，实际值由 boundTcpPort() 传给子进程。
+    cfg.tcpPort = 1745;
     cfg.udpPort = 17160;                     // 非标准端口：避免假对端广播污染真实局域网（DevEco MSG4 §3）
     cfg.spoolDir = "/tmp/kdc_nettest_spool";
     cfg.connectHandshakeTimeoutMs = 1500;    // 短上限，保证 CI 快
-    g_baseCfg = cfg;
     {
         // 父进程 deviceId 落盘：子进程据此发起操作，不依赖事件回调时序
         std::FILE *f = std::fopen(kHarnessParentIdPath, "w");
@@ -1148,6 +1184,10 @@ int main(int argc, char **argv)
         std::printf("net stack 启动失败（环境不支持），跳过 net 测试\n");
         return 0;
     }
+    // 必须用**实际**绑定端口（listen 端口被占时会回退），否则子进程可能拨到其他监听者。
+    g_parentTcpPort = ns.boundTcpPort();
+    cfg.tcpPort = g_parentTcpPort;
+    g_baseCfg = cfg;
 
     struct CaseDef { const char *name; void (*fn)(); };
     static const CaseDef kCases[] = {

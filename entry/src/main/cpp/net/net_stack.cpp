@@ -123,6 +123,8 @@ bool NetStack::start(const NetConfig &config)
     srvEv.events = EPOLLIN;
     srvEv.data.fd = tcpServer_->fd();
     epoll_ctl(epollFd_, EPOLL_CTL_ADD, tcpServer_->fd(), &srvEv);
+    // 目标端口被占时 listen() 会向后回退；对外/测试必须看到**实际**端口。
+    boundTcpPort_.store(tcpServer_->port(), std::memory_order_relaxed);
 
     udp_ = std::make_unique<UdpDiscovery>();
     const uint16_t udpPort = config_.udpPort != 0 ? config_.udpPort : UDP_PORT;
@@ -186,6 +188,7 @@ void NetStack::stop()
     }
     lastSeenMs_.clear();
 
+    boundTcpPort_.store(0, std::memory_order_relaxed);
     if (udp_) { udp_->close(); udp_.reset(); }
     if (tcpServer_) { tcpServer_->close(); tcpServer_.reset(); }
 
