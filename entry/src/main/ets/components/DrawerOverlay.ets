@@ -37,14 +37,15 @@ export struct DrawerOverlay {
 
   build() {
     Column({ space: 10 }) {
-      Row({ space: 10 }) {
-        Text($r('app.string.tab_devices'))
-          .fontSize(16)
+      Row() {
+        Text('KDE Connect')
+          .fontSize(20)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
-          .layoutWeight(1)
+          .margin({ left: 12 })
       }
       .width('100%')
+      .margin({ bottom: 4 })
 
       Scroll() {
         Column({ space: 6 }) {

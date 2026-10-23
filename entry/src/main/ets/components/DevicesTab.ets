@@ -526,10 +526,19 @@ export struct DevicesTab {
 
   @Builder
   emptyHint(text: ResourceStr) {
-    Text(text)
-      .fontSize(12)
-      .fontColor($r('app.color.text_muted'))
-      .padding({ top: 4, bottom: 4 })
+    Column({ space: 12 }) {
+      SymbolGlyph($r('sys.symbol.computer'))
+        .fontSize(48)
+        .fontColor([$r('app.color.text_muted')])
+      Text(text)
+        .fontSize(14)
+        .fontColor($r('app.color.text_muted'))
+        .textAlign(TextAlign.Center)
+    }
+    .width('100%')
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+    .padding({ top: 60, bottom: 60 })
   }
 
   // 大按钮（对齐参考稿主页面的「检测与帮助 / 我要换电池」卡片：图标 + 标题 + 副标题）。

@@ -703,6 +703,14 @@ struct Index {
     }, 300);
   }
 
+  onBackPress(): boolean {
+    if (this.drawerOpen) {
+      this.drawerOpen = false;
+      return true;
+    }
+    return false;
+  }
+
   aboutToDisappear(): void {
     this.netWatcher.unregister();
     // KI-1（真机实证 OnAppFrozen）：**不在此停栈**。页面消失 ≠ 进程结束；在此停栈会让「切后台/切页」
@@ -1328,7 +1336,7 @@ struct Index {
       style: {
         scrollEffectOpts: {
           enableScrollEffect: true,
-          scrollEffectType: ScrollEffectType.IMMERSIVE_GRADIENT_BLUR
+          scrollEffectType: ScrollEffectType.GRADIENT_BLUR
         },
         // 【用户 2026-10-13 细节 1】标题栏配色改用**系统颜色资源**（随主题自适应：浅色主题自动取
         // 深色文字/图标、深色主题取浅色）——不手绘、不写死颜色，全部走系统 semantic color。
@@ -1373,11 +1381,8 @@ struct Index {
         backIcon: {
           icon: $r('sys.symbol.text_alignleft'),
           label: 'menu',
-          isEnabled: true,
-          action: (): void => {
-            // 【修】汉堡必须是**切换**：此前只调 openDrawer() ⇒ 展开后再点收不回去（用户 2026-10-13 实测）
-            this.drawerOpen = !this.drawerOpen;
-          }
+          isEnabled: false,
+          action: (): void => {}
         },
         menu: this.titleBarMenuOptions(tabIndex)
       }
@@ -1522,6 +1527,9 @@ struct Index {
       selectedDeviceId: this.deviceController.selectedDeviceId,
       requestedPairIds: this.pairSession.requestedPeers,
       drawerExpanded: this.drawerExpanded,
+      onClose: (): void => {
+        this.closeDrawer();
+      },
       onOpenDevice: (d: DeviceItem): void => {
         this.actionController.openDeviceDetail(d);
         this.closeDrawer();
@@ -1684,7 +1692,6 @@ struct Index {
         .barBackgroundColor(Color.Transparent)
         .barFloatingStyle({
           barBottomMargin: this.getUIContext().px2vp(this.navBarHeightPx) + 28,
-          gradientMask: { maskColor: '#00000000', maskHeight: 96 },
           systemMaterialEffect: {
             materialType: hdsMaterial.MaterialType.ADAPTIVE,
             materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
@@ -1704,7 +1711,7 @@ struct Index {
       }
       .titleMode(HdsNavigationTitleMode.MINI)
       .mode(NavigationMode.Stack)
-      .hideBackButton(false)
+      .hideBackButton(true)
       .bindToScrollable([this.deviceScroller, this.filesScroller, this.settingsScroller, this.logsScroller])
       .titleBar(this.titleBarOptions(this.currentTab))
       .width('100%')
@@ -1712,6 +1719,16 @@ struct Index {
       .onAreaChange((_old: Area, area: Area) => {
         this.onRootArea(area);
       })
+
+      if (!this.sideBySide && this.drawerOpen) {
+        Column()
+          .width('100%')
+          .height('100%')
+          .backgroundColor('#00000066')
+          .onClick((): void => {
+            this.drawerOpen = false;
+          })
+      }
 
       if (this.pairSession.stage === 'prompt' || this.pairSession.stage === 'awaiting') {
         PairConfirmDialog({
@@ -1855,11 +1872,28 @@ struct Index {
         $isShowSideBar: (isShowSideBar: boolean): void => {
           this.drawerOpen = isShowSideBar;
         },
-        contentAreaMask: true,
+        contentAreaMask: false,
         autoHide: true,
-        sideBarWidth: 300,
+        sideBarWidth: this.sideBySide ? '40%' : '80%',
         isSideBarBlur: true
       })
+
+      Button() {
+        SymbolGlyph(this.drawerOpen ? $r('sys.symbol.open_sidebar') : $r('sys.symbol.close_sidebar'))
+          .fontWeight(FontWeight.Normal)
+          .fontSize($r('sys.float.ohos_id_text_size_headline7'))
+          .fontColor([$r('sys.color.ohos_id_color_titlebar_icon')])
+          .hitTestBehavior(HitTestMode.None)
+      }
+      .id('side_bar_button')
+      .backgroundColor($r('sys.color.ohos_id_color_button_normal'))
+      .height(30)
+      .width(30)
+      .onClick(() => {
+        this.drawerOpen = !this.drawerOpen;
+      })
+      .position({ x: 16, y: this.getUIContext().px2vp(this.statusBarHeightPx) + 10 })
+      .zIndex(999)
     }
     .width('100%')
     .height('100%')

@@ -24,6 +24,7 @@ export struct SideBarPanelHost {
   @Prop selectedDeviceId: string = '';
   @Prop requestedPairIds: string[] = [];
   @Link drawerExpanded: boolean;
+  onClose: () => void = () => {};
   onOpenDevice: (d: DeviceItem) => void = (_d: DeviceItem) => {};
   onPairRequest: (d: DeviceItem) => void = (_d: DeviceItem) => {};
   onPickSection: (index: number) => void = (_i: number) => {};
@@ -39,6 +40,7 @@ export struct SideBarPanelHost {
       deviceSection: this.sideDeviceSection,
       drawerExpanded: this.drawerExpanded,
       onClose: (): void => {
+        this.onClose();
       },
       onOpenDevice: (d: DeviceItem): void => {
         this.onOpenDevice(d);
