@@ -914,7 +914,7 @@ export struct DevicesTab {
     Column({ space: 8 }) {
       // 「已连接设备」分区：只有选中设备（默认自动选中已连接的第一台）时才显示标题 + 详情页；
       // 没有可选设备时不再渲染一个空壳页，直接给「请选择设备查看功能」提示
-      if (!(this.controller.deviceSection === 0 && !this.selectedDeviceVisible())) {
+      if (this.controller.deviceSection !== 0) {
         Row({ space: 8 }) {
           Text(this.sectionTitleOf(this.controller.deviceSection))
             .fontSize(13)
@@ -1015,7 +1015,7 @@ export struct DevicesTab {
           })
         }
         .width('100%')
-        .layoutWeight(1)
+        .height('100%')
         .alignItems(VerticalAlign.Top)
       }
       .width('100%')

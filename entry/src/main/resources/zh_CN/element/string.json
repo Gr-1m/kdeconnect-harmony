@@ -27,8 +27,7 @@
     {
       "name": "address_pending",
       "value": "等待地址…"
-    }
-,
+    },
     {
       "name": "select_device_hint",
       "value": "请选择设备查看功能"
@@ -657,101 +656,121 @@
       "name": "files_history_clear",
       "value": "清除历史"
     },
-      {
-        "name": "toast_history_cleared",
-        "value": "已清除接收历史"
-      },
-      {
-        "name": "remote_input_title",
-        "value": "远程输入"
-      },
-      {
-        "name": "remote_input_touchpad",
-        "value": "触控板"
-      },
-      {
-        "name": "remote_input_keyboard",
-        "value": "键盘"
-      },
-      {
-        "name": "remote_input_kb_ready",
-        "value": "对端键盘就绪"
-      },
-      {
-        "name": "remote_input_kb_idle",
-        "value": "对端键盘未就绪（仍可输入）"
-      },
-      {
-        "name": "remote_input_touch_hint",
-        "value": "拖动移动 · 点击左键 · 双指滚动"
-      },
-      {
-        "name": "remote_input_btn_left",
-        "value": "左键"
-      },
-      {
-        "name": "remote_input_btn_middle",
-        "value": "中键"
-      },
-      {
-        "name": "remote_input_btn_right",
-        "value": "右键"
-      },
-      {
-        "name": "remote_input_kb_hint",
-        "value": "输入的文字将作为按键发送"
-      },
-      {
-        "name": "remote_input_special_keys",
-        "value": "特殊键"
-      },
-      {
-        "name": "remote_input_no_device",
-        "value": "无已连接设备"
-      },
-      {
-        "name": "notification_count_suffix",
-        "value": "条通知"
-      },
-      {
-        "name": "notification_clear_all",
-        "value": "清空"
-      },
-      {
-        "name": "notification_empty",
-        "value": "暂无通知"
-      },
-      {
-        "name": "notification_unknown_app",
-        "value": "未知应用"
-      },
-      {
-        "name": "notification_dismiss",
-        "value": "关闭"
-      },
-      {
-        "name": "notification_section_title",
-        "value": "通知"
-      },
-      {
-        "name": "menu_unpair",
-        "value": "取消配对"
-      },
-      {
-        "name": "menu_send_ping",
-        "value": "发送 Ping"
-      },
-      {
-        "name": "menu_refresh",
-        "value": "刷新"
-      },
-      {
-        "name": "menu_add_by_ip",
-        "value": "通过 IP 添加"
-      },
-      {
-        "name": "msg_no_actions",
-        "value": "暂无操作"
-      }
-    ]
-  }
+    {
+      "name": "toast_history_cleared",
+      "value": "已清除接收历史"
+    },
+    {
+      "name": "remote_input_title",
+      "value": "远程输入"
+    },
+    {
+      "name": "remote_input_touchpad",
+      "value": "触控板"
+    },
+    {
+      "name": "remote_input_keyboard",
+      "value": "键盘"
+    },
+    {
+      "name": "remote_input_kb_ready",
+      "value": "对端键盘就绪"
+    },
+    {
+      "name": "remote_input_kb_idle",
+      "value": "对端键盘未就绪（仍可输入）"
+    },
+    {
+      "name": "remote_input_touch_hint",
+      "value": "拖动移动 · 点击左键 · 双指滚动"
+    },
+    {
+      "name": "remote_input_btn_left",
+      "value": "左键"
+    },
+    {
+      "name": "remote_input_btn_middle",
+      "value": "中键"
+    },
+    {
+      "name": "remote_input_btn_right",
+      "value": "右键"
+    },
+    {
+      "name": "remote_input_kb_hint",
+      "value": "输入的文字将作为按键发送"
+    },
+    {
+      "name": "remote_input_special_keys",
+      "value": "特殊键"
+    },
+    {
+      "name": "remote_input_no_device",
+      "value": "无已连接设备"
+    },
+    {
+      "name": "notification_count_suffix",
+      "value": "条通知"
+    },
+    {
+      "name": "notification_clear_all",
+      "value": "清空"
+    },
+    {
+      "name": "notification_empty",
+      "value": "暂无通知"
+    },
+    {
+      "name": "notification_unknown_app",
+      "value": "未知应用"
+    },
+    {
+      "name": "notification_dismiss",
+      "value": "关闭"
+    },
+    {
+      "name": "notification_section_title",
+      "value": "通知"
+    },
+    {
+      "name": "menu_unpair",
+      "value": "取消配对"
+    },
+    {
+      "name": "menu_send_ping",
+      "value": "发送 Ping"
+    },
+    {
+      "name": "menu_refresh",
+      "value": "刷新"
+    },
+    {
+      "name": "menu_add_by_ip",
+      "value": "通过 IP 添加"
+    },
+    {
+      "name": "msg_no_actions",
+      "value": "暂无操作"
+    },
+    {
+      "name": "file_notify_toggle",
+      "value": "接收文件通知"
+    },
+    {
+      "name": "file_autosave_toggle",
+      "value": "自动保存接收文件"
+    },
+    {
+      "name": "coming_soon",
+      "value": "即将支持"
+    },
+    {
+      "name": "settings_drawer_about",
+      "value": "关于"
+    },
+    {
+      "name": "settings_drawer_info",
+      "value": "设备信息"
+    }
+  ]
+}

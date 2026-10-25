@@ -19,6 +19,7 @@ export struct SettingsTab {
   @Prop themeMode: number = THEME_FOLLOW_SYSTEM;
   @Prop language: string = LANG_SYSTEM;
   @Prop immersive: boolean = false;
+  @Prop settingsSection: number = 0;
   cardMaterial: uiMaterial.Material | undefined = undefined;
   onRenameDevice: (name: string) => void = () => {
   };
@@ -145,6 +146,7 @@ export struct SettingsTab {
   // @Builder 的参数不变时会跳过重建，表现为"点击有效但高亮不跟随"。
   build() {
     Column({ space: 12 }) {
+      if (this.settingsSection === 0) {
         // 设备名称（可自定义）
         GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
           Column({ space: 10 }) {
@@ -173,7 +175,6 @@ export struct SettingsTab {
                 })
             }
             .width('100%')
-            // 系统设备名称（只读）+ 一键回填：设备名默认就是它，用户改过之后也能恢复
             if (this.systemName.length > 0) {
               Row({ space: 8 }) {
                 Text($r('app.string.settings_system_name_label'))
@@ -267,10 +268,10 @@ export struct SettingsTab {
           .width('100%')
           .alignItems(HorizontalAlign.Start)
         }
-
-        // 本机信息
+      } else if (this.settingsSection === 1) {
         GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
           Column({ space: 12 }) {
+            this.sectionTitle($r('app.string.settings_drawer_info'))
             this.infoRow($r('app.string.settings_app_name'), 'KDE Connect', false)
             this.infoRow($r('app.string.settings_app_version'), this.appVersion(), false)
             this.infoRow($r('app.string.settings_device_id'), this.deviceId, true)
@@ -281,74 +282,19 @@ export struct SettingsTab {
           .width('100%')
           .alignItems(HorizontalAlign.Start)
         }
-
-        // 关于（编排对齐参考实现 ohtotptoken 的「关于」页）：开源仓库 / 邮箱 / 贡献者 / 版本号，
-        // 最下方是备案号链接位。邮箱与备案号目前都留空，等有信息再填。
+      } else if (this.settingsSection === 2) {
         GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
           Column({ space: 12 }) {
-            this.sectionTitle($r('app.string.settings_about'))
-            // 开源仓库：两个远端都可点（Hyperlink 直接交给系统浏览器打开）
-            Column({ space: 6 }) {
-              Text($r('app.string.settings_about_repo'))
-                .fontSize(12)
-                .fontColor($r('app.color.text_secondary'))
-              // 仅文字展示（不再可点）；两个仓库名的起始位置由标签固定宽度对齐
-              this.indentedTextRow('GitCode', 'Gr1m/kdeconnect-harmony')
-              this.indentedTextRow('GitHub', 'Gr-1m/kdeconnect-harmony')
-            }
-            .width('100%')
-            .alignItems(HorizontalAlign.Start)
-
-            // 贡献者：名字可点，点击弹小窗展示邮箱（邮箱不列在页面上，避免被抓取；暂未公开时提示）
-            Row({ space: 10 }) {
-              Text($r('app.string.settings_about_contributors'))
-                .fontSize(12)
-                .fontColor($r('app.color.text_secondary'))
-                .width(96)
-              Text('@Gr%1m')
-                .fontSize(12)
-                .fontColor($r('app.color.accent_text'))
-                .decoration({ type: TextDecorationType.Underline, color: $r('app.color.accent_text') })
-                .bindPopup(this.emailPopupShown, {
-                  message: this.contribEmailText(),
-                  placement: Placement.Bottom,
-                  onStateChange: (e: PopupStateChangeParam): void => {
-                    this.emailPopupShown = e.isVisible;
-                  }
-                })
-                .onClick(() => {
-                  this.emailPopupShown = true;
-                })
-            }
-            .width('100%')
-            .alignItems(VerticalAlign.Center)
+            this.sectionTitle($r('app.string.settings_drawer_about'))
+            this.indentedTextRow('GitCode', 'Gr1m/kdeconnect-harmony')
+            this.indentedTextRow('GitHub', 'Gr-1m/kdeconnect-harmony')
             this.infoRow($r('app.string.settings_about_version'), this.appVersion(), false)
-
-            // 备案号链接位（效仿参考实现：文案 + 可点链接，点击交给系统浏览器打开备案系统）。
-            // 目前尚无备案号 ⇒ 点击前＝「工信部备案查询」(灰)；点击后＝「已打开 · …」(强调色)。
-            // 拿到备案号后把两个文案换成「粤ICP备xxxxxxx号-x」即可，结构不用动。
-            Row() {
-              Text(this.icpOpened
-                ? $r('app.string.settings_about_icp_opened')
-                : $r('app.string.settings_about_icp_query'))
-                .fontSize(12)
-                .fontColor(this.icpOpened ? $r('app.color.accent_text') : $r('app.color.text_muted'))
-                .decoration({
-                  type: TextDecorationType.Underline,
-                  color: this.icpOpened ? $r('app.color.accent_text') : $r('app.color.text_muted')
-                })
-                .onClick(() => {
-                  this.icpOpened = true;
-                  this.openUrl('https://beian.miit.gov.cn/');
-                })
-            }
-            .width('100%')
-            .justifyContent(FlexAlign.Center)
           }
           .width('100%')
           .alignItems(HorizontalAlign.Start)
         }
       }
+    }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
   }

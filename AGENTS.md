@@ -70,7 +70,8 @@ packet 以换行分隔的 JSON 字符串发送：`{"id", "type", "body", "versio
 > 表现为**白屏**（app 进程在、native 不初始化）。**静态导入无法在运行期 catch** ⇒ 要在这台模拟器上跑 UI，
 > 必须先去掉/降级 HDS 依赖（实测：临时把 `HdsTabs` 换成标准 `Tabs` + 去掉 `barFloatingStyle` 后，
 > app **安装/启动/UI/原生栈全部正常**：`tcp listening` / `udp discovery init` / `native start ok` / `KDC-NETLOOP` 遥测可见）。
-> **ohemu 上无法做「点击级」UI 验证（2026-09-26 实测）**：镜像内**没有 `uinput`**（`which uinput` 为空）⇒ 只能 `snapshot_display` 取**首屏**截图，不能模拟点按/滑动。=> 依赖交互的验收（切页签、弹窗、toast）在 ohemu 上**不可自动化**，须由人在真机/模拟器上确认，或在有对端设备的场景下走真机回归；提交前请勿把"截图"当作交互类验证的证据。
+> **ohemu 上无法做「点击级」UI 验证（2026-09-26 实测，仅适用旧 ohemu 镜像）**：镜像内**没有 `uinput`**（`which uinput` 为空）⇒ 只能 `snapshot_display` 取**首屏**截图，不能模拟点按/滑动。=> 依赖交互的验收（切页签、弹窗、toast）在 ohemu 上**不可自动化**，须由人在真机/模拟器上确认，或在有对端设备的场景下走真机回归；提交前请勿把"截图"当作交互类验证的证据。
+> **【2026-10-25 更正，现行有效】用户重建镜像后（HarmonyOS 7.0.0(26.0.0)，foldable/tablet/phone/2in1 实例）`uitest uiInput click` / `uitest dumpLayout` 实测可用（走 UIServer，不依赖 uinput）⇒ 点击级 UI 验证恢复可自动化**。注意：dumpLayout 输出为 **JSON**（扩展名仍 .xml），解析按 attributes/children 树走。
 > **「HDS 双变体」不可用 target/sourceRoots 实现（2026-09-23 实证）**：hvigor 模块级 `targets[].source.sourceRoots`
 > 确实存在（schema 描述为"Stage 模型下指定 Ability 的**扩展**源代码目录"），但实测**追加语义、不能覆盖同名文件**
 > （在变体根放一个故意语法错的同名 `common/LogStore.ets`，用 `-p module=entry@ohosvariant` 构建**仍然成功** ⇒ 变体根未被采纳）。
@@ -82,7 +83,7 @@ packet 以换行分隔的 JSON 字符串发送：`{"id", "type", "body", "versio
 > 对 `org.kde.kdeconnect` 一次通过：`install bundle successfully.`；随后 `tools/launch-app.sh` 启动成功。
 > （本机 OpenHarmony 目标构建**不可行**：商用 CLT 拒绝该 SDK 布局 —— `The SDK management mode has changed.`）
 
-QEMU 手机镜像跑在宿主（非真机、非 IDE）：镜像/日志放 `~/WorkSpace2/`（勿散落在 `~` 顶层）。启动必须 `setsid nohup … < /dev/null &`（普通 `nohup &` 会被工具会话回收）；连接 `hdc tconn 127.0.0.1:5555` 后 `hdc list targets` 确认；日志 `~/WorkSpace2/ohemu.log`。全流程（含 Win10 VM 事故教训——根目录 `vm-HarmonyDev.xml` 即该 VM 的 libvirt 配置、`-phone` 与 `-2in1` 镜像差异）见 `devdocs/EMULATOR_NOTES.md`。
+QEMU 手机镜像跑在宿主（非真机、非 IDE）：镜像/日志放 `~/WorkSpace2/`（勿散落在 `~` 顶层）。**三实例一键冷启动：`tools/start-both.sh`**（折叠 Spatialfoldable:5555 / 平板 SpatialPad:5557 / 手机 SpatialPhone:5559；停旧实例 → `hdc kill -r` → 逐实例 `-bootMode coldboot` → 等就绪 → 截图自检；2026-10-24 固化，2026-10-26 随实例重建更新为三实例，Spatial2in1 停用）。**勿用 `devecocli emulator start`（默认 snapshot）**——2026-10-24 实测 snapshot 热启动两种故障：guest 显示损坏（窗口撕裂/原生截图全黑 ≈26KB）、guest hdcd 不向宿主注册（tconn 失败）。手动启动必须 `setsid nohup … < /dev/null &`（普通 `nohup &` 会被工具会话回收）+ `-bootMode coldboot`（保数据）；连接 `hdc tconn 127.0.0.1:5555` 后 `hdc list targets` 确认。全流程（含 Win10 VM 事故教训——根目录 `vm-HarmonyDev.xml` 即该 VM 的 libvirt 配置、`-phone` 与 `-2in1` 镜像差异）见 `devdocs/EMULATOR_NOTES.md`。
 
 ## docs/ 参考资料（他机整理，引用需谨慎）
 

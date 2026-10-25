@@ -170,6 +170,7 @@ devecocli emulator stop SpatialPhone
 - start 超时后**不要反复重试**，先 `ss -ltnp | grep 555` 看 Emulator 实际监听的端口；
 - 不是 5555 → 基本就是陈旧 hdc server 状态，按上面三步走；
 - 冷启动约 1~2 分钟，比热启动慢，但 guest 状态是干净的。
+- **snapshot 热启动还可能损坏 guest 显示**（2026-10-24 实测）：宿主窗口撕裂/颜色怪异、`Emulator -screenshot` 抓出的画面全黑或花屏（文件极小，~26KB 纯色）——snapshot 恢复的 guest GPU 状态不完整。修复同上三步：停实例 → `hdc kill -r` → `-bootMode coldboot`。**日常启动一律用 coldboot**，不要用 devecocli start（其默认走 snapshot）。一键冷启动：`tools/start-both.sh`（停旧实例 → `hdc kill -r` → 三实例 coldboot〔折叠 5555 / 平板 5557 / 手机 5559，2026-10-26 起〕→ 等就绪 → 截图自检；2026-10-24 固化，10-26 随实例重建更新）。
 
 ### 2.6 截图
 
@@ -241,7 +242,7 @@ v20260818 镜像实际是 **OpenHarmony 7.0.0.32 / API 26**（`hdc shell param g
 ### 3.4 ohemu 已知限制
 
 - **HDS 组件不可用**：ohemu 是 OpenHarmony 社区版，不含 HMS 商用 SDK。工程 `runtimeOS: "HarmonyOS"` 时，HDS 静态导入（`@kit.UIDesignKit`）会导致模块加载失败（白屏）。需用 `tools/verify-on-ohemu.sh` 做构建期 HDS 降级。
-- **无 `uinput`**：`which uinput` 为空，只能 `snapshot_display` 取首屏截图，不能模拟点按/滑动。依赖交互的验收须由人在真机/模拟器上确认。
+- **无 `uinput`**：`which uinput` 为空，只能 `snapshot_display` 取首屏截图，不能模拟点按/滑动。依赖交互的验收须由人在真机/模拟器上确认。**【2026-10-25 更正】仅适用旧 ohemu 镜像——用户重建的 HarmonyOS 7.0.0(26.0.0) 镜像上 `uitest uiInput click` / `uitest dumpLayout` 实测可用（UIServer 通道，不依赖 uinput），点击级验收恢复自动化；dumpLayout 输出 JSON（扩展名仍 .xml）。**
 - **一条命令跑通**：`tools/verify-on-ohemu.sh`（构建期降级 HDS + 构建/签名/安装/启动/截图/日志取证；`--revert` 还原；降级态不可提交）。
 
 ### 3.5 性能注意事项

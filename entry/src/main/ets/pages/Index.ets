@@ -4,7 +4,7 @@ import native from 'libkdeconnect_napi.so';
 import { NetConfig, CertPair, NetEvent } from 'libkdeconnect_napi.so';
 import { util } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
-import { Context, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
+import { Context, abilityAccessCtrl, Permissions, bundleManager } from '@kit.AbilityKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { display, SymbolGlyphModifier, promptAction } from '@kit.ArkUI';
 import { HdsTabs, HdsTabsController, hdsMaterial, HdsNavigation, HdsNavigationTitleMode, ScrollEffectType, HdsNavigationMenuContentOptions, HdsNavigationMenuItemOptions, HdsNavigationTitleBarOptions, HdsSideBar } from '@kit.UIDesignKit';
@@ -110,6 +110,7 @@ struct Index {
   @State sideBySide: boolean = false;
   @State immersiveSupported: boolean = false;
   @State deviceController: DeviceController = new DeviceController();
+  @State drawerSectionByTab: number[] = [0, 0, 0, 0];
   private actionController: DeviceActionController = new DeviceActionController();
   // 连接/配对会话状态机（阶段 2 拆分 ⇒ state/PairSession.ets）：状态与副作用分离，本页只装配 + 转发 + 渲染。
   //   stage: connecting=连接中（**只有 toast，不弹模态**）；prompt=配对确认弹窗（两侧共用，显示验证码）；
@@ -1184,6 +1185,8 @@ struct Index {
     AppStorage.setOrCreate('sideDiscoveredList', d);
     AppStorage.setOrCreate('sideRememberedCount', this.deviceController.offlineKnownShown().length);
     AppStorage.setOrCreate('sideDeviceSection', this.deviceController.deviceSection);
+    AppStorage.setOrCreate('sideCurrentTab', this.currentTab);
+    AppStorage.setOrCreate('sideSettingsSection', this.drawerSectionByTab[2]);
   }
 
   private sameDeviceIds(a: DeviceItem[], b: DeviceItem[]): boolean {
@@ -1351,7 +1354,7 @@ struct Index {
               iconColor: $r('sys.color.icon_primary')
             },
             backIconStyle: {
-              iconColor: $r('sys.color.icon_primary')
+              iconColor: tabIndex !== 3 ? $r('sys.color.icon_primary') : Color.Transparent
             }
           }
         },
@@ -1367,7 +1370,7 @@ struct Index {
               iconColor: $r('sys.color.icon_primary')
             },
             backIconStyle: {
-              iconColor: $r('sys.color.icon_primary')
+              iconColor: tabIndex !== 3 ? $r('sys.color.icon_primary') : Color.Transparent
             }
           }
         },
@@ -1381,8 +1384,12 @@ struct Index {
         backIcon: {
           icon: $r('sys.symbol.text_alignleft'),
           label: 'menu',
-          isEnabled: false,
-          action: (): void => {}
+          isEnabled: true,
+          action: (): void => {
+            if (tabIndex !== 3) {
+              this.drawerOpen = !this.drawerOpen;
+            }
+          }
         },
         menu: this.titleBarMenuOptions(tabIndex)
       }
@@ -1483,6 +1490,7 @@ struct Index {
       themeMode: this.settingsController.themeMode,
       language: this.settingsController.language,
       immersive: this.immersiveSupported,
+      settingsSection: this.drawerSectionByTab[2],
       onRenameDevice: (name: string): void => {
         this.settingsController.renameDevice(name);
       },
@@ -1507,8 +1515,22 @@ struct Index {
   }
 
   private pickDrawerSection(index: number): void {
-    this.deviceController.deviceSection = index;
-    this.closeDrawer();
+    this.drawerSectionByTab[this.currentTab] = index;
+    this.deviceController.deviceSection = this.drawerSectionByTab[0];
+    AppStorage.setOrCreate('sideSettingsSection', this.drawerSectionByTab[2]);
+    if (!this.sideBySide) {
+      this.closeDrawer();
+    }
+  }
+
+  private appVersion(): string {
+    try {
+      const info: bundleManager.BundleInfo = bundleManager.getBundleInfoForSelfSync(
+        bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT);
+      return info.versionName;
+    } catch (e) {
+      return '0.1.0';
+    }
   }
 
 
@@ -1526,6 +1548,9 @@ struct Index {
     SideBarPanelHost({
       selectedDeviceId: this.deviceController.selectedDeviceId,
       requestedPairIds: this.pairSession.requestedPeers,
+      settingsDeviceId: this.deviceId,
+      settingsStatusText: this.status,
+      settingsAppVersion: this.appVersion(),
       drawerExpanded: this.drawerExpanded,
       onClose: (): void => {
         this.closeDrawer();
@@ -1701,6 +1726,10 @@ struct Index {
         .width('100%')
         .onChange((index: number) => {
           this.currentTab = index;
+          this.deviceController.deviceSection = this.drawerSectionByTab[index];
+          if (!this.sideBySide) {
+            this.closeDrawer();
+          }
           if (index === 0) {
             this.triggerDiscoveryBroadcast();
           }
@@ -1711,7 +1740,6 @@ struct Index {
       }
       .titleMode(HdsNavigationTitleMode.MINI)
       .mode(NavigationMode.Stack)
-      .hideBackButton(true)
       .bindToScrollable([this.deviceScroller, this.filesScroller, this.settingsScroller, this.logsScroller])
       .titleBar(this.titleBarOptions(this.currentTab))
       .width('100%')
@@ -1878,22 +1906,33 @@ struct Index {
         isSideBarBlur: true
       })
 
-      Button() {
-        SymbolGlyph(this.drawerOpen ? $r('sys.symbol.open_sidebar') : $r('sys.symbol.close_sidebar'))
-          .fontWeight(FontWeight.Normal)
-          .fontSize($r('sys.float.ohos_id_text_size_headline7'))
-          .fontColor([$r('sys.color.ohos_id_color_titlebar_icon')])
-          .hitTestBehavior(HitTestMode.None)
+      if (!this.sideBySide && this.drawerOpen) {
+        Column()
+          .width('100%')
+          .height('100%')
+          .backgroundColor('#00000066')
+          .onClick((): void => {
+            this.drawerOpen = false;
+          })
       }
-      .id('side_bar_button')
-      .backgroundColor($r('sys.color.ohos_id_color_button_normal'))
-      .height(30)
-      .width(30)
-      .onClick(() => {
-        this.drawerOpen = !this.drawerOpen;
-      })
-      .position({ x: 16, y: this.getUIContext().px2vp(this.statusBarHeightPx) + 10 })
-      .zIndex(999)
+
+      if (this.pairSession.stage === 'prompt' || this.pairSession.stage === 'awaiting') {
+        PairConfirmDialog({
+          peerRequested: this.pairSession.peerRequested,
+          peerName: this.pairSession.peerName,
+          deviceId: this.pairSession.deviceId,
+          deviceIdLabel: this.notify.resText($r('app.string.settings_device_id').id),
+          code: this.pairSession.code,
+          awaiting: this.pairSession.stage === 'awaiting',
+          canConfirm: this.pairSession.stage === 'prompt',
+          onConfirm: (): void => {
+            this.pairSession.confirm();
+          },
+          onCancel: (): void => {
+            this.pairSession.cancel();
+          }
+        })
+      }
     }
     .width('100%')
     .height('100%')

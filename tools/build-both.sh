@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# 双端一键构建部署：构建 + 按端签名 + 安装 + 启动（手机 5555 / 平板 5557）
+# 三实例一键构建部署：构建 + 按端签名 + 安装 + 启动（折叠 5555 / 平板 5557 / 手机 5559）
 #
 # 用法:
-#   tools/build-both.sh                # 构建 + 签名 + 安装 + 启动双端（默认）
-#   PHONE=127.0.0.1:5560 TABLET=127.0.0.1:5561 tools/build-both.sh   # 自定义端地址
+#   tools/build-both.sh                # 构建 + 签名 + 安装 + 启动三实例（默认）
+#   PHONE=127.0.0.1:5560 TABLET=127.0.0.1:5561 FOLDABLE=127.0.0.1:5562 tools/build-both.sh   # 自定义端地址
 #
 # 说明:
 #   - debug profile 绑单 UDID（tools/sign-debug.sh 用 hdc shell bm get --udid 取），
@@ -22,8 +22,9 @@ cd "$PROJECT_ROOT"
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$HOME/.local/share/ohos_libshim"
 export PATH="$HOME/.local/bin:$PATH"
 
-PHONE="${PHONE:-127.0.0.1:5555}"
+FOLDABLE="${FOLDABLE:-127.0.0.1:5555}"
 TABLET="${TABLET:-127.0.0.1:5557}"
+PHONE="${PHONE:-127.0.0.1:5559}"
 
 deploy_one() {
   local name="$1" target="$2" out
@@ -42,6 +43,7 @@ deploy_one() {
   HDC_TARGET="$target" bash tools/launch-app.sh
 }
 
-deploy_one "手机" "$PHONE"
+deploy_one "双折叠" "$FOLDABLE"
 deploy_one "平板" "$TABLET"
-echo "[OK] 双端部署完成：$PHONE / $TABLET"
+deploy_one "手机" "$PHONE"
+echo "[OK] 三实例部署完成：$FOLDABLE / $TABLET / $PHONE"

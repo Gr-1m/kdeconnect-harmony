@@ -85,23 +85,7 @@ export struct DrawerOverlay {
             })
           }
 
-          Text($r('app.string.discovered_devices'))
-            .fontSize(14)
-            .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.text_secondary'))
-            .width('100%')
-            .padding({ top: 10, bottom: 4 })
-          if (this.discoveredList.length === 0) {
-            Text($r('app.string.discovered_hint'))
-              .fontSize(12)
-              .fontColor($r('app.color.text_muted'))
-              .width('100%')
-              .padding({ top: 4, bottom: 4 })
-          }
-          ForEach(this.discoveredList, (d: DeviceItem) => {
-            this.drawerPairRow(d)
-          }, (d: DeviceItem) => `disc-${d.id}`)
-
+          this.drawerSectionRow(1, $r('app.string.discovered_devices'), this.discoveredList.length)
           this.drawerSectionRow(2, $r('app.string.remembered_devices'), this.rememberedCount)
           this.drawerSectionRow(3, $r('app.string.manual_connect'), 0)
         }
