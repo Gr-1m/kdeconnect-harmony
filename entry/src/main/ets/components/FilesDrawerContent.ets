@@ -13,7 +13,7 @@ export struct FilesDrawerContent {
           .fontSize(20)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
-          .margin({ left: 12 })
+          .margin({ left: 48 })
       }
       .width('100%')
       .margin({ bottom: 4 })

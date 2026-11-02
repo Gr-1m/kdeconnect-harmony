@@ -6,7 +6,7 @@ import { util } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
 import { Context, abilityAccessCtrl, Permissions, bundleManager } from '@kit.AbilityKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
-import { display, SymbolGlyphModifier, promptAction } from '@kit.ArkUI';
+import { display, LengthMetrics, SymbolGlyphModifier, promptAction } from '@kit.ArkUI';
 import { HdsTabs, HdsTabsController, hdsMaterial, HdsNavigation, HdsNavigationTitleMode, ScrollEffectType, HdsNavigationMenuContentOptions, HdsNavigationMenuItemOptions, HdsNavigationTitleBarOptions, HdsSideBar } from '@kit.UIDesignKit';
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import deviceInfo from '@ohos.deviceInfo';
@@ -142,6 +142,8 @@ struct Index {
   @State sideDiscovered: DeviceItem[] = [];
   // 拉开/收起抽屉时同步一次（用户拉开抽屉 = 本次要修的场景）
   @State @Watch('onDrawerStateChanged') drawerOpen: boolean = false;
+  // 平板 Embed 下侧栏是否由用户主动收起；用于区分 HdsSideBar 的内部回写。
+  private sidebarUserClosed: boolean = false;
   // 抽屉里「展开 ⌄」只用于**已连接设备列表**（对齐参考稿「我的产品」：先露前几个，点开看全部）
   @State drawerExpanded: boolean = false;
   private noticeTimerId: number = -1;
@@ -706,7 +708,7 @@ struct Index {
 
   onBackPress(): boolean {
     if (this.drawerOpen) {
-      this.drawerOpen = false;
+      this.closeDrawer();
       return true;
     }
     return false;
@@ -752,6 +754,11 @@ struct Index {
     }
     if (side !== this.sideBySide) {
       this.sideBySide = side;
+      this.drawerOpen = side && !this.sidebarUserClosed;
+    }
+    // 平板首次测量时 HdsSideBar 视觉已展开但状态可能仍是 false；未被用户收起则对齐为展开。
+    if (side && !this.sidebarUserClosed && !this.drawerOpen) {
+      this.drawerOpen = true;
     }
   }
 
@@ -1165,8 +1172,17 @@ struct Index {
 
   // ---- 侧栏抽屉控制 ----
 
+  private setDrawerOpen(open: boolean): void {
+    if (this.drawerOpen === open) {
+      return;
+    }
+    animateTo({ duration: 200, curve: Curve.EaseInOut }, () => {
+      this.drawerOpen = open;
+    });
+  }
+
   private openDrawer(): void {
-    this.drawerOpen = true;
+    this.setDrawerOpen(true);
   }
 
   // 同步侧栏面板所需列表到页面 @State（**仅在内容变化时赋值**，避免无谓重绘）
@@ -1187,6 +1203,8 @@ struct Index {
     AppStorage.setOrCreate('sideDeviceSection', this.deviceController.deviceSection);
     AppStorage.setOrCreate('sideCurrentTab', this.currentTab);
     AppStorage.setOrCreate('sideSettingsSection', this.drawerSectionByTab[2]);
+    AppStorage.setOrCreate('sideSelectedDeviceId', this.deviceController.selectedDeviceId);
+    AppStorage.setOrCreate('sideRequestedPairIds', this.pairSession.requestedPeers);
   }
 
   private sameDeviceIds(a: DeviceItem[], b: DeviceItem[]): boolean {
@@ -1206,7 +1224,7 @@ struct Index {
   }
 
   private closeDrawer(): void {
-    this.drawerOpen = false;
+    this.setDrawerOpen(false);
   }
 
   // 运行状态条（单行）：抽为 builder 便于后续移入滚动内容（当前仅等价重构，布局不变）。
@@ -1282,46 +1300,58 @@ struct Index {
       ? this.deviceController.displayNameOf(deviceId)
       : this.notify.resText($r('app.string.tab_devices').id);
 
-    let buttons: [promptAction.Button, promptAction.Button];
     if (paired) {
-      buttons = [
-        { text: $r('app.string.menu_unpair'), color: '#EF4444' },
-        { text: $r('app.string.menu_send_ping'), color: '#3B82F6' }
-      ];
-    } else {
-      buttons = [
-        { text: $r('app.string.menu_refresh'), color: '#3B82F6' },
-        { text: $r('app.string.menu_add_by_ip'), color: '#3B82F6' }
-      ];
-    }
-
-    this.getUIContext().getPromptAction().showActionMenu({ title: title, buttons: buttons })
-      .then((res: promptAction.ActionMenuSuccessResponse): void => {
-        if (paired) {
-          if (res.index === 0) {
-            const pools: DeviceItem[][] = [
-              this.deviceController.connectedShown(),
-              this.deviceController.discoveredShown()
-            ];
-            for (const pool of pools) {
-              for (const d of pool) {
-                if (d.id === deviceId) {
-                  this.deviceController.unpairDevice(d);
-                  return;
-                }
+      this.getUIContext().getPromptAction().showActionMenu({
+        title: title,
+        buttons: [
+          { text: $r('app.string.menu_unpair'), color: '#EF4444' },
+          { text: $r('app.string.menu_send_ping'), color: '#3B82F6' },
+          { text: $r('app.string.menu_add_by_ip'), color: '#3B82F6' }
+        ]
+      }).then((res: promptAction.ActionMenuSuccessResponse): void => {
+        if (res.index === 0) {
+          const pools: DeviceItem[][] = [
+            this.deviceController.connectedShown(),
+            this.deviceController.discoveredShown()
+          ];
+          for (const pool of pools) {
+            for (const d of pool) {
+              if (d.id === deviceId) {
+                this.deviceController.unpairDevice(d);
+                return;
               }
             }
-          } else if (res.index === 1) {
-            this.actionController.runCardAction('find_device');
           }
-        } else {
-          if (res.index === 0) {
-            this.triggerDiscoveryBroadcast();
-          } else if (res.index === 1) {
-            this.actionController.runCardAction('manual_connect');
-          }
+        } else if (res.index === 1) {
+          this.actionController.runCardAction('find_device');
+        } else if (res.index === 2) {
+          this.openManualConnectPage();
         }
       });
+    } else {
+      this.getUIContext().getPromptAction().showActionMenu({
+        title: title,
+        buttons: [
+          { text: $r('app.string.menu_refresh'), color: '#3B82F6' },
+          { text: $r('app.string.menu_add_by_ip'), color: '#3B82F6' }
+        ]
+      }).then((res: promptAction.ActionMenuSuccessResponse): void => {
+        if (res.index === 0) {
+          this.triggerDiscoveryBroadcast();
+        } else if (res.index === 1) {
+          this.openManualConnectPage();
+        }
+      });
+    }
+  }
+
+  // 右上角菜单「通过 IP 添加设备」：切回设备页并显示手动连接表单。
+  private openManualConnectPage(): void {
+    this.switchTab(0);
+    this.deviceController.deviceSection = 3;
+    setTimeout(() => {
+      this.deviceController.deviceSection = 3;
+    }, 0);
   }
 
   // 标题栏配置：MINI 紧凑态 + 沉浸安全区 + 滚动渐变模糊（朦胧半透明）+ 沉浸光感材质。
@@ -1336,6 +1366,10 @@ struct Index {
     const opts: HdsNavigationTitleBarOptions = {
       avoidLayoutSafeArea: true,
       enableComponentSafeArea: true,
+      // 根级汉堡按钮固定左上；标题恒定右移 64vp 避让，不随抽屉开合移动。
+      padding: {
+        start: LengthMetrics.vp(64)
+      },
       style: {
         scrollEffectOpts: {
           enableScrollEffect: true,
@@ -1354,7 +1388,7 @@ struct Index {
               iconColor: $r('sys.color.icon_primary')
             },
             backIconStyle: {
-              iconColor: tabIndex !== 3 ? $r('sys.color.icon_primary') : Color.Transparent
+              iconColor: $r('sys.color.icon_primary')
             }
           }
         },
@@ -1370,7 +1404,7 @@ struct Index {
               iconColor: $r('sys.color.icon_primary')
             },
             backIconStyle: {
-              iconColor: tabIndex !== 3 ? $r('sys.color.icon_primary') : Color.Transparent
+              iconColor: $r('sys.color.icon_primary')
             }
           }
         },
@@ -1381,16 +1415,6 @@ struct Index {
       },
       content: {
         title: { mainTitle: titles[tabIndex] },
-        backIcon: {
-          icon: $r('sys.symbol.text_alignleft'),
-          label: 'menu',
-          isEnabled: true,
-          action: (): void => {
-            if (tabIndex !== 3) {
-              this.drawerOpen = !this.drawerOpen;
-            }
-          }
-        },
         menu: this.titleBarMenuOptions(tabIndex)
       }
     };
@@ -1546,22 +1570,26 @@ struct Index {
     // HdsSideBar 会缓存本 builder 构建出的子树，父级怎么重跑都不会重新求值，
     // 因此数据必须来自面板自身订阅的数据源（页面在 syncSideBarLists() 内写入 AppStorage）。
     SideBarPanelHost({
-      selectedDeviceId: this.deviceController.selectedDeviceId,
-      requestedPairIds: this.pairSession.requestedPeers,
       settingsDeviceId: this.deviceId,
       settingsStatusText: this.status,
       settingsAppVersion: this.appVersion(),
       drawerExpanded: this.drawerExpanded,
       onClose: (): void => {
-        this.closeDrawer();
+        if (!this.sideBySide) {
+          this.closeDrawer();
+        }
       },
       onOpenDevice: (d: DeviceItem): void => {
         this.actionController.openDeviceDetail(d);
-        this.closeDrawer();
+        if (!this.sideBySide) {
+          this.closeDrawer();
+        }
       },
       onPairRequest: (d: DeviceItem): void => {
         this.deviceController.requestPairWith(d);
-        this.closeDrawer();
+        if (!this.sideBySide) {
+          this.closeDrawer();
+        }
       },
       onPickSection: (index: number): void => {
         this.pickDrawerSection(index);
@@ -1712,21 +1740,27 @@ struct Index {
         .vertical(false)
         .barOverlap(true)
         .barMode(BarMode.Fixed)
-        .barBackgroundBlurStyle(BlurStyle.Regular)
-        .animationDuration(300)
-        .barBackgroundColor(Color.Transparent)
         .barFloatingStyle({
-          barBottomMargin: this.getUIContext().px2vp(this.navBarHeightPx) + 28,
+          // 手机抽屉打开时胶囊滑出；推挤模式常驻。保留 systemMaterialEffect 沉浸光感。
+          barBottomMargin: this.drawerOpen && !this.sideBySide
+            ? -160
+            : this.getUIContext().px2vp(this.navBarHeightPx) + 28,
           systemMaterialEffect: {
             materialType: hdsMaterial.MaterialType.ADAPTIVE,
             materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
           }
         })
+        .animationDuration(300)
+        .barBackgroundColor(Color.Transparent)
         .layoutWeight(1)
         .width('100%')
         .onChange((index: number) => {
           this.currentTab = index;
           this.deviceController.deviceSection = this.drawerSectionByTab[index];
+          // 平板 Embed：只更新侧栏内容，不改 drawerOpen（收起状态不自动展开）。
+          if (this.sideBySide) {
+            this.syncSideBarLists();
+          }
           if (!this.sideBySide) {
             this.closeDrawer();
           }
@@ -1740,6 +1774,7 @@ struct Index {
       }
       .titleMode(HdsNavigationTitleMode.MINI)
       .mode(NavigationMode.Stack)
+      .hideBackButton(true)
       .bindToScrollable([this.deviceScroller, this.filesScroller, this.settingsScroller, this.logsScroller])
       .titleBar(this.titleBarOptions(this.currentTab))
       .width('100%')
@@ -1747,16 +1782,6 @@ struct Index {
       .onAreaChange((_old: Area, area: Area) => {
         this.onRootArea(area);
       })
-
-      if (!this.sideBySide && this.drawerOpen) {
-        Column()
-          .width('100%')
-          .height('100%')
-          .backgroundColor('#00000066')
-          .onClick((): void => {
-            this.drawerOpen = false;
-          })
-      }
 
       if (this.pairSession.stage === 'prompt' || this.pairSession.stage === 'awaiting') {
         PairConfirmDialog({
@@ -1898,7 +1923,11 @@ struct Index {
         sideBarContainerType: SideBarContainerType.AUTO,
         isShowSideBar: this.drawerOpen,
         $isShowSideBar: (isShowSideBar: boolean): void => {
-          this.drawerOpen = isShowSideBar;
+          if (this.sideBySide && !this.sidebarUserClosed) {
+            this.drawerOpen = true;
+          } else {
+            this.setDrawerOpen(isShowSideBar);
+          }
         },
         contentAreaMask: false,
         autoHide: true,
@@ -1907,32 +1936,49 @@ struct Index {
       })
 
       if (!this.sideBySide && this.drawerOpen) {
-        Column()
-          .width('100%')
-          .height('100%')
-          .backgroundColor('#00000066')
-          .onClick((): void => {
-            this.drawerOpen = false;
-          })
+        Row() {
+          Column()
+            .width('80%')
+            .height('100%')
+            .hitTestBehavior(HitTestMode.None)
+
+          Column()
+            .layoutWeight(1)
+            .height('100%')
+            .backgroundColor('#00000066')
+            .onClick(() => {
+              this.closeDrawer();
+            })
+        }
+        .width('100%')
+        .height('100%')
+        .hitTestBehavior(HitTestMode.Transparent)
       }
 
-      if (this.pairSession.stage === 'prompt' || this.pairSession.stage === 'awaiting') {
-        PairConfirmDialog({
-          peerRequested: this.pairSession.peerRequested,
-          peerName: this.pairSession.peerName,
-          deviceId: this.pairSession.deviceId,
-          deviceIdLabel: this.notify.resText($r('app.string.settings_device_id').id),
-          code: this.pairSession.code,
-          awaiting: this.pairSession.stage === 'awaiting',
-          canConfirm: this.pairSession.stage === 'prompt',
-          onConfirm: (): void => {
-            this.pairSession.confirm();
-          },
-          onCancel: (): void => {
-            this.pairSession.cancel();
-          }
-        })
+      // L2：汉堡按钮固定在左上，开/关不换位置；高于 HdsSideBar（设计稿 zIndex 999）。
+      // 标题栏 backIcon 已移除，标题用 titleBarOptions.padding.start 让位。
+      Button() {
+        SymbolGlyph(this.drawerOpen ? $r('sys.symbol.open_sidebar') : $r('sys.symbol.close_sidebar'))
+          .fontSize(24)
+          .fontColor([$r('sys.color.ohos_id_color_titlebar_icon')])
       }
+      .width(40)
+      .height(40)
+      .borderRadius(20)
+      .backgroundColor($r('sys.color.ohos_id_color_button_normal'))
+      .position({
+        x: 16,
+        y: this.getUIContext().px2vp(this.statusBarHeightPx) + 8
+      })
+      .zIndex(999)
+      .onClick(() => {
+        const next = !this.drawerOpen;
+        if (this.sideBySide) {
+          this.sidebarUserClosed = !next;
+        }
+        this.setDrawerOpen(next);
+      })
+
     }
     .width('100%')
     .height('100%')

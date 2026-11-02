@@ -70,7 +70,7 @@ export struct DevicesTab {
   // 发现列表下拉刷新 → 请求页面触发一次 identity 广播（MSG73/MSG74）
   onRefreshDiscovery: () => void = () => {
   };
-  // 侧栏选中项：0 已连接 / 1 发现 / 2 记住的 / 3 手动连接
+  // 侧栏选中项：0 已连接 / 1 记住的 / 2 发现
   // @Link：连接/配对成功后由 Index 切回「已连接设备」分区
   // 侧栏选中项由页面持有的 @Observed 控制器持有（@ObjectLink 保证写回与刷新）
   @ObjectLink controller: DeviceController;
@@ -152,20 +152,19 @@ export struct DevicesTab {
   }
 
   private sectionTitleOf(index: number): ResourceStr {
-    // 横屏：右侧是「详情」面板（列表都在左侧栏），故 0/1 分区标题统一为「设备详情」
-    if (this.sideBySide && (index === 0 || index === 1)) {
-      return $r('app.string.device_detail_title');
-    }
     if (index === 0) {
       return $r('app.string.connected_devices');
     }
     if (index === 1) {
-      return $r('app.string.discovered_devices');
-    }
-    if (index === 2) {
       return $r('app.string.remembered_devices');
     }
-    return $r('app.string.manual_connect_optional');
+    if (index === 2) {
+      return $r('app.string.discovered_devices');
+    }
+    if (index === 3) {
+      return $r('app.string.manual_connect');
+    }
+    return $r('app.string.discovered_devices');
   }
 
   // ---- 横屏常驻侧栏（占 30%）：已连接 / 发现 都是可点设备列表，点设备 → 右侧功能页 ----
@@ -304,6 +303,8 @@ export struct DevicesTab {
             this.sideDeviceRow(d, true)
           }, (d: DeviceItem) => `conn-${d.id}`)
 
+          this.sideEntryRow(1, $r('app.string.remembered_devices'), this.rememberedDevices.length)
+
           this.sideGroupLabel($r('app.string.discovered_devices'), this.discoveredDevices.length)
           if (this.discoveredDevices.length === 0) {
             Text($r('app.string.discovered_hint'))
@@ -315,13 +316,6 @@ export struct DevicesTab {
           ForEach(this.discoveredDevices, (d: DeviceItem) => {
             this.sideDeviceRow(d, false)
           }, (d: DeviceItem) => `disc-${d.id}`)
-
-          Divider()
-            .color($r('app.color.card_border'))
-            .margin({ top: 8, bottom: 4 })
-
-          this.sideEntryRow(2, $r('app.string.remembered_devices'), this.rememberedDevices.length)
-          this.sideEntryRow(3, $r('app.string.manual_connect'), 0)
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)
@@ -925,12 +919,7 @@ export struct DevicesTab {
         .width('100%')
       }
       if (this.controller.deviceSection === 0) {
-        // 已连接设备只保留「详情/功能页」，默认直接用（自动选中第一台已连接设备）
         if (this.selectedDeviceVisible()) {
-          // 回退（用户 2026-10-11 指示「改回让你滑动之前」）：撤掉我加的 Scroll 包装，恢复原始结构。
-          // 滚动方案草稿已另存（%TEMP%\deveco\scroll-draft-20261011\DevicesTab.ets），
-          // 架构级改法（OHOTP：TabContent 下直接 List + contentEndOffset + HdsNavigation 标题栏模糊）
-          // 见 devdocs/ 与 MSG151/152，待裁定后另行实施。
           ForEach(this.selectedDeviceList(),
             (d: DeviceItem) => {
               this.deviceDetail(d)
@@ -939,33 +928,28 @@ export struct DevicesTab {
           this.emptyHint($r('app.string.select_device_hint'))
         }
       } else if (this.controller.deviceSection === 1) {
-        // 横屏：发现列表在左侧栏（带下拉刷新与配对按钮），右侧不再重复
-        if (this.sideBySide) {
-          this.emptyHint($r('app.string.select_device_hint'))
-        } else {
-        // 竖屏宿主已改为页面级 List（整页滚动，见 Index.ets 设备页签 / DESIGN §13）：
-        // 这里**不能再嵌套 Scroll** —— 嵌套 Scroll 的 height('100%') 在内容驱动高度的
-        // ListItem 内解析失败会让发现列表塌缩，且下拉手势与页面级 List 抢手势。
-        // 故直接按内容高排布；滚动交给页面级 List，刷新仍可走侧栏抽屉的下拉刷新。
-        Column({ space: 8 }) {
-          if (this.discoveredDevices.length === 0) {
-            this.emptyHint($r('app.string.discovered_hint'))
-          }
-          ForEach(this.discoveredDevices, (d: DeviceItem) => {
-            this.discoveredRow(d)
-          }, (d: DeviceItem) => d.id)
-        }
-        .width('100%')
-        .alignItems(HorizontalAlign.Start)
-        }
-      } else if (this.controller.deviceSection === 2) {
         if (this.rememberedDevices.length === 0) {
           this.emptyHint($r('app.string.remembered_hint_empty'))
         }
         ForEach(this.rememberedDevices, (r: RememberedDevice) => {
           this.rememberedRow(r)
         }, (r: RememberedDevice) => r.id)
-      } else {
+      } else if (this.controller.deviceSection === 2) {
+        if (this.sideBySide) {
+          this.emptyHint($r('app.string.select_device_hint'))
+        } else {
+          Column({ space: 8 }) {
+            if (this.discoveredDevices.length === 0) {
+              this.emptyHint($r('app.string.discovered_hint'))
+            }
+            ForEach(this.discoveredDevices, (d: DeviceItem) => {
+              this.discoveredRow(d)
+            }, (d: DeviceItem) => d.id)
+          }
+          .width('100%')
+          .alignItems(HorizontalAlign.Start)
+        }
+      } else if (this.controller.deviceSection === 3) {
         this.manualForm()
       }
     }

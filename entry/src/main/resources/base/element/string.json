@@ -791,6 +791,10 @@
     {
       "name": "settings_drawer_info",
       "value": "Device Info"
+    },
+    {
+      "name": "drawer_no_discovered",
+      "value": "No devices discovered yet"
     }
   ]
 }

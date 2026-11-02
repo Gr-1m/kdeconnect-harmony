@@ -9,8 +9,8 @@ export struct DrawerOverlay {
   connectedList: DeviceItem[] = [];
   discoveredList: DeviceItem[] = [];
   rememberedCount: number = 0;
-  @Prop selectedDeviceId: string = '';
-  @Prop requestedPairIds: string[] = [];
+  @StorageLink('sideSelectedDeviceId') selectedDeviceId: string = '';
+  @StorageLink('sideRequestedPairIds') requestedPairIds: string[] = [];
   @Prop deviceSection: number = 0;
   @Link drawerExpanded: boolean;
   onClose: () => void = () => {};
@@ -42,7 +42,7 @@ export struct DrawerOverlay {
           .fontSize(20)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
-          .margin({ left: 12 })
+          .margin({ left: 48 })
       }
       .width('100%')
       .margin({ bottom: 4 })
@@ -85,9 +85,24 @@ export struct DrawerOverlay {
             })
           }
 
-          this.drawerSectionRow(1, $r('app.string.discovered_devices'), this.discoveredList.length)
-          this.drawerSectionRow(2, $r('app.string.remembered_devices'), this.rememberedCount)
-          this.drawerSectionRow(3, $r('app.string.manual_connect'), 0)
+          this.drawerSectionRow(1, $r('app.string.remembered_devices'), this.rememberedCount)
+
+          Text($r('app.string.discovered_devices'))
+            .fontSize(14)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+            .padding({ top: 4, bottom: 4 })
+          if (this.discoveredList.length === 0) {
+            Text($r('app.string.drawer_no_discovered'))
+              .fontSize(12)
+              .fontColor($r('app.color.text_muted'))
+              .width('100%')
+              .padding({ top: 4, bottom: 4 })
+          }
+          ForEach(this.discoveredList, (d: DeviceItem) => {
+            this.drawerPairRow(d)
+          }, (d: DeviceItem) => `disc-${d.id}`)
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)

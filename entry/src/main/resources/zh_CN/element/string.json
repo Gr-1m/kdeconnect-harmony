@@ -771,6 +771,10 @@
     {
       "name": "settings_drawer_info",
       "value": "设备信息"
+    },
+    {
+      "name": "drawer_no_discovered",
+      "value": "暂未发现设备"
     }
   ]
 }

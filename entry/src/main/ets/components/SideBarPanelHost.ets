@@ -14,8 +14,8 @@ export struct SideBarPanelHost {
   @StorageLink('sideCurrentTab') sideCurrentTab: number = 0;
   @StorageLink('sideSettingsSection') sideSettingsSection: number = 0;
 
-  @Prop selectedDeviceId: string = '';
-  @Prop requestedPairIds: string[] = [];
+  @StorageLink('sideSelectedDeviceId') selectedDeviceId: string = '';
+  @StorageLink('sideRequestedPairIds') requestedPairIds: string[] = [];
   @Prop settingsDeviceId: string = '';
   @Prop settingsStatusText: string = '';
   @Prop settingsAppVersion: string = '';
@@ -32,8 +32,6 @@ export struct SideBarPanelHost {
         connectedList: this.sideConnected,
         discoveredList: this.sideDiscovered,
         rememberedCount: this.sideRememberedCount,
-        selectedDeviceId: this.selectedDeviceId,
-        requestedPairIds: this.requestedPairIds,
         deviceSection: this.sideDeviceSection,
         drawerExpanded: this.drawerExpanded,
         onClose: (): void => {
@@ -71,7 +69,7 @@ export struct SideBarPanelHost {
             .fontSize(20)
             .fontWeight(FontWeight.Bold)
             .fontColor($r('app.color.text_primary'))
-            .margin({ left: 12 })
+            .margin({ left: 48 })
         }
         .width('100%')
         .margin({ bottom: 4 })
