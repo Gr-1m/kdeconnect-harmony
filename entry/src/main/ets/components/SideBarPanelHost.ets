@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
-import { DeviceItem } from '../model/DeviceModels';
+import { DeviceItem, RememberedDevice } from '../model/DeviceModels';
 import { DrawerOverlay } from './DrawerOverlay';
 import { FilesDrawerContent } from './FilesDrawerContent';
 import { SettingsDrawerContent } from './SettingsDrawerContent';
@@ -10,6 +10,7 @@ export struct SideBarPanelHost {
   @StorageLink('sideConnectedList') sideConnected: DeviceItem[] = [];
   @StorageLink('sideDiscoveredList') sideDiscovered: DeviceItem[] = [];
   @StorageLink('sideRememberedCount') sideRememberedCount: number = 0;
+  @StorageLink('sideRememberedList') sideRemembered: RememberedDevice[] = [];
   @StorageLink('sideDeviceSection') sideDeviceSection: number = 0;
   @StorageLink('sideCurrentTab') sideCurrentTab: number = 0;
   @StorageLink('sideSettingsSection') sideSettingsSection: number = 0;
@@ -32,6 +33,7 @@ export struct SideBarPanelHost {
         connectedList: this.sideConnected,
         discoveredList: this.sideDiscovered,
         rememberedCount: this.sideRememberedCount,
+        rememberedList: this.sideRemembered,
         deviceSection: this.sideDeviceSection,
         drawerExpanded: this.drawerExpanded,
         onClose: (): void => {

@@ -29,7 +29,7 @@ import { MousepadInputPipeline, MousepadButton } from '../plugins/MousepadInput'
 import { NotificationPlugin } from '../plugins/NotificationPlugin';
 import { NotificationItem } from '../model/NotificationModels';
 import { NotificationStore } from '../common/NotificationStore';
-import { DeviceItem, BatteryItem } from '../model/DeviceModels';
+import { DeviceItem, BatteryItem, RememberedDevice } from '../model/DeviceModels';
 import { PayloadTransfer } from '../model/PayloadModels';
 import { MprisSnapshot } from '../model/MprisModels';
 import { TrustedDevice } from '../model/TrustModels';
@@ -274,6 +274,13 @@ struct Index {
     try {
       native.init((event: NetEvent): void => {
         self.deviceController.handleEvent(event);
+        // 侧栏数据是 AppStorage 快照；设备状态变化后必须主动刷新，
+        // 否则平板常驻侧栏（不经过 onDrawerStateChanged）永远是空列表。
+        const t: string = event.type ?? '';
+        if (t === 'deviceDiscovered' || t === 'connected' || t === 'disconnected'
+          || t === 'deviceLost' || t === 'pairingRequest') {
+          self.syncSideBarLists();
+        }
       });
     } catch (e) {
       this.status = 'init failed: ' + (e instanceof Error ? e.message : 'unknown');
@@ -1189,6 +1196,7 @@ struct Index {
   private syncSideBarLists(): void {
     const c: DeviceItem[] = this.deviceController.connectedShown();
     const d: DeviceItem[] = this.deviceController.discoveredShown();
+    const rem: RememberedDevice[] = this.deviceController.offlineKnownShown();
     if (!this.sameDeviceIds(c, this.sideConnected)) {
       this.sideConnected = c;
     }
@@ -1199,7 +1207,8 @@ struct Index {
     // ⇒ 面板宿主 `SideBarPanelHost` 必须靠 AppStorage 订阅（@StorageLink）才能拿到新数据。
     AppStorage.setOrCreate('sideConnectedList', c);
     AppStorage.setOrCreate('sideDiscoveredList', d);
-    AppStorage.setOrCreate('sideRememberedCount', this.deviceController.offlineKnownShown().length);
+    AppStorage.setOrCreate('sideRememberedCount', rem.length);
+    AppStorage.setOrCreate('sideRememberedList', rem);
     AppStorage.setOrCreate('sideDeviceSection', this.deviceController.deviceSection);
     AppStorage.setOrCreate('sideCurrentTab', this.currentTab);
     AppStorage.setOrCreate('sideSettingsSection', this.drawerSectionByTab[2]);

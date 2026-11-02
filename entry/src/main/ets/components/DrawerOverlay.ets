@@ -1,14 +1,15 @@
 // SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
-import { DeviceItem } from '../model/DeviceModels';
+import { DeviceItem, RememberedDevice } from '../model/DeviceModels';
 
 const DRAWER_DEVICE_CAP: number = 2;
 
 @Component
 export struct DrawerOverlay {
-  connectedList: DeviceItem[] = [];
-  discoveredList: DeviceItem[] = [];
-  rememberedCount: number = 0;
+  @Prop connectedList: DeviceItem[] = [];
+  @Prop discoveredList: DeviceItem[] = [];
+  @Prop rememberedCount: number = 0;
+  @Prop rememberedList: RememberedDevice[] = [];
   @StorageLink('sideSelectedDeviceId') selectedDeviceId: string = '';
   @StorageLink('sideRequestedPairIds') requestedPairIds: string[] = [];
   @Prop deviceSection: number = 0;
@@ -86,6 +87,9 @@ export struct DrawerOverlay {
           }
 
           this.drawerSectionRow(1, $r('app.string.remembered_devices'), this.rememberedCount)
+          ForEach(this.rememberedList, (r: RememberedDevice) => {
+            this.drawerRememberedRow(r)
+          }, (r: RememberedDevice) => `rem-${r.id}`)
 
           Text($r('app.string.discovered_devices'))
             .fontSize(14)
@@ -224,6 +228,30 @@ export struct DrawerOverlay {
     .borderRadius(14)
     .onClick(() => {
       this.onPairRequest(d);
+    })
+  }
+
+  @Builder
+  drawerRememberedRow(r: RememberedDevice) {
+    Row({ space: 10 }) {
+      Text(r.name)
+        .fontSize(14)
+        .fontColor($r('app.color.text_primary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+      Text(r.paired ? $r('app.string.remembered_hint') : $r('app.string.remembered_unpaired'))
+        .fontSize(10)
+        .fontColor(r.paired ? $r('app.color.dot_remembered') : $r('app.color.text_muted'))
+        .padding({ left: 6, right: 6, top: 1, bottom: 1 })
+        .borderRadius(999)
+        .backgroundColor($r('app.color.chip_bg'))
+    }
+    .width('100%')
+    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+    .borderRadius(12)
+    .onClick(() => {
+      this.onPickSection(1);
     })
   }
 

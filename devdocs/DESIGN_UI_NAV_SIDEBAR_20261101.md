@@ -16,6 +16,9 @@
 >   平滑位移，沉浸光感材质不变。
 > - 手动连接回归：右上角菜单 →「Add by IP」→ `openManualConnectPage()` 切到设备页 section=3，
 >   内容区恢复 `manualForm()`（host/port/Connect）。
+> - 侧栏设备列表：native `deviceDiscovered/connected/disconnected/deviceLost/pairingRequest`
+>   后调用 `syncSideBarLists()`；`DrawerOverlay` 三组数据改 `@Prop`；
+>   `sideRememberedList` 渲染真实「记住设备」条目，不再只有计数行。
 > - 平板 Embed 胶囊常驻：切页签时 `syncSideBarLists()` **只更新 `sideCurrentTab`，不改变 `drawerOpen`**；
 >   展开时侧栏随页签更新，收起时保持收起（用户点汉堡收起后由 `sidebarUserClosed` 忽略 HdsSideBar 内部回写）。
 
