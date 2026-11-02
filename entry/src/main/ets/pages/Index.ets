@@ -1420,7 +1420,8 @@ struct Index {
           }
         },
         systemMaterialEffect: {
-          materialType: hdsMaterial.MaterialType.ADAPTIVE,
+          // 官方沉浸式标题栏示例使用 IMMERSIVE；ADAPTIVE 在部分设备/模拟器会降级为无材质。
+          materialType: hdsMaterial.MaterialType.IMMERSIVE,
           materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
         }
       },
