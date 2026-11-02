@@ -1381,8 +1381,10 @@ struct Index {
       },
       style: {
         scrollEffectOpts: {
+          // 官方「设置标题栏沉浸式样式」示例：沉浸式图文场景用 IMMERSIVE_GRADIENT_BLUR，
+          // 配合下方 systemMaterialEffect；非沉浸列表才用 GRADIENT_BLUR。
           enableScrollEffect: true,
-          scrollEffectType: ScrollEffectType.GRADIENT_BLUR
+          scrollEffectType: ScrollEffectType.IMMERSIVE_GRADIENT_BLUR
         },
         // 【用户 2026-10-13 细节 1】标题栏配色改用**系统颜色资源**（随主题自适应：浅色主题自动取
         // 深色文字/图标、深色主题取浅色）——不手绘、不写死颜色，全部走系统 semantic color。
