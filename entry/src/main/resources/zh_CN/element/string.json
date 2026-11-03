@@ -775,6 +775,18 @@
     {
       "name": "drawer_no_discovered",
       "value": "暂未发现设备"
+    },
+    {
+      "name": "settings_general",
+      "value": "通用"
+    },
+    {
+      "name": "settings_information",
+      "value": "信息"
+    },
+    {
+      "name": "settings_advanced",
+      "value": "高级设置"
     }
   ]
 }

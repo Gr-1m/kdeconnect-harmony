@@ -202,7 +202,7 @@ export struct SettingsTab {
           .width('100%')
           .alignItems(HorizontalAlign.Start)
         }
-
+      } else if (this.settingsSection === 1) {
         // 主题
         GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
           Column({ space: 10 }) {
@@ -235,7 +235,7 @@ export struct SettingsTab {
           .width('100%')
           .alignItems(HorizontalAlign.Start)
         }
-
+      } else if (this.settingsSection === 2) {
         // 语言（默认跟随系统）
         GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
           Column({ space: 10 }) {
@@ -268,13 +268,10 @@ export struct SettingsTab {
           .width('100%')
           .alignItems(HorizontalAlign.Start)
         }
-      } else if (this.settingsSection === 1) {
+      } else if (this.settingsSection === 3) {
         GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
           Column({ space: 12 }) {
-            this.sectionTitle($r('app.string.settings_drawer_info'))
-            this.infoRow($r('app.string.settings_app_name'), 'KDE Connect', false)
-            this.infoRow($r('app.string.settings_app_version'), this.appVersion(), false)
-            this.infoRow($r('app.string.settings_device_id'), this.deviceId, true)
+            this.sectionTitle($r('app.string.settings_advanced'))
             this.infoRow($r('app.string.settings_protocol_version'), '8', false)
             this.infoRow($r('app.string.settings_ports'), 'UDP 1716 · TCP 1716-1764', false)
             this.infoRow($r('app.string.settings_status'), this.statusText, false)
@@ -282,7 +279,18 @@ export struct SettingsTab {
           .width('100%')
           .alignItems(HorizontalAlign.Start)
         }
-      } else if (this.settingsSection === 2) {
+      } else if (this.settingsSection === 4) {
+        GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
+          Column({ space: 12 }) {
+            this.sectionTitle($r('app.string.settings_drawer_info'))
+            this.infoRow($r('app.string.settings_app_name'), 'KDE Connect', false)
+            this.infoRow($r('app.string.settings_app_version'), this.appVersion(), false)
+            this.infoRow($r('app.string.settings_device_id'), this.deviceId, true)
+          }
+          .width('100%')
+          .alignItems(HorizontalAlign.Start)
+        }
+      } else if (this.settingsSection === 5) {
         GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
           Column({ space: 12 }) {
             this.sectionTitle($r('app.string.settings_drawer_about'))

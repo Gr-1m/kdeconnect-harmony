@@ -9,6 +9,36 @@ export struct SettingsDrawerContent {
   onClose: () => void = () => {};
 
   @Builder
+  groupLabel(label: ResourceStr) {
+    Text(label)
+      .fontSize(12)
+      .fontColor($r('app.color.text_muted'))
+      .width('100%')
+      .padding({ left: 12, top: 12, bottom: 4 })
+  }
+
+  @Builder
+  settingsTextRow(index: number, label: ResourceStr) {
+    Row({ space: 10 }) {
+      Text(label)
+        .fontSize(14)
+        .fontColor(this.settingsSection === index ? $r('app.color.accent_text') : $r('app.color.text_secondary'))
+        .fontWeight(this.settingsSection === index ? FontWeight.Medium : FontWeight.Normal)
+        .layoutWeight(1)
+      SymbolGlyph($r('sys.symbol.chevron_right'))
+        .fontSize(14)
+        .fontColor([$r('app.color.text_muted')])
+    }
+    .width('100%')
+    .padding({ left: 12, right: 12, top: 15, bottom: 15 })
+    .borderRadius(12)
+    .backgroundColor(this.settingsSection === index ? $r('app.color.accent_soft') : Color.Transparent)
+    .onClick(() => {
+      this.onPickSection(index);
+    })
+  }
+
+  @Builder
   settingsSectionRow(index: number, label: ResourceStr, icon: Resource) {
     Row({ space: 12 }) {
       SymbolGlyph(icon)
@@ -46,8 +76,14 @@ export struct SettingsDrawerContent {
 
       Scroll() {
         Column({ space: 6 }) {
-          this.settingsSectionRow(1, $r('app.string.settings_drawer_info'), $r('sys.symbol.info_circle'))
-          this.settingsSectionRow(2, $r('app.string.settings_drawer_about'), $r('sys.symbol.questionmark_circle'))
+          this.groupLabel($r('app.string.settings_general'))
+          this.settingsTextRow(0, $r('app.string.settings_device_name'))
+          this.settingsTextRow(1, $r('app.string.settings_theme'))
+          this.settingsTextRow(2, $r('app.string.settings_language'))
+          this.settingsTextRow(3, $r('app.string.settings_advanced'))
+          this.groupLabel($r('app.string.settings_information'))
+          this.settingsSectionRow(4, $r('app.string.settings_drawer_info'), $r('sys.symbol.info_circle'))
+          this.settingsSectionRow(5, $r('app.string.settings_drawer_about'), $r('sys.symbol.questionmark_circle'))
         }
         .width('100%')
         .alignItems(HorizontalAlign.Start)

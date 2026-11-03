@@ -795,6 +795,18 @@
     {
       "name": "drawer_no_discovered",
       "value": "No devices discovered yet"
+    },
+    {
+      "name": "settings_general",
+      "value": "General"
+    },
+    {
+      "name": "settings_information",
+      "value": "Information"
+    },
+    {
+      "name": "settings_advanced",
+      "value": "Advanced Settings"
     }
   ]
 }
