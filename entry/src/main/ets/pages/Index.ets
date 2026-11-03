@@ -1751,6 +1751,7 @@ struct Index {
         .barPosition(BarPosition.End)
         .vertical(false)
         .barOverlap(true)
+        .barBackgroundBlurStyle(BlurStyle.Regular)
         .barMode(BarMode.Fixed)
         .barFloatingStyle({
           // 手机抽屉打开时胶囊滑出；推挤模式常驻。保留 systemMaterialEffect 沉浸光感。
