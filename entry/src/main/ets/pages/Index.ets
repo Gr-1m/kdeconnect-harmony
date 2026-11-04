@@ -46,7 +46,6 @@ import { NotificationHelper } from '../common/NotificationHelper';
 import { NetworkWatcher } from '../common/NetworkWatcher';
 import { colorModeOf, languageOf, LANG_SYSTEM, THEME_FOLLOW_SYSTEM, systemDeviceName } from '../common/AppSettings';
 import { DevicesTab } from '../components/DevicesTab';
-import { DrawerOverlay } from '../components/DrawerOverlay';
 import { SideBarPanelHost } from '../components/SideBarPanelHost';
 import { FilesTab } from '../components/FilesTab';
 import { SettingsTab } from '../components/SettingsTab';
@@ -67,17 +66,9 @@ interface TabDef {
   label: ResourceStr;
 }
 
-// 连接/配对会话超时（毫秒）：TCP+TLS 建连 20s；配对请求等对端确认 45s
-// （对端 KDE PairingHandler::pairingTimeoutMsec 也是 30s：本侧必须留更长，
-//  否则用户还在点对端通知时本侧就先判失败。见 MSG65 §2）
-const CONNECT_TIMEOUT_MS: number = 20000;
-const PAIR_TIMEOUT_MS: number = 45000;
-// 抽屉收起态最多显示的已连接设备数（超出才出现「展开 ⌄」）
-const DRAWER_DEVICE_CAP: number = 2;
-// 抽屉面板宽度上限（vp）：大屏上 78% 会撑成一条巨板，故夹住
-const DRAWER_WIDTH_LIMIT: ConstraintSizeOptions = { maxWidth: 360 };
-// 一次最多选几个文件发送（用户 2026-09-18 拍板改为多选；上限取值与系统文件选择器常见上限一致）
-const MAX_PICK_FILES: number = 9;
+// 注：超时/抽屉容量/选文件上限等常量已各归其模块
+// （PairSession.ets 的超时、DrawerOverlay.ets 的 DRAWER_DEVICE_CAP、
+//  DeviceActionController.ets 的 MAX_PICK_FILES），本文件不再重复定义。
 
 // 注（CodeArts MSG45 §1 授权清理）：`code=110` 有界重试已按裁定 #15 撤除，它遗留下的
 // `SendJob.attempt` 字段与 `PAYLOAD_ERR_HANDSHAKE_TIMEOUT` / `MAX_SEND_ATTEMPT` 两个常量在此删除 ——
@@ -969,22 +960,9 @@ struct Index {
     return this.pluginHost.dispatch(deviceId, packetType, body);
   }
 
-
-
-
-
-
-
-
-
   // ---- 连接/配对会话 ----
 
-
   // 失败码（上线口径：提示只给错误码，明细进日志）
-
-
-
-
   private releaseCard(key: string, by: string): void {
     if (this.cardBusyKey !== key) {
       return;
@@ -997,8 +975,6 @@ struct Index {
     console.info(`KDC card released: ${key} (fired by ${by})`);
   }
 
-
-
   // 切底栏页签（HdsTabs 控制器）；失败只记日志，不阻塞
   private switchTab(index: number): void {
     this.currentTab = index;
@@ -1009,8 +985,6 @@ struct Index {
       this.notify.log('changeIndex failed: ' + (e instanceof Error ? e.message : 'unknown'));
     }
   }
-
-
 
   // ========== 页面辅助方法（供 PayloadController 注入回调使用） ==========
 
@@ -1120,9 +1094,6 @@ struct Index {
       });
     }
   }
-
-
-
 
   // P2（MSG145 §2 P2-1）：actionGateMs 只增不减 ⇒ 随「设备 × 动作」缓慢泄漏。
   // ①选择设备时清过期键（限频窗最长 3s，删 5s 前的键无语义风险）；②另有 64 条兜底上限。
@@ -1257,7 +1228,7 @@ struct Index {
     .width('100%')
     .padding({ left: 14, right: 14, top: 10, bottom: 10 })
     .borderRadius(18)
-    .backgroundBlurStyle(undefined)
+    .backgroundBlurStyle(BlurStyle.NONE)
     .backgroundColor($r('app.color.card_bg'))
     .border({ width: 1, color: $r('app.color.card_border') })
   }
@@ -1355,6 +1326,8 @@ struct Index {
   }
 
   // 右上角菜单「通过 IP 添加设备」：切回设备页并显示手动连接表单。
+  // setTimeout 双写：switchTab(0) 会触发 HdsTabs onChange，把 deviceSection 回写为
+  // drawerSectionByTab[0]=0；下一次宏任务再置 3，保证手动连接表单最终可见。
   private openManualConnectPage(): void {
     this.switchTab(0);
     this.deviceController.deviceSection = 3;
@@ -1397,9 +1370,6 @@ struct Index {
             menuStyle: {
               backgroundColor: Color.Transparent,
               iconColor: $r('sys.color.icon_primary')
-            },
-            backIconStyle: {
-              iconColor: $r('sys.color.icon_primary')
             }
           }
         },
@@ -1412,9 +1382,6 @@ struct Index {
             },
             menuStyle: {
               backgroundColor: Color.Transparent,
-              iconColor: $r('sys.color.icon_primary')
-            },
-            backIconStyle: {
               iconColor: $r('sys.color.icon_primary')
             }
           }
@@ -1568,13 +1535,6 @@ struct Index {
       return '0.1.0';
     }
   }
-
-
-
-
-
-
-
 
   @Builder
   sideBarPanel() {
@@ -1935,6 +1895,13 @@ struct Index {
         },
         sideBarContainerType: SideBarContainerType.AUTO,
         isShowSideBar: this.drawerOpen,
+        // 状态转换表（sidebarUserClosed = 用户意图，仅由根级汉堡写入）：
+        //   推挤 && !userClosed → 强制展开（对抗 HdsSideBar 内容切换时回写 false）；
+        //   推挤 && userClosed  → 接受回写值（当前实现依赖：回写 false 保持收起）；
+        //   抽屉模式            → 接受回写值。
+        // N-1 留档（2026-11-03 评审，无复现不改逻辑）：若未来出现「推挤下用户收起后
+        // 侧栏间歇重展开」，机制=HdsSideBar 在内容变化时回写 true 被 else 分支接受；
+        // 守卫写法：`if (this.sideBySide && this.sidebarUserClosed && isShowSideBar) return;`
         $isShowSideBar: (isShowSideBar: boolean): void => {
           if (this.sideBySide && !this.sidebarUserClosed) {
             this.drawerOpen = true;
@@ -1942,6 +1909,7 @@ struct Index {
             this.setDrawerOpen(isShowSideBar);
           }
         },
+        // contentAreaMask/autoHide 在本镜像不生效（HDS 限制）⇒ 抽屉遮罩由下方根 Stack 自绘
         contentAreaMask: false,
         autoHide: true,
         sideBarWidth: this.sideBySide ? '40%' : '80%',

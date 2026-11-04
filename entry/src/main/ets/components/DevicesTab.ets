@@ -164,7 +164,8 @@ export struct DevicesTab {
     if (index === 3) {
       return $r('app.string.manual_connect');
     }
-    return $r('app.string.discovered_devices');
+    // 0-3 已穷举，此分支不可达；返回空串而非误导性的「发现设备」
+    return '';
   }
 
   // ---- 横屏常驻侧栏（占 30%）：已连接 / 发现 都是可点设备列表，点设备 → 右侧功能页 ----
