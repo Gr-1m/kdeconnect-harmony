@@ -1718,6 +1718,8 @@ struct Index {
           barBottomMargin: this.drawerOpen && !this.sideBySide
             ? -160
             : this.getUIContext().px2vp(this.navBarHeightPx) + 28,
+          // 覆盖 HdsTabs 默认底部渐隐，避免暗色下出现灰/黑带（CodeArts MSG185）。
+          gradientMask: { maskColor: '#00000000', maskHeight: 96 },
           systemMaterialEffect: {
             materialType: hdsMaterial.MaterialType.ADAPTIVE,
             materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
