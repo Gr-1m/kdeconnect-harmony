@@ -4,6 +4,8 @@
 
 ## 当前阶段：未启动（Pre-Candidate）
 
+> **版本里程碑（2026-11-08 用户裁决）**：**0.8.x = 当前全部功能开发**（S2/S4/S6 等与**全 Rust 栈合并**均在 0.8.x 内完成，拟 0.8.4 合入）；**0.9.0 = 正式进入 KDE 孵化项目**（对外里程碑版本，非功能版）。对外动作（KDE Identity / Invent 建仓 / Incubation issue / kde-devel 邮件）**发起前仍须用户逐项确认**。
+
 ## Checklist 状态（对照官方 12 项）
 
 | # | 项 | 状态 | 备注 |
@@ -82,10 +84,11 @@
 
 ## 下一步行动（按序）
 
-1. 注册 KDE Identity → KDE Invent 建项目（个人空间）导入代码；
+1. 注册 KDE Identity → KDE Invent 建项目（个人空间）导入代码（**目标：0.9.0 里程碑前完成**）；
 2. 开 Incubation Request issue（贴 checklist + 项目背景）；
 3. 英文邮件至 kde-devel@kde.org 请求担保人；
 4. 团队健康度（#6）随社区互动补足（治理/贡献/REUSE CI 均已收口）；
 5. 以上 1–3 涉及对外沟通，**发起前请用户确认**（既定纪律）。
+6. **0.9.0 发布口径**：版本号 0.9.0 = 「正式进入 KDE 孵化项目」里程碑；0.8.x 期间的合并（含全 Rust 栈）按 0.8.4 及后续 patch 发布。
 
 —— 维护：Atomcode（glm5.3-flash）
