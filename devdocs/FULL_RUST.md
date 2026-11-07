@@ -110,7 +110,7 @@ cargo build --release --manifest-path entry/src/main/cpp/rust/full/napi/Cargo.to
 
 | 项 | 结果 |
 |---|---|
-| `cargo test -p kdc_native` | 16 unit + 1 E2E 全绿 |
+| `cargo test -p kdc_native` | 18 unit + 1 E2E 全绿（E2E 含正向 + **CN 不符 / 信任钉扎不符两条负路径**） |
 | E2E：A 拨 B | TLS 角色 server/client 正确；双方 `connected`；identity/`pairingRequest` 到达 |
 | E2E：B→A packet | `kdeconnect.ping` 原样 `packetReceived` |
 | E2E：A→B 200KB payload | 双向 finished；sha/字节一致；`keepPayload` 落盘成功 |
@@ -163,6 +163,10 @@ cargo build --release --manifest-path entry/src/main/cpp/rust/full/napi/Cargo.to
 ## 7.9 评审请求材料（AtomCode MSG178 §3.4 / MSG179 §3）
 
 本分支当前状态 = **可用态（候选，不合并、不排期，由用户拍板）**。
+
+- **测试口径**：`devdocs/FULL_RUST_TEST_CRITERIA.md`（分层/用例/覆盖矩阵/未覆盖/判定/复现环境）。
+- **评审请求（附风险表）**：`devdocs/FULL_RUST_REVIEW_REQUEST_20261108.md`。
+  （注：`devdocs/REVIEW_*.md` 被 .gitignore 排除，故本文件改用 `FULL_RUST_` 前缀以便入库。）
 
 1. **架构/构建/差异/风险**：本文件 §2–§7。
 2. **测试与行为对照**：

@@ -18,8 +18,20 @@ fn device_id(ch: char) -> String {
 }
 
 fn config(ch: char, name: &str, tcp_port: u16, udp_port: u16, spool: &str) -> NetConfig {
+    config_with_cert_id(ch, ch, name, tcp_port, udp_port, spool)
+}
+
+/// `cert_ch` 与 `ch` 不同 ⇒ 证书 CN != identity deviceId（负路径用）。
+fn config_with_cert_id(
+    ch: char,
+    cert_ch: char,
+    name: &str,
+    tcp_port: u16,
+    udp_port: u16,
+    spool: &str,
+) -> NetConfig {
     let id = device_id(ch);
-    let pair = cert_gen::generate_self_signed_ec(&id, 10).expect("cert");
+    let pair = cert_gen::generate_self_signed_ec(&device_id(cert_ch), 10).expect("cert");
     NetConfig {
         device_id: id,
         device_name: name.to_owned(),
@@ -172,5 +184,69 @@ fn two_stacks_connect_pair_and_transfer_payload() {
 
     a.stop();
     b.stop();
+
+    // —— 负路径 1：对端证书 CN != identity deviceId ⇒ fail-closed（不得派发 connected） ——
+    let a2_id = device_id('c');
+    let a2 = Stack::start(config_with_cert_id(
+        'c',
+        'e', // 证书 CN 用 e，与 identity deviceId(c) 不一致
+        "mismatch-a",
+        18082,
+        19173,
+        "/tmp/kdc-rust-e2e-a2",
+    ))
+    .expect("start a2");
+    let b2 = Stack::start(config('d', "mismatch-b", 18083, 19174, "/tmp/kdc-rust-e2e-b2"))
+        .expect("start b2");
+    assert!(a2.connect_to_peer("127.0.0.1".to_owned(), b2.bound_tcp_port()));
+    let err = events
+        .wait(Duration::from_secs(8), |e| {
+            e.event_type == EventType::Error && e.device_id == a2_id && e.error_code == 13
+        })
+        .expect("B2 must reject CN mismatch with EACCES");
+    assert!(
+        err.error_message.contains("CN"),
+        "unexpected error message: {}",
+        err.error_message
+    );
+    assert!(
+        events
+            .wait(Duration::from_secs(1), |e| {
+                e.event_type == EventType::Connected && e.device_id == a2_id
+            })
+            .is_none(),
+        "CN mismatch must not produce connected"
+    );
+    a2.stop();
+    b2.stop();
+
+    // —— 负路径 2：信任证书钉扎不符 ⇒ fail-closed（不得派发 connected） ——
+    let a3_id = device_id('f');
+    let a3 = Stack::start(config('f', "pin-a", 18084, 19175, "/tmp/kdc-rust-e2e-a3"))
+        .expect("start a3");
+    let b3 = Stack::start(config('g', "pin-b", 18085, 19176, "/tmp/kdc-rust-e2e-b3"))
+        .expect("start b3");
+    let wrong = cert_gen::generate_self_signed_ec(&device_id('h'), 10).expect("wrong cert");
+    b3.set_trusted_certificate(&a3_id, &wrong.cert_pem);
+    assert!(a3.connect_to_peer("127.0.0.1".to_owned(), b3.bound_tcp_port()));
+    let err = events
+        .wait(Duration::from_secs(8), |e| {
+            e.event_type == EventType::Error
+                && e.device_id == a3_id
+                && e.error_message.contains("certificate mismatch")
+        })
+        .expect("B3 must reject pinned certificate mismatch");
+    assert_eq!(err.error_code, 13, "pinning mismatch should be EACCES");
+    assert!(
+        events
+            .wait(Duration::from_secs(1), |e| {
+                e.event_type == EventType::Connected && e.device_id == a3_id
+            })
+            .is_none(),
+        "pinning mismatch must not produce connected"
+    );
+    a3.stop();
+    b3.stop();
+
     events::set_callback(None);
 }

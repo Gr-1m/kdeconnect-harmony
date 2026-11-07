@@ -300,14 +300,11 @@ fn incoming_inner(
     if let Some(trusted) = shared.trusted_cert(&info.device_id) {
         let trusted_der = crate::cert_ext::cert_der_from_pem(&trusted);
         if leaf != trusted_der {
-            shared.emit_error(
-                &info.device_id,
-                libc::EACCES,
-                "certificate mismatch (device re-pair required)",
-                &handle.host,
-                0,
-            );
-            return Err(ConnError::Protocol("certificate mismatch".to_owned()));
+            // 只返回 Protocol，由 run_incoming 的统一错误出口派发一次 error 事件；
+            // 这里再 emit 会导致 ArkTS 收到重复错误（实测出现过两条）。
+            return Err(ConnError::Protocol(
+                "certificate mismatch (device re-pair required)".to_owned(),
+            ));
         }
     }
     let pem = crate::cert_ext::cert_pem_from_der(&leaf);

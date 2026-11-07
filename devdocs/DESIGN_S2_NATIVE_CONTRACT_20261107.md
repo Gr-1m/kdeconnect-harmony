@@ -51,6 +51,20 @@
 | 用户取消 | cancelled | ECONNABORTED(103) | cancelled by local user |
 | `sendPayload` 立即失败（文件/设备不可用） | 仅返回 0 | — | 无事件（既有语义） |
 
+- **对齐联合稿 `DESIGN_FILESHARE_20261110.md` §5 的编号（1–7）**：
+
+| 联合稿 code | 含义 | native 侧 `payloadTransfer failed` 的 `errorCode`/msg | 备注 |
+|---|---|---|---|
+| 0 | 成功/完成 | 无（`started/progress/finished` 的 code 恒为 0） | 显式约定 |
+| 1 | 对端端口连接失败/30s 超时 | 接收方回连失败：ECONNREFUSED(111) | 发送方「监听 30s 无人连入」也是 ETIMEDOUT(110)，建议一并归 1 |
+| 2 | payload TLS 握手失败 | ETIMEDOUT(110) / EIO / 证书不符 EACCES(13) | `tls.rs` 决定细节 |
+| 3 | 传输中断 | ECONNRESET(104)（对端提前关闭）/ EIO（读写失败） | |
+| 4 | 本端文件读失败/权限 | **预检失败**：`sendPayload` 返回 0（无事件）⇒ ArkTS 映射 4；传输中：EIO "payload source read failed" | |
+| 5 | 落盘失败/空间不足 | **预检失败**：`startReceive`/open spool 失败 ⇒ 无任务、回 error EIO "payload not started"；传输中：EIO "payload spool write failed" | |
+| 6 | 用户取消 | cancelled / ECONNABORTED(103) | |
+| 7 | 对端未取件（keep 前 spool 被丢弃） | 7b 用户主动丢弃：ArkTS 调 `discardPayload`，native 无事件（ArkTS 自知）；7a 24h 自动回收：native 静默 reap，**无事件** | 若要 7a 有事件需新增；推荐 ArkTS 按本地时间戳判断过期 |
+| — | 控制队列满 | ENOBUFS(105) "sendPacket: tx queue full" | 控制帧路径 |
+
 - **重试策略归 ArkTS**：收到 failed 后按 `errorCode` 决定是否重试；重试 = 重新
   `sendPayload`（native 每次重新开 listener/端口，不复用旧 transfer）。
 - native 保证：失败/取消后立即关闭 socket 并释放监听端口；spool 半成品删除；
