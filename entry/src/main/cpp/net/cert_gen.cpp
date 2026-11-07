@@ -248,13 +248,21 @@ std::vector<uint8_t> CertGen::buildSelfSignedCertDer(
         const int years = validYears > 0 ? validYears : 1;
         const time_t later = now + (static_cast<time_t>(years) * 365 +
                                     leapDaysBetween(tmNow.tm_year + 1900, years)) * 86400;
+        // C3（2026-11-07，CodeArts MSG193 §1 / PROTOCOL_AUDIT §1）：notBefore 回溯 1 个日历年，
+        // 与 Android SslHelper.kt minusYears(1) 语义一致，容忍设备间时钟偏差。
+        // 依据：对端会校验 notBefore（Android KdeConnect.kt「not effective yet」直接抛错；
+        // KDE 桌面 lanlinkprovider.cpp 仅忽略自签错误，日期错误 fatal）。
+        const time_t earlier = now - (static_cast<time_t>(365) +
+                                      leapDaysBetween(tmNow.tm_year + 1900 - 1, 1)) * 86400;
+        struct tm tmEarlier {};
+        gmtime_r(&earlier, &tmEarlier);
         struct tm tmLater {};
         gmtime_r(&later, &tmLater);
-        char bufNow[16], bufLater[16];
-        strftime(bufNow, sizeof(bufNow), "%y%m%d%H%M%SZ", &tmNow);
+        char bufEarlier[16], bufLater[16];
+        strftime(bufEarlier, sizeof(bufEarlier), "%y%m%d%H%M%SZ", &tmEarlier);
         strftime(bufLater, sizeof(bufLater), "%y%m%d%H%M%SZ", &tmLater);
         std::vector<uint8_t> notBefore, notAfter;
-        derAddTag(notBefore, 0x17, reinterpret_cast<const uint8_t *>(bufNow), 13);
+        derAddTag(notBefore, 0x17, reinterpret_cast<const uint8_t *>(bufEarlier), 13);
         derAddTag(notAfter, 0x17, reinterpret_cast<const uint8_t *>(bufLater), 13);
         std::vector<uint8_t> valContent;
         derAppend(valContent, notBefore.data(), notBefore.size());
