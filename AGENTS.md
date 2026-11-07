@@ -98,14 +98,15 @@ QEMU 手机镜像跑在宿主（非真机、非 IDE）：镜像/日志放 `~/Wor
 
 以下每条都来自 2026-09-21/22 的**实际摩擦**（附实例），跨机协作一律照此执行：
 
-### 角色分工（2026-10-21 用户指令，最高优先）
+### 角色分工（2026-11-07 校准，接 2026-10-21 用户指令）
 | 角色 | 职责 |
 |---|---|
-| **AtomCode** | **总指挥** + **唯一 commit/push 执行者**；协调各方、分配任务、构建到模拟器验证 |
-| **CodeArts** | **全权负责 ArkTS/UI 代码**：Index.ets、DevicesTab、侧栏与页面接线 |
-| **Omp**（本机原生线） | **只负责 Native C++**：网络栈/协议实现、`entry/src/main/cpp/**`、native 测试；**不再 commit/push** |
+| **AtomCode** | **总指挥** + **唯一 commit/push 执行者**；协调各方、分配任务、构建到模拟器验证；owner 离线时清理/小修可由总指挥代执行（事后 owner 复核 diff，实例：`398e7d7` 清理批） |
+| **CodeArts** | **ArkTS/UI 代码 owner** + ArkTS 侧评审（评审报告发 AtomCode 裁决，实例：MSG181/184/192） |
+| **Omp**（本机原生线） | **Native C++ owner**：网络栈/协议、`entry/src/main/cpp/**`、NAPI、native 测试；**不 commit/push**；**用户直接指派时**可做 ArkTS 实验（exp/* 分支，不入 main；结论以交接文档留档，实例：0.8.3 收口 87d0036/500e2fa/eb2ffc8/7d62a4c/b81841a/c12c1ee） |
 | **DevEco** | 暂停参与；仅真机验证时临时启用 |
-> ⇒ 自 2026-10-21 起：Omp 不修改 ArkTS/UI，不执行 `git commit`/`git push`；需要提交的改动由对应 owner 通知 AtomCode 执行。
+> ⇒ 2026-11-07 补记（实际摩擦校准）：角色表以"用户直接指派 > 角色表"为最高例外口径；
+> 长期并行建议 Native/ArkTS 分会话或分 worktree（见 `SESSION_HANDOFF_20261107.md` §7），构建/安装串行或分模拟器目标。
 > 工作区未提交改动由各车道 owner 负责内容正确性，AtomCode 负责统一提交与推送。
 
 1. **分车道 + 单写者**：主线 `dev/zcodeinit` 的提交/推送统一由**总指挥 AtomCode** 执行；ArkTS 代码由 CodeArts 维护，Native C++ 由 Omp 维护；**不跨车道改文件**。任何跨车道动作（切分支、回退、push）前先发 `TO_<owner>` 消息。
