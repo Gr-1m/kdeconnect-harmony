@@ -82,3 +82,13 @@ S1 的 ② 由用户确认后执行，不与 CodeArts 在途编辑抢跑。
 | S2 实施栈 | **C → B**：先只定契约 + ArkTS 接收批量 UI；合并批准后 Native 侧转 Rust 实现（避免双写） |
 | Android「兼容」含义 | 指与 **Android 端 KDE Connect 的互操作**（对端），不是本端跑 Android；并入 S4 真机窗口做一次连接/配对/收文件预演，正式回归放合并后 soak |
 
+### 7.1 平板双面板整治：**方案 C**（用户 2026-11-08 拍板）
+
+- 删除 `DevicesTab` 的 `sideBySide` 分支，平板=手机同一布局（单列、页面级 List）；`HdsSideBar` 承担设备/分区选择；
+- 下拉刷新移到主区 section 2（发现设备），手机/平板一致；rail 的 Refresh 随之移除；
+- **分区标题行已在 `sectionContent()` 内（DevicesTab.ets:915-923），C 不改**——侧栏收起时主区仍有标题，无上下文丢失；
+- **迷你栏不存在**：当前 HdsSideBar 仅有 sideBarWidth（40%/80%）+ isShowSideBar，收起=整栏隐藏；删 rail 后双层面板彻底消除；
+- 开发依赖由 Omp-ArkTS 实施时列出并与用户逐项确认：`mainPaneScroller`/`bindToScrollable`/标题栏穿透绑定、`WIDE_RAIL_LIMIT`/`onPaneArea`/`sideBySide?3:2` 容量逻辑、主区 section 2 新增 Refresh；
+- 归属：Omp-ArkTS 实现，CodeArts 复核，总指挥三实例复验后提交。
+
+
