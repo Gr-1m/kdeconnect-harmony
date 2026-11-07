@@ -42,6 +42,8 @@ export struct DevicesTab {
   };
   @State notificationOpen: boolean = false;
   cardMaterial: uiMaterial.Material | undefined = undefined;
+  // 平板主区滚动器由页面层持有（bindToScrollable 要求同一实例）
+  mainScroller: Scroller = new Scroller();
   onUnpairDevice: (d: DeviceItem) => void = () => {
   };
   // 手机窄屏：汉堡按钮已上移到页面标题旁（Index.menuButton），组件内不再渲染；
@@ -960,10 +962,9 @@ export struct DevicesTab {
 
   @Builder
   mainArea() {
-    // fill：并排侧栏模式下卡片填满主区高度（与侧栏等高，避免底部空出一块）
-    // 回退（用户 2026-10-11）：恢复原始 `fill: this.sideBySide`（`fill: true` 属同一轮滚动实验，
-    // 其草稿另存于 %TEMP%\deveco\scroll-draft-20261011\）。
-    GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial, fill: this.sideBySide }) {
+    // fill=false：两种形态都由滚动容器决定高度（手机=页面级 List；平板=右栏 Scroll）。
+    // 平板若保持 fill=true，卡片恰好等于视口高 ⇒ Scroll 无内容可滚、标题栏收不到滚动回调。
+    GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial, fill: false }) {
       this.sectionContent()
     }
   }
@@ -990,7 +991,16 @@ export struct DevicesTab {
           .alignItems(HorizontalAlign.Start)
 
           Column() {
-            this.mainArea()
+            Scroll(this.mainScroller) {
+              this.mainArea()
+            }
+            .width('100%')
+            .height('100%')
+            .align(Alignment.TopStart)
+            .scrollBar(BarState.Off)
+            .edgeEffect(EdgeEffect.Spring)
+            // 与手机端一致：不裁剪才能让滚动内容穿透到标题栏下方（标题栏渐变模糊的前提）
+            .clip(false)
           }
           .layoutWeight(1)
           .height('100%')

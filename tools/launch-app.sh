@@ -12,18 +12,22 @@ set -euo pipefail
 MODE="${1:-start}"
 BUNDLE_NAME="org.kde.kdeconnect"
 MAIN_ABILITY="EntryAbility"
+# 多设备同时在线时显式指定目标：HDC_TARGET=127.0.0.1:5559 tools/launch-app.sh
+HDC_TARGET="${HDC_TARGET:-}"
+HDC_OPTS=()
+if [[ -n "$HDC_TARGET" ]]; then HDC_OPTS=(-t "$HDC_TARGET"); fi
 
 case "$MODE" in
   start)
-    hdc shell "aa start -b $BUNDLE_NAME -a $MAIN_ABILITY"
+    hdc "${HDC_OPTS[@]}" shell "aa start -b $BUNDLE_NAME -a $MAIN_ABILITY"
     ;;
   stop)
-    hdc shell "aa force-stop $BUNDLE_NAME"
+    hdc "${HDC_OPTS[@]}" shell "aa force-stop $BUNDLE_NAME"
     ;;
   restart)
-    hdc shell "aa force-stop $BUNDLE_NAME"
+    hdc "${HDC_OPTS[@]}" shell "aa force-stop $BUNDLE_NAME"
     sleep 1
-    hdc shell "aa start -b $BUNDLE_NAME -a $MAIN_ABILITY"
+    hdc "${HDC_OPTS[@]}" shell "aa start -b $BUNDLE_NAME -a $MAIN_ABILITY"
     ;;
   *)
     echo "用法: $0 [start|stop|restart]" >&2

@@ -163,6 +163,9 @@ struct Index {
   private filesScroller: Scroller = new Scroller();
   private settingsScroller: Scroller = new Scroller();
   private logsScroller: Scroller = new Scroller();
+  // 平板横屏（sideBySide）主区滚动器：该分支的滚动面在 DevicesTab 内（右侧主区），
+  // 同样要绑给 titleBar 的滚动渐变，否则平板上标题栏背后永远没有内容。
+  private mainPaneScroller: Scroller = new Scroller();
   private deviceId: string = '';
   private certPem: string = '';
   private keyPem: string = '';
@@ -1411,6 +1414,7 @@ struct Index {
       rememberedAll: this.deviceController.rememberedDevices,
       immersive: this.immersiveSupported,
       sideBySide: this.sideBySide,
+      mainScroller: this.mainPaneScroller,
       requestedPairIds: this.pairSession.requestedPeers,
       batteryItems: this.batteryItems,
       // 通知读取（A2）：只传"当前选中设备"的通知；关闭=纯本地移除
@@ -1638,6 +1642,7 @@ struct Index {
             },
             this.tabs[0].label)
             .verticalAlign(VerticalAlign.Center))
+          .clip(false)
 
           TabContent() {
             List({ scroller: this.filesScroller }) {
@@ -1661,6 +1666,7 @@ struct Index {
             },
             this.tabs[1].label)
             .verticalAlign(VerticalAlign.Center))
+          .clip(false)
 
           TabContent() {
             List({ scroller: this.settingsScroller }) {
@@ -1684,6 +1690,7 @@ struct Index {
             },
             this.tabs[2].label)
             .verticalAlign(VerticalAlign.Center))
+          .clip(false)
 
           TabContent() {
             List({ scroller: this.logsScroller }) {
@@ -1707,6 +1714,7 @@ struct Index {
             },
             this.tabs[3].label)
             .verticalAlign(VerticalAlign.Center))
+          .clip(false)
         }
         .barPosition(BarPosition.End)
         .vertical(false)
@@ -1714,6 +1722,9 @@ struct Index {
         .barBackgroundBlurStyle(BlurStyle.Regular)
         .barMode(BarMode.Fixed)
         .barFloatingStyle({
+          // 【用户 2026-11-07 裁决】平板胶囊不做加宽：固定 328vp（HDS 默认上限），
+          // 不随横屏变宽，观感对齐「我的华为」；手机（<440vp）本来也是 328vp 上限。
+          barWidth: { largeWidth: 328 },
           // 手机抽屉打开时胶囊滑出；推挤模式常驻。保留 systemMaterialEffect 沉浸光感。
           barBottomMargin: this.drawerOpen && !this.sideBySide
             ? -160
@@ -1722,11 +1733,17 @@ struct Index {
           gradientMask: { maskColor: '#00000000', maskHeight: 96 },
           systemMaterialEffect: {
             materialType: hdsMaterial.MaterialType.ADAPTIVE,
-            materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+            // 【2026-11-07 对照实验结论】ADAPTIVE 在本机系统策略下解析为 SMOOTH 档 ⇒ 胶囊呈中性灰
+            // （实测 RGB≈47/49/53、饱和 0.11），即用户反馈的「灰带」。显式 GENTLE 与 EXQUISITE 同呈
+            // 蓝调半透明（≈39/62/106、饱和 0.63），用户选定 GENTLE（观感最好）。
+            materialLevel: hdsMaterial.MaterialLevel.GENTLE
           }
         })
         .animationDuration(300)
         .barBackgroundColor(Color.Transparent)
+        // 【2026-11-07】官方动态模糊要求可滚动内容「穿透到标题栏下方」：
+        // List.clip(false) 只放开列表自身，TabContent/HdsTabs 仍会裁剪 ⇒ 整条链一起放开。
+        .clip(false)
         .layoutWeight(1)
         .width('100%')
         .onChange((index: number) => {
@@ -1750,7 +1767,9 @@ struct Index {
       .titleMode(HdsNavigationTitleMode.MINI)
       .mode(NavigationMode.Stack)
       .hideBackButton(true)
-      .bindToScrollable([this.deviceScroller, this.filesScroller, this.settingsScroller, this.logsScroller])
+      .bindToScrollable(this.sideBySide
+        ? [this.mainPaneScroller, this.filesScroller, this.settingsScroller, this.logsScroller]
+        : [this.deviceScroller, this.filesScroller, this.settingsScroller, this.logsScroller])
       .titleBar(this.titleBarOptions(this.currentTab))
       .width('100%')
       .height('100%')

@@ -31,6 +31,10 @@ BUNDLE_NAME="org.kde.kdeconnect"
 MAIN_ABILITY="EntryAbility"
 API_VERSION=26
 KS_PWD=123456
+# 多设备同时在线时 hdc 必须显式指定目标：HDC_TARGET=127.0.0.1:5559 tools/sign-debug.sh
+HDC_TARGET="${HDC_TARGET:-}"
+HDC_OPTS=()
+if [[ -n "$HDC_TARGET" ]]; then HDC_OPTS=(-t "$HDC_TARGET"); fi
 
 mkdir -p "$SIGN_DIR"
 
@@ -62,7 +66,7 @@ EOF
 sign_profile() {
   cd "$SIGN_DIR"
   local udid version_name version_code
-  udid="$(hdc shell bm get --udid | tail -1 | tr -d '\r')"
+  udid="$(hdc "${HDC_OPTS[@]}" shell bm get --udid | tail -1 | tr -d '\r')"
   [ ${#udid} -eq 64 ] || { echo "UDID 获取失败: $udid" >&2; exit 1; }
   version_name="$(python3 -c "import re;print(re.search(r'versionName.\s*:\s*\"([^\"]+)\"',open('$PROJECT_ROOT/AppScope/app.json5').read()).group(1))")"
   version_code="$(python3 -c "import re;print(re.search(r'versionCode.\s*:\s*(\d+)',open('$PROJECT_ROOT/AppScope/app.json5').read()).group(1))")"
@@ -111,7 +115,7 @@ sign_hap() {
 }
 
 install_only() {
-  hdc install "$SIGN_DIR/entry-debug-signed.hap"
+  hdc "${HDC_OPTS[@]}" install "$SIGN_DIR/entry-debug-signed.hap"
 }
 
 case "$MODE" in

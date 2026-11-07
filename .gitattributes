@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: CC0-1.0
+# 跨平台贡献者 + 多语言仓库：入库统一 LF，检出按平台自动处理
+* text=auto eol=lf
+
+# Windows 批处理必须 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制：不参与 diff/合并
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.keystore binary
+*.so binary
+*.a binary
+
+# 生成物：不参与语言统计与 diff 折叠
+protocol.md linguist-generated=true
+*.lock -diff
+
+# 源码归档剔除测试与 CI 资源
+/tests/ export-ignore
+/.gitlab/ export-ignore
+/.github/ export-ignore
+
+# 第三方/vendored 代码：语言统计里降权
+/entry/src/main/cpp/bearssl/** linguist-vendored
+/entry/src/main/cpp/json/** linguist-vendored

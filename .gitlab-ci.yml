@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
+# SPDX-License-Identifier: CC0-1.0
+include:
+  - project: sysadmin/ci-utilities
+    file:
+      - /gitlab-templates/blocks/workflow.yml
+      - /gitlab-templates/reuse-lint.yml
+      - /gitlab-templates/json-validation.yml
+      - /gitlab-templates/yaml-lint.yml
+      - /gitlab-templates/clang-format.yml
+
+protocol-core-test:
+  stage: validate
+  image: rust:latest
+  tags: [Linux]
+  script:
+    - cargo test --manifest-path entry/src/main/cpp/rust/protocol-core/Cargo.toml
