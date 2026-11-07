@@ -21,7 +21,53 @@
 | 11 | 许可符合 Licensing Policy | ✅ | GPL-2.0-or-later（2026-09-19 变更，兼容上游） |
 | 12 | REUSE CI lint | ✅ | SPDX 头已全仓补齐 + GitHub Actions 全绿 |
 
-## 里程碑记录
+## KDE Review 前置差距清单（2026-11-07 对照 `docs1105/kde-collab`）
+
+> 依据：`01 §4 Incubation 清单` + `01 §5 KDE Review 清单` + `06 阶段2–4` + `07 Gate C/F`。
+> 标注：✅ 已具备；⬜ 待办；🔁 需在 Review issue 中"解释替代"（HarmonyOS 场景不适用）。
+
+### A. Incubator 阶段（Gate F 前）
+
+| 项 | 状态 | 说明 / 差距 |
+|---|---|---|
+| Incubation Sponsor | ⬜ | 需经 kde-devel@ 找到担保人 |
+| kde-devel@ 及列表邮件 | ⬜ | 待发（需用户确认） |
+| KDE Manifesto 遵循 | ✅ | 已可承诺 |
+| 治理类似 KDE 项目 | ✅ | `GOVERNANCE.md` |
+| 清晰产品愿景 | ✅ | README/愿景已述 |
+| 健康团队（>1 开发者） | ⚠️ | 需社区互动补足 |
+| 英文代码/沟通 | ✅ | 已遵守 |
+| 域名/商标延续（KDE e.V.） | ⬜ | 随孵化谈 |
+| Akademy/本地活动 | ⬜ | 建议项 |
+| 代码在 KDE Invent | ⬜ | 当前 gitcode+GitHub；需 Identity 后个人空间导入 |
+| 许可符合 KDE Licensing Policy | ✅ | GPL-2.0-or-later |
+| REUSE lint CI | ✅ | REUSE 3.0 + `.github/workflows/reuse.yml`（现网；Invent 侧待接） |
+
+### B. Review 阶段（Incubation 后）
+
+| 项 | 状态 | 说明 / 差距 |
+|---|---|---|
+| 完成 Incubation | ⬜ | 前置依赖 |
+| Android application ID 命名规则 | ✅ | `org.kde.kdeconnect`（无连字符） |
+| REUSE 3.0 声明 | ✅ | SPDX 头 + `LICENSES/` + `REUSE.toml` |
+| reuse/JSON/XML/YAML lint CI | ✅ GitHub / ⬜ GitLab | `.gitlab-ci.yml`+`.kde-ci.yml` 骨架已在仓库，Invent pipeline 未接通 |
+| `Messages.sh`（i18n 提取） | ⬜/🔁 | 鸿蒙资源式 i18n 无 gettext 流程，需在 Review issue 说明替代方案（或提供等效脚本） |
+| `metainfo.xml`（AppStream） | 🔁 | 面向 Linux 桌面分发，鸿蒙应用不适用，需解释 |
+| product-screenshots 截图 | ⬜ | 可提供（需准备正式截图） |
+| clazy/clang-tidy 等健全性检查 | ⬜ | native C++（cpp/**）可纳入 clang-tidy CI；ArkTS 侧无对应工具 |
+| 文档（README 构建说明） | ✅/⬜ | README 已存在；"怎么构建（hvigorw/SDK 版本）"建议补齐英文步骤 |
+| bugs.kde.org 产品 | ⬜ | sysadmin ticket |
+| GitLab CI build 全绿 | ⬜ | 依赖 Invent 迁移 |
+| KDE neon build | 🔁 | HarmonyOS 应用无法进 neon，需解释 |
+| Flatpak/Snap 等打包 | 🔁 | 不适用，需解释（或提供 HAP 分发说明） |
+| repo-metadata 登记（`lifecycle`） | ⬜ | sysadmin ticket + metadata MR |
+
+### C. 结论与建议顺序
+
+1. **先不发起对外沟通**（既定纪律：需用户确认）；内部可先备齐：英文 README 构建说明、正式截图、clang-tidy CI 草案、REVIEW issue 的"解释替代"清单（Messages.sh/metainfo/neon/打包四项）；
+2. 用户确认后：KDE Identity → Invent 个人空间导入 → CI 接通 → repo-metadata MR → Incubation Request issue → kde-devel@ 邮件找 sponsor；
+3. 差距清单变化时更新本表（本轮已核对：骨架文件 `.gitattributes`/`.gitlab-ci.yml`/`.kde-ci.yml`/`REUSE.toml`/`LICENSES/`/`GOVERNANCE.md`/`CONTRIBUTING.md`/`AGENTS.md`/`README.md`/MR 模板均已在仓库）。
+
 
 | 日期 | 事件 |
 |---|---|
