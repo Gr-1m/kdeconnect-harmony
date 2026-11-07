@@ -11,9 +11,6 @@ import { NotificationList } from './NotificationList';
 // 剪贴板卡内含安全控件，故控件贴底 + 副标题限 1 行来适配这个高度。
 const ACTION_CARD_HEIGHT: number = 132;
 
-// 平板侧栏宽度（横屏占 30%，夹在 180–340vp 之间；竖屏固定 104vp 紧凑）
-const WIDE_RAIL_LIMIT: ConstraintSizeOptions = { minWidth: 180, maxWidth: 340 };
-
 // 设备 Tab：
 // - 竖屏（手机 / 平板竖屏）：标题旁汉堡 → 抽屉式侧栏（Index.drawerOverlay），主区单列；
 // - 横屏（平板，宽 > 高）：左侧栏**常驻**占 30%（已连接 / 发现 都是可点设备列表），
@@ -27,8 +24,6 @@ export struct DevicesTab {
   // 配对态要用**全量**已知设备表（含在线的），不能用上面那份离线子集
   @Prop rememberedAll: RememberedDevice[] = [];
   @Prop immersive: boolean = false;
-  // 并排侧栏模式（仅横屏平板）：侧栏常驻 30%
-  @Prop sideBySide: boolean = false;
   // AP-1：本侧已发起、等待对端确认的设备 id
   @Prop requestedPairIds: string[] = [];
   // 插件推来的展示项（电量）
@@ -42,8 +37,6 @@ export struct DevicesTab {
   };
   @State notificationOpen: boolean = false;
   cardMaterial: uiMaterial.Material | undefined = undefined;
-  // 平板主区滚动器由页面层持有（bindToScrollable 要求同一实例）
-  mainScroller: Scroller = new Scroller();
   onUnpairDevice: (d: DeviceItem) => void = () => {
   };
   // 手机窄屏：汉堡按钮已上移到页面标题旁（Index.menuButton），组件内不再渲染；
@@ -72,6 +65,9 @@ export struct DevicesTab {
   // 发现列表下拉刷新 → 请求页面触发一次 identity 广播（MSG73/MSG74）
   onRefreshDiscovery: () => void = () => {
   };
+  // 点击「记住的设备」行 → 页面弹设备详情（2026-11-08 用户要求）
+  onOpenRemembered: (r: RememberedDevice) => void = (_r: RememberedDevice) => {
+  };
   // 侧栏选中项：0 已连接 / 1 记住的 / 2 发现
   // @Link：连接/配对成功后由 Index 切回「已连接设备」分区
   // 侧栏选中项由页面持有的 @Observed 控制器持有（@ObjectLink 保证写回与刷新）
@@ -84,16 +80,13 @@ export struct DevicesTab {
   // 主区实测宽度（vp）：决定大按钮列数（窄→2 列 / 宽→3 列）
   @State paneWidthVp: number = 0;
 
-  private pickSection(index: number): void {
-    this.controller.deviceSection = index;
-  }
-
-  // 大按钮列数：以**主区实测宽度**为准（横屏侧栏占 30% 后主区变宽 → 3 列）
+  // 大按钮列数：以**主区实测宽度**为准（平板主区全宽 → 3 列；手机 → 2 列）
   private cardColumns(): number {
     if (this.paneWidthVp > 0) {
       return this.paneWidthVp >= 460 ? 3 : 2;
     }
-    return this.sideBySide ? 3 : 2;
+    // 首帧未测量前按 2 列，onPaneArea 测量后立即按实际宽度切换
+    return 2;
   }
 
   // §8-D：onAreaChange 计数 + 去抖（先量后改）。
@@ -168,174 +161,6 @@ export struct DevicesTab {
     }
     // 0-3 已穷举，此分支不可达；返回空串而非误导性的「发现设备」
     return '';
-  }
-
-  // ---- 横屏常驻侧栏（占 30%）：已连接 / 发现 都是可点设备列表，点设备 → 右侧功能页 ----
-
-  @Builder
-  sideGroupLabel(title: ResourceStr, count: number) {
-    Row({ space: 6 }) {
-      Text(title)
-        .fontSize(13)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_secondary'))
-        .layoutWeight(1)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-      if (count > 0) {
-        Text(`${count}`)
-          .fontSize(11)
-          .fontColor($r('app.color.accent_text'))
-          .padding({ left: 6, right: 6, top: 1, bottom: 1 })
-          .borderRadius(999)
-          .backgroundColor($r('app.color.accent_soft'))
-      }
-    }
-    .width('100%')
-    .padding({ left: 12, right: 12, top: 10, bottom: 2 })
-  }
-
-  @Builder
-  sideDeviceRow(d: DeviceItem, connected: boolean) {
-    Row({ space: 8 }) {
-      Circle({ width: 8, height: 8 })
-        .fill(connected ? $r('app.color.dot_connected') : $r('app.color.dot_discovered'))
-      Column({ space: 2 }) {
-        Text(d.name)
-          .fontSize(13)
-          .fontColor($r('app.color.text_primary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        // 已连接行显示 deviceId（身份稳定）；发现行显示 IP:端口（ID 移到配对弹窗核对）
-        Text(connected ? d.id : this.addressText(d))
-          .fontSize(9)
-          .fontColor($r('app.color.text_muted'))
-          .fontFamily('monospace')
-          .maxLines(1)
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-
-      if (connected) {
-        // 已连接行徽章按实际配对态渲染（评审 P2-3：无条件显示「已配对」会把
-        // 已连接未配对设备错标——与 connectedRow/isPaired 逻辑对齐）
-        Text(this.isPaired(d.id) ? $r('app.string.remembered_hint') : $r('app.string.remembered_unpaired'))
-          .fontSize(9)
-          .fontColor(this.isPaired(d.id) ? $r('app.color.dot_remembered') : $r('app.color.text_muted'))
-          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-          .borderRadius(999)
-          .backgroundColor($r('app.color.chip_bg'))
-      } else if (this.requestedPairIds.includes(d.id)) {
-        Text($r('app.string.pair_pending'))
-          .fontSize(9)
-          .fontColor($r('app.color.accent_text'))
-          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-          .borderRadius(999)
-          .backgroundColor($r('app.color.accent_soft'))
-      } else {
-        // 未配对：配对入口就在发现列表（用户 2026-09-14 裁决）
-        Button($r('app.string.pair_action'))
-          .fontSize(11)
-          .height(28)
-          .backgroundColor($r('app.color.accent'))
-          .borderRadius(8)
-          .onClick(() => {
-            this.onPairDevice(d);
-          })
-      }
-    }
-    .width('100%')
-    .padding({ left: 12, right: 10, top: 8, bottom: 8 })
-    .borderRadius(12)
-    .backgroundColor(this.selectedDeviceId === d.id ? $r('app.color.accent_soft') : Color.Transparent)
-    .onClick(() => {
-      // 已连接 → 打开功能页；未配对 → 走配对（与行内「配对」按钮一致）
-      if (connected) {
-        this.onOpenDevice(d);
-      } else {
-        this.onPairDevice(d);
-      }
-    })
-  }
-
-  // 分区入口（记住的设备 / 手动连接）：点 → 右侧主区切到该分区
-  @Builder
-  sideEntryRow(index: number, label: ResourceStr, count: number) {
-    Row({ space: 8 }) {
-      Text(label)
-        .fontSize(14)
-        .fontColor(this.controller.deviceSection === index ? $r('app.color.accent_text') : $r('app.color.text_secondary'))
-        .fontWeight(this.controller.deviceSection === index ? FontWeight.Medium : FontWeight.Normal)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .layoutWeight(1)
-      if (count > 0) {
-        Text(`${count}`)
-          .fontSize(11)
-          .fontColor($r('app.color.accent_text'))
-          .padding({ left: 6, right: 6, top: 1, bottom: 1 })
-          .borderRadius(999)
-          .backgroundColor($r('app.color.accent_soft'))
-      }
-    }
-    .width('100%')
-    .height(44)
-    .padding({ left: 12, right: 12 })
-    .borderRadius(14)
-    .backgroundColor(this.controller.deviceSection === index ? $r('app.color.accent_soft') : Color.Transparent)
-    .onClick(() => {
-      this.pickSection(index);
-    })
-  }
-
-  @Builder
-  sidePanel() {
-    // 侧栏整体支持下拉刷新 → 触发一次 identity 广播（发现列表移入侧栏后，刷新手势也随之搬家）
-    Refresh({ refreshing: $$this.discoveryRefreshing }) {
-      Scroll() {
-        Column({ space: 2 }) {
-          this.sideGroupLabel($r('app.string.connected_devices'), this.connectedDevices.length)
-          if (this.connectedDevices.length === 0) {
-            Text($r('app.string.group_empty'))
-              .fontSize(11)
-              .fontColor($r('app.color.text_muted'))
-              .width('100%')
-              .padding({ left: 12, right: 12, top: 2, bottom: 6 })
-          }
-          ForEach(this.connectedDevices, (d: DeviceItem) => {
-            this.sideDeviceRow(d, true)
-          }, (d: DeviceItem) => `conn-${d.id}`)
-
-          this.sideEntryRow(1, $r('app.string.remembered_devices'), this.rememberedDevices.length)
-
-          this.sideGroupLabel($r('app.string.discovered_devices'), this.discoveredDevices.length)
-          if (this.discoveredDevices.length === 0) {
-            Text($r('app.string.discovered_hint'))
-              .fontSize(11)
-              .fontColor($r('app.color.text_muted'))
-              .width('100%')
-              .padding({ left: 12, right: 12, top: 2, bottom: 6 })
-          }
-          ForEach(this.discoveredDevices, (d: DeviceItem) => {
-            this.sideDeviceRow(d, false)
-          }, (d: DeviceItem) => `disc-${d.id}`)
-        }
-        .width('100%')
-        .alignItems(HorizontalAlign.Start)
-      }
-      .width('100%')
-      .height('100%')
-      .align(Alignment.TopStart)
-      .scrollBar(BarState.Off)
-    }
-    .width('100%')
-    .layoutWeight(1)
-    .onRefreshing(() => {
-      this.onRefreshDiscovery();
-      setTimeout((): void => {
-        this.discoveryRefreshing = false;
-      }, 1500);
-    })
   }
 
   @Builder
@@ -516,9 +341,17 @@ export struct DevicesTab {
         .padding({ left: 8, right: 8, top: 2, bottom: 2 })
         .borderRadius(999)
         .backgroundColor($r('app.color.chip_bg'))
+      // 可点提示（点击 → 详情弹窗）
+      SymbolGlyph($r('sys.symbol.chevron_right'))
+        .fontSize(16)
+        .fontColor([$r('app.color.text_muted')])
     }
     .width('100%')
     .padding({ top: 6, bottom: 6 })
+    .borderRadius(12)
+    .onClick(() => {
+      this.onOpenRemembered(r);
+    })
   }
 
   @Builder
@@ -938,9 +771,9 @@ export struct DevicesTab {
           this.rememberedRow(r)
         }, (r: RememberedDevice) => r.id)
       } else if (this.controller.deviceSection === 2) {
-        if (this.sideBySide) {
-          this.emptyHint($r('app.string.select_device_hint'))
-        } else {
+        // 方案 C（MSG183）：「发现设备」是下拉刷新的落点（手机/平板一致）。
+        // 刷新 = 触发一次 identity 广播，1.5s 后自动收起刷新态（承接原 rail 的 Refresh 语义）。
+        Refresh({ refreshing: $$this.discoveryRefreshing }) {
           Column({ space: 8 }) {
             if (this.discoveredDevices.length === 0) {
               this.emptyHint($r('app.string.discovered_hint'))
@@ -952,6 +785,13 @@ export struct DevicesTab {
           .width('100%')
           .alignItems(HorizontalAlign.Start)
         }
+        .width('100%')
+        .onRefreshing(() => {
+          this.onRefreshDiscovery();
+          setTimeout((): void => {
+            this.discoveryRefreshing = false;
+          }, 1500);
+        })
       } else if (this.controller.deviceSection === 3) {
         this.manualForm()
       }
@@ -962,75 +802,28 @@ export struct DevicesTab {
 
   @Builder
   mainArea() {
-    // fill=false：两种形态都由滚动容器决定高度（手机=页面级 List；平板=右栏 Scroll）。
-    // 平板若保持 fill=true，卡片恰好等于视口高 ⇒ Scroll 无内容可滚、标题栏收不到滚动回调。
+    // fill=false：高度由页面级 List（平板/手机同一结构）决定；填满视口会让页面级 List 无内容可滚。
     GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial, fill: false }) {
       this.sectionContent()
     }
   }
 
+  // 方案 C（MSG183）：平板与手机共用同一布局——单列、内容高、由页面级 List 承载整页滚动。
+  // 原 sideBySide 分支（30% rail + 主区 Scroll）已删除；设备/分区选择由页面 HdsSideBar 承担。
   build() {
-    if (this.sideBySide) {
-      // 横屏平板：侧栏常驻占 30%（已连接 / 发现 均为可点设备列表），右侧主区。
-      // ⚠️ 本分支依赖**有界父容器**（height('100%') + layoutWeight）——放进内容驱动高度的
-      // ListItem 会退化（2026-10-12 实证，见 devdocs/DESIGN_TITLEBAR_IMMERSIVE_deveco.md §13），
-      // 故平板暂不由页面级 List 承载，待竖屏路径验证通过后再同构化。
-      Stack({ alignContent: Alignment.TopStart }) {
-        Row({ space: 12 }) {
-          Column({ space: 2 }) {
-            this.sidePanel()
-          }
-          .width('30%')
-          .constraintSize(WIDE_RAIL_LIMIT)
-          .height('100%')
-          .padding(6)
-          .borderRadius(18)
-          .backgroundBlurStyle(BlurStyle.BACKGROUND_THIN)
-          .backgroundColor($r('app.color.card_bg'))
-          .border({ width: 1, color: $r('app.color.card_border') })
-          .alignItems(HorizontalAlign.Start)
-
-          Column() {
-            Scroll(this.mainScroller) {
-              this.mainArea()
-            }
-            .width('100%')
-            .height('100%')
-            .align(Alignment.TopStart)
-            .scrollBar(BarState.Off)
-            .edgeEffect(EdgeEffect.Spring)
-            // 与手机端一致：不裁剪才能让滚动内容穿透到标题栏下方（标题栏渐变模糊的前提）
-            .clip(false)
-          }
-          .layoutWeight(1)
-          .height('100%')
-          .alignItems(HorizontalAlign.Start)
-          .onAreaChange((_old: Area, area: Area) => {
-            this.onPaneArea(area);
-          })
-        }
-        .width('100%')
-        .height('100%')
-        .alignItems(VerticalAlign.Top)
-      }
-      .width('100%')
-      .height('100%')
-    } else {
-      // 竖屏（手机与平板竖屏同款）：**内容高**布局 —— 由页面级 List 承载整页滚动。
-      // 不能再用 height('100%')/layoutWeight(1)：那会让本组件填满 ListItem 的视口，
-      // 页面级 List 反而无内容可滚（位于底部的「通知」区块将不可达）。
-      Column({ space: 10 }) {
-        Column() {
-          this.mainArea()
-        }
-        .width('100%')
-        .alignItems(HorizontalAlign.Start)
-        .onAreaChange((_old: Area, area: Area) => {
-          this.onPaneArea(area);
-        })
+    // **内容高**布局：不能再用 height('100%')/layoutWeight(1)，否则本组件填满 ListItem 的视口，
+    // 页面级 List 反而无内容可滚（位于底部的「通知」区块将不可达）。
+    Column({ space: 10 }) {
+      Column() {
+        this.mainArea()
       }
       .width('100%')
       .alignItems(HorizontalAlign.Start)
+      .onAreaChange((_old: Area, area: Area) => {
+        this.onPaneArea(area);
+      })
     }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
   }
 }

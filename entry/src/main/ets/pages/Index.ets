@@ -37,6 +37,7 @@ import { TrustStore } from '../common/TrustStore';
 import { PayloadHistory } from '../common/PayloadHistory';
 import { PayloadDetailDialog } from '../components/PayloadDetailDialog';
 import { PairConfirmDialog } from '../components/PairConfirmDialog';
+import { DeviceInfoDialog } from '../components/DeviceInfoDialog';
 import { RunCommandDialog } from '../components/RunCommandDialog';
 import { MprisDialog } from '../components/MprisDialog';
 import { ReceivedFilesDialog } from '../components/ReceivedFilesDialog';
@@ -99,6 +100,8 @@ struct Index {
   @State isLandscape: boolean = false;
   // 并排侧栏模式：**仅横屏宽屏**（左侧栏常驻 30%）；竖屏（含平板竖屏）一律走汉堡 + 抽屉
   @State sideBySide: boolean = false;
+  // 记住的设备详情弹窗（点击 remembered 列表行触发）
+  @State rememberedDetail: RememberedDevice | undefined = undefined;
   @State immersiveSupported: boolean = false;
   @State deviceController: DeviceController = new DeviceController();
   @State drawerSectionByTab: number[] = [0, 0, 0, 0];
@@ -163,9 +166,6 @@ struct Index {
   private filesScroller: Scroller = new Scroller();
   private settingsScroller: Scroller = new Scroller();
   private logsScroller: Scroller = new Scroller();
-  // 平板横屏（sideBySide）主区滚动器：该分支的滚动面在 DevicesTab 内（右侧主区），
-  // 同样要绑给 titleBar 的滚动渐变，否则平板上标题栏背后永远没有内容。
-  private mainPaneScroller: Scroller = new Scroller();
   private deviceId: string = '';
   private certPem: string = '';
   private keyPem: string = '';
@@ -1413,8 +1413,6 @@ struct Index {
       rememberedDevices: this.deviceController.offlineKnownShown(),
       rememberedAll: this.deviceController.rememberedDevices,
       immersive: this.immersiveSupported,
-      sideBySide: this.sideBySide,
-      mainScroller: this.mainPaneScroller,
       requestedPairIds: this.pairSession.requestedPeers,
       batteryItems: this.batteryItems,
       // 通知读取（A2）：只传"当前选中设备"的通知；关闭=纯本地移除
@@ -1428,6 +1426,9 @@ struct Index {
       controller: this.deviceController,
       onUnpairDevice: (d: DeviceItem): void => {
         this.deviceController.unpairDevice(d);
+      },
+      onOpenRemembered: (r: RememberedDevice): void => {
+        this.rememberedDetail = r;
       },
       onManualConnect: (host: string, port: number): void => {
         this.actionController.manualConnect(host, port);
@@ -1578,62 +1579,29 @@ struct Index {
 
   @Builder
   contentPanel() {
+    // 背景层已上提到根 Stack（全屏共享）——本面板只承载 HdsNavigation/HdsTabs 与弹窗。
     Stack({ alignContent: Alignment.TopStart }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .linearGradient({
-          angle: 160,
-          colors: [[$r('app.color.bg_grad_top'), 0.0], [$r('app.color.bg_grad_mid'), 0.5],
-            [$r('app.color.bg_grad_bottom'), 1.0]]
-        })
-      Column()
-        .width(420)
-        .height(420)
-        .radialGradient({
-          center: ['50%', '50%'],
-          radius: '50%',
-          colors: [[$r('app.color.glow_primary'), 0.0], ['rgba(56, 189, 248, 0.0)', 1.0]]
-        })
-        .position({ x: '60%', y: -90 })
-      Column()
-        .width(380)
-        .height(380)
-        .radialGradient({
-          center: ['50%', '50%'],
-          radius: '50%',
-          colors: [[$r('app.color.glow_secondary'), 0.0], ['rgba(129, 140, 248, 0.0)', 1.0]]
-        })
-        .position({ x: -110, y: '76%' })
-
       HdsNavigation() {
         HdsTabs({ controller: this.tabsController }) {
           TabContent() {
-            if (this.sideBySide) {
-              Column() {
+            // 方案 C（MSG183）：平板不再走 sideBySide 分支 —— 与手机共用「页面级 List + 内容高」单列布局。
+            // 设备/分区选择由 HdsSideBar 承担，标题栏滚动穿透仍由 deviceScroller 驱动。
+            List({ scroller: this.deviceScroller }) {
+              ListItem() {
+                this.statusBar()
+              }
+              ListItem() {
                 this.deviceTabView()
               }
-              .width('100%')
-              .height('100%')
-              .padding({ left: 16, right: 16, top: 12, bottom: 108 })
-            } else {
-              List({ scroller: this.deviceScroller }) {
-                ListItem() {
-                  this.statusBar()
-                }
-                ListItem() {
-                  this.deviceTabView()
-                }
-              }
-              .width('100%')
-              .height('100%')
-              .padding({ left: 16, right: 16 })
-              .contentEndOffset(this.bottomAvoidVp())
-              .edgeEffect(EdgeEffect.Spring)
-              .scrollBar(BarState.Off)
-              .clip(false)
-              .cachedCount(3, true)
             }
+            .width('100%')
+            .height('100%')
+            .padding({ left: 16, right: 16 })
+            .contentEndOffset(this.bottomAvoidVp())
+            .edgeEffect(EdgeEffect.Spring)
+            .scrollBar(BarState.Off)
+            .clip(false)
+            .cachedCount(3, true)
           }
           .tabBar(BottomTabBarStyle.of(
             {
@@ -1767,9 +1735,7 @@ struct Index {
       .titleMode(HdsNavigationTitleMode.MINI)
       .mode(NavigationMode.Stack)
       .hideBackButton(true)
-      .bindToScrollable(this.sideBySide
-        ? [this.mainPaneScroller, this.filesScroller, this.settingsScroller, this.logsScroller]
-        : [this.deviceScroller, this.filesScroller, this.settingsScroller, this.logsScroller])
+      .bindToScrollable([this.deviceScroller, this.filesScroller, this.settingsScroller, this.logsScroller])
       .titleBar(this.titleBarOptions(this.currentTab))
       .width('100%')
       .height('100%')
@@ -1907,6 +1873,35 @@ struct Index {
 
   build() {
     Stack() {
+      // 【层次】全屏共享背景（唯一一层）：平板 Embed 推挤模式下侧栏与主区看到同一张背景，
+      // 不再被 contentPanel 的 60% 宽度裁切；侧栏以毛玻璃（HdsSideBar.isSideBarBlur）浮在其上。
+      Column()
+        .width('100%')
+        .height('100%')
+        .linearGradient({
+          angle: 160,
+          colors: [[$r('app.color.bg_grad_top'), 0.0], [$r('app.color.bg_grad_mid'), 0.5],
+            [$r('app.color.bg_grad_bottom'), 1.0]]
+        })
+      Column()
+        .width(420)
+        .height(420)
+        .radialGradient({
+          center: ['50%', '50%'],
+          radius: '50%',
+          colors: [[$r('app.color.glow_primary'), 0.0], ['rgba(56, 189, 248, 0.0)', 1.0]]
+        })
+        .position({ x: '60%', y: -90 })
+      Column()
+        .width(380)
+        .height(380)
+        .radialGradient({
+          center: ['50%', '50%'],
+          radius: '50%',
+          colors: [[$r('app.color.glow_secondary'), 0.0], ['rgba(129, 140, 248, 0.0)', 1.0]]
+        })
+        .position({ x: -110, y: '76%' })
+
       HdsSideBar({
         sideBarPanelBuilder: (): void => {
           this.sideBarPanel()
@@ -1980,6 +1975,24 @@ struct Index {
         }
         this.setDrawerOpen(next);
       })
+
+      // 设备详情弹窗（记住的设备行点击）：渲染在根 Stack ⇒ 平板下覆盖全屏，不被 contentPanel 裁切
+      if (this.rememberedDetail !== undefined) {
+        DeviceInfoDialog({
+          deviceName: this.rememberedDetail.name,
+          deviceId: this.rememberedDetail.id,
+          deviceIdLabel: this.notify.resText($r('app.string.settings_device_id').id),
+          paired: this.rememberedDetail.paired,
+          pairedLabel: this.notify.resText($r('app.string.remembered_hint').id),
+          unpairedLabel: this.notify.resText($r('app.string.remembered_unpaired').id),
+          offlineLabel: this.notify.resText($r('app.string.device_offline').id),
+          closeLabel: this.notify.resText($r('app.string.action_close').id),
+          onClose: (): void => {
+            this.rememberedDetail = undefined;
+          }
+        })
+          .zIndex(1000)
+      }
 
     }
     .width('100%')

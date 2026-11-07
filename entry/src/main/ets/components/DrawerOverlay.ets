@@ -91,12 +91,8 @@ export struct DrawerOverlay {
             this.drawerRememberedRow(r)
           }, (r: RememberedDevice) => `rem-${r.id}`)
 
-          Text($r('app.string.discovered_devices'))
-            .fontSize(14)
-            .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.text_secondary'))
-            .width('100%')
-            .padding({ top: 4, bottom: 4 })
+          // 方案 C（MSG183）：rail 删除后，分区切换必须能从侧栏/抽屉完成 ⇒「发现设备」由标题改为可点分区行
+          this.drawerSectionRow(2, $r('app.string.discovered_devices'), this.discoveredList.length)
           if (this.discoveredList.length === 0) {
             Text($r('app.string.drawer_no_discovered'))
               .fontSize(12)
