@@ -107,6 +107,10 @@ QEMU 手机镜像跑在宿主（非真机、非 IDE）：镜像/日志放 `~/Wor
 | **DevEco** | 暂停参与；仅真机验证时临时启用 |
 > ⇒ 2026-11-07 补记（实际摩擦校准）：角色表以"用户直接指派 > 角色表"为最高例外口径；
 > 长期并行建议 Native/ArkTS 分会话或分 worktree（见 `SESSION_HANDOFF_20261107.md` §7），构建/安装串行或分模拟器目标。
+> **Omp 两会话（2026-11-07 起，用户指示必须区分）**：
+> - `Omp-Native`：`../kdeconnect-harmony-native` / 分支 `dev/native-rust`，只碰 `entry/src/main/cpp/**`（含 `rust/full/`）、Cargo/CMake、native 测试与 native workflows；
+> - `Omp-ArkTS`：主工作区，只碰 `entry/src/main/ets/**`、资源、页面（实验走 `exp/*`）；
+> - 消息命名 `MSGxxFromOmp-Native_TO_*` / `MSGxxFromOmp-ArkTS_TO_*`，共用编号靠后缀区分；两会话均不 commit/push。
 > 工作区未提交改动由各车道 owner 负责内容正确性，AtomCode 负责统一提交与推送。
 
 1. **分车道 + 单写者**：主线 `dev/zcodeinit` 的提交/推送统一由**总指挥 AtomCode** 执行；ArkTS 代码由 CodeArts 维护，Native C++ 由 Omp 维护；**不跨车道改文件**。任何跨车道动作（切分支、回退、push）前先发 `TO_<owner>` 消息。
