@@ -70,3 +70,15 @@ S1 的 ② 由用户确认后执行，不与 CodeArts 在途编辑抢跑。
 - SFTP 依赖 Rust 线（russh），若 S5 延期则 SFTP 顺延；
 - 胶囊路线未定前不启动 S7；
 - 功能性开发不改变「Native 只做官方 API 覆盖不到的部分」原则。
+
+## 7. 技术栈与合并决策（2026-11-08 用户裁决）
+
+| 项 | 裁决 |
+|---|---|
+| Native 方向 | **Rust 为主**：0.9.0 起以 `dev/native-rust`（ohos-rs + rustls，TLS13+TLS12）为主开发栈 |
+| C++ 去向 | `main` 当前仍为 C++（0.8.3 收口）；合并后 C++ 冻结在 **`backup/main-cpp`**，仅作参考/回退，不再开发 |
+| 合并窗口 | **0.9.0 起点**；前置 = CodeArts 全 Rust 评审（Approved 或 Conditional 闭合）+ Omp-Native 在途收尾 + 分支 push + 用户最终批准 |
+| A/B | **后置**：C++ vs Rust 同场景 A/B 不作合并前置（Rust 已过 L0–L4 含真实 KDE 桌面）；合并后作回归/性能基线，可选最小冒烟仅补充 |
+| S2 实施栈 | **C → B**：先只定契约 + ArkTS 接收批量 UI；合并批准后 Native 侧转 Rust 实现（避免双写） |
+| Android「兼容」含义 | 指与 **Android 端 KDE Connect 的互操作**（对端），不是本端跑 Android；并入 S4 真机窗口做一次连接/配对/收文件预演，正式回归放合并后 soak |
+
