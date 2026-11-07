@@ -1722,9 +1722,9 @@ struct Index {
         .barBackgroundBlurStyle(BlurStyle.Regular)
         .barMode(BarMode.Fixed)
         .barFloatingStyle({
-          // 分档宽度：HDS 默认「页签 ≥4 时最大 328vp」，平板上（≈1550vp 宽）只占 23%，
-          // 观感与手机差别很大。这里只放大宽屏档，手机（<440vp）保持默认 328vp。
-          barWidth: { largeWidth: 560 },
+          // 【用户 2026-11-07 裁决】平板胶囊不做加宽：固定 328vp（HDS 默认上限），
+          // 不随横屏变宽，观感对齐「我的华为」；手机（<440vp）本来也是 328vp 上限。
+          barWidth: { largeWidth: 328 },
           // 手机抽屉打开时胶囊滑出；推挤模式常驻。保留 systemMaterialEffect 沉浸光感。
           barBottomMargin: this.drawerOpen && !this.sideBySide
             ? -160
