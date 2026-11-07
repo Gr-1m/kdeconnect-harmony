@@ -1,100 +1,103 @@
+# SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# 全 Rust 原生栈（2026-11-07 切换）。
+#
+# 目标：把 `rust/full/napi`（ohos-rs cdylib）构建为 `libkdeconnect_napi.so`，
+# 输出到 hvigor 约定的 `intermediates/cmake/.../obj/<abi>/`。
+#
+# 与旧 C++ 构建的差异：
+#   - 不再编译 bearssl/ json/ net/ napi/（这些目录保留作行为对照，逐步删除）；
+#   - 交叉工具链仍来自 hvigor 传入的 OHOS NDK（BiSheng/OpenHarmony 均可）；
+#   - ring 的 C 部分必须用目标 clang 编译，否则 aarch64 链接会报 architecture mismatch。
+#
+# 环境变量（均从 hvigor/CMake 已知路径推导，不写死本机路径）：
+#   OHOS_NDK       = <sdk>/native           （clang/sysroot 根）
+#   OHOS_NDK_HOME  = <sdk>                  （napi-build-ohos 需要）
+#   CC_<triple> / AR_<triple>               （ring 交叉编译）
+#   CARGO_TARGET_<TRIPLE>_LINKER            （rustc 链接驱动）
+
 cmake_minimum_required(VERSION 3.5.0)
-project(kdeconnect_napi)
+project(kdeconnect_napi_full_rust)
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_C_STANDARD 11)
+# hvigor 的 CMake 工具链传入 OHOS_SDK_NATIVE=<sdk>/native；旧变量 NATIVEROUTER
+# 在本机配置下为空，必须优先用前者。
+if(DEFINED OHOS_SDK_NATIVE AND EXISTS "${OHOS_SDK_NATIVE}/llvm/bin/clang")
+    set(OHOS_NDK_DIR "${OHOS_SDK_NATIVE}")
+elseif(DEFINED NATIVEROUTER AND EXISTS "${NATIVEROUTER}/llvm/bin/clang")
+    set(OHOS_NDK_DIR "${NATIVEROUTER}")
+elseif(DEFINED NATIVEROUTER)
+    get_filename_component(OHOS_NDK_DIR "${NATIVEROUTER}" DIRECTORY)
+else()
+    message(FATAL_ERROR "未找到 OHOS SDK native 目录（OHOS_SDK_NATIVE/NATIVEROUTER 均为空）")
+endif()
+get_filename_component(OHOS_SDK_ROOT "${OHOS_NDK_DIR}" DIRECTORY)
+set(RUST_SYSROOT "${OHOS_NDK_DIR}/sysroot")
 
-if(NOT DEFINED NATIVEROUTER)
-    set(NATIVEROUTER ${OHOS_SYSROOT_DIR})
+if(NOT EXISTS "${OHOS_NDK_DIR}/llvm/bin/clang")
+    message(FATAL_ERROR "OHOS clang not found under ${OHOS_NDK_DIR}/llvm/bin/clang")
 endif()
 
-include_directories(${NATIVEROUTER}/usr/include)
-
-# BearSSL 0.6（MIT，官方源 bearssl.org）：src/ 下 277 个 .c 与官方 Makefile coresrc 清单一致，
-# 直接 GLOB 编译为静态库（hvigor 按 ABI 分别交叉编译，无需独立脚本）。
-file(GLOB_RECURSE BEARSSL_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/bearssl/src/*.c)
-add_library(bearssl STATIC ${BEARSSL_SRCS})
-# 官方 Makefile 用 -Isrc -Iinc：inc 为公共 API，src/inner.h 为内部头（仅本库使用，PRIVATE）
-target_include_directories(bearssl
-    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/bearssl/inc
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/bearssl/src
-)
-set_target_properties(bearssl PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
-# 网络栈核心（cpp/net/）与 NAPI 桥（cpp/napi/ + napi_init.cpp）均由 native agent 维护；
-# 规范见 devdocs/CPP_GUIDE.md，接口契约以 cpp/types/libkdeconnect_napi/Index.d.ts 为准。
-# 注意：GLOB 对新增文件需重新配置（每次 hvigor 构建都会重跑 CMake，无需手动刷新缓存）。
-file(GLOB_RECURSE NET_SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/net/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/net/*.c)
-file(GLOB_RECURSE NAPI_SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/napi/*.cpp)
-file(GLOB_RECURSE PAYLOAD_SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/payload/*.cpp)
-file(GLOB_RECURSE JSON_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/json/*.c)
-
-add_library(kdeconnect_napi SHARED
-    napi_init.cpp
-    ${JSON_SRCS}
-    ${PAYLOAD_SRCS}
-    ${NET_SRCS}
-    ${NAPI_SRCS}
-)
-# S4：排查级埋点编译期开关（release 只留 NETLOOP 粗粒度哨兵）
-target_compile_definitions(kdeconnect_napi PRIVATE $<$<NOT:$<CONFIG:Debug>>:KDC_TELEMETRY=0>)
-
-
-target_include_directories(kdeconnect_napi PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-target_link_libraries(kdeconnect_napi PUBLIC
-    bearssl
-    libace_napi.z.so
-    libhilog_ndk.z.so
-)
-
-# —————— R1：Rust 静态库（rust/kdc_core = packet_io/cert_util 的 Rust 实现）——————
-# PROCESS §8：Rust 产物必须接入 hvigor CMake，不另建独立构建入口 ⇒ 这里用 add_custom_command
-# 调 cargo 交叉编译，再把 .a 链进同一个 .so。
-#
-# 跨平台（2026-09-14 改，为使「合回主线不打断 Win10 DevEco 构建」）：
-#   · 原先用 `PATH=<rust/wrappers>:$ENV{PATH}` + `ohos-ar` + POSIX sh wrapper —— 在 Windows 上
-#     分隔符错误且无 sh，hvigor 走到 cargo 必失败。现改为**只调 cargo**，不改 PATH、不依赖 sh。
-#   · **不需要 linker**：`crate-type=["staticlib"]` 不链接（设备侧 .so 由 CMake 的 OHOS clang 链接）。
-#   · **不需要 AR**：实测 rustc 1.98.1 对 staticlib 走进程内归档（无 AR_* 也产出同样大小的 .a）；
-#     rust/wrappers/ 因此只留给「手动交叉链接冒烟」场景，hvigor 构建不再使用。
-set(RUST_CRATE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rust/kdc_core)
+set(RUST_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/rust/full/napi/Cargo.toml")
+set(RUST_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/rust-target")
 
 if(OHOS_ARCH STREQUAL "arm64-v8a" OR CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
-    set(RUST_TARGET aarch64-unknown-linux-ohos)
+    set(RUST_TARGET "aarch64-unknown-linux-ohos")
+    set(RUST_TRIPLE_ENV "aarch64_unknown_linux_ohos")
+    set(RUST_TRIPLE_UPPER "AARCH64_UNKNOWN_LINUX_OHOS")
+    set(RUST_CLANG_TARGET "aarch64-linux-ohos")
+    set(RUST_LLVM_LIB_DIR "aarch64-linux-ohos")
 elseif(OHOS_ARCH STREQUAL "x86_64" OR CMAKE_ANDROID_ARCH_ABI STREQUAL "x86_64")
-    set(RUST_TARGET x86_64-unknown-linux-ohos)
+    set(RUST_TARGET "x86_64-unknown-linux-ohos")
+    set(RUST_TRIPLE_ENV "x86_64_unknown_linux_ohos")
+    set(RUST_TRIPLE_UPPER "X86_64_UNKNOWN_LINUX_OHOS")
+    set(RUST_CLANG_TARGET "x86_64-linux-ohos")
+    set(RUST_LLVM_LIB_DIR "x86_64-linux-ohos")
 else()
-    set(RUST_TARGET "")
+    message(FATAL_ERROR "unsupported ABI for Rust build: OHOS_ARCH=${OHOS_ARCH} ABI=${CMAKE_ANDROID_ARCH_ABI}")
 endif()
 
-if(RUST_TARGET)
-    # cargo 缺失时给可执行的补救指引，而不是让 hvigor 抛一句「找不到命令」
-    find_program(RUST_CARGO_EXECUTABLE cargo)
-    if(NOT RUST_CARGO_EXECUTABLE)
-        message(FATAL_ERROR
-            "找不到 cargo：R1 的 Rust 静态库（rust/kdc_core）需要它。"
-            "安装：rustup-init -y --profile minimal --no-modify-path --default-toolchain stable "
-            "&& rustup target add aarch64-unknown-linux-ohos x86_64-unknown-linux-ohos；"
-            "详见 rust/README.md §5b。")
-    endif()
-
-    set(RUST_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/rust-target)
-    set(RUST_LIB ${RUST_TARGET_DIR}/${RUST_TARGET}/release/libkdc_core.a)
-    file(GLOB_RECURSE RUST_SRCS CONFIGURE_DEPENDS
-        ${RUST_CRATE_DIR}/src/*.rs ${RUST_CRATE_DIR}/Cargo.toml)
-    add_custom_command(
-        OUTPUT ${RUST_LIB}
-        COMMAND ${RUST_CARGO_EXECUTABLE} build --release --target ${RUST_TARGET} --target-dir ${RUST_TARGET_DIR} --manifest-path ${RUST_CRATE_DIR}/Cargo.toml
-        DEPENDS ${RUST_SRCS}
-        COMMENT "cargo build kdc_core (${RUST_TARGET})"
-        VERBATIM
-    )
-    add_custom_target(kdc_core_rust DEPENDS ${RUST_LIB})
-    add_library(kdc_core STATIC IMPORTED GLOBAL)
-    set_target_properties(kdc_core PROPERTIES IMPORTED_LOCATION ${RUST_LIB})
-    add_dependencies(kdc_core kdc_core_rust)
-    target_link_libraries(kdeconnect_napi PUBLIC kdc_core)
+find_program(RUST_CARGO_EXECUTABLE cargo)
+if(NOT RUST_CARGO_EXECUTABLE)
+    message(FATAL_ERROR
+        "找不到 cargo：全 Rust 原生栈需要 Rust 工具链。安装：rustup-init -y --profile minimal "
+        "--no-modify-path --default-toolchain stable && rustup target add "
+        "aarch64-unknown-linux-ohos x86_64-unknown-linux-ohos；详见 rust/README.md。")
 endif()
+
+set(RUST_SO "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/libkdeconnect_napi.so")
+set(RUST_BUILT_SO "${RUST_TARGET_DIR}/${RUST_TARGET}/release/libkdeconnect_napi.so")
+set(RUST_WRAPPER "${CMAKE_CURRENT_SOURCE_DIR}/rust/wrappers/${RUST_CLANG_TARGET}-clang")
+set(RUST_CLANG "${OHOS_NDK_DIR}/llvm/bin/clang")
+set(RUST_LLVM_AR "${OHOS_NDK_DIR}/llvm/bin/llvm-ar")
+
+file(GLOB_RECURSE RUST_SRCS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/rust/full/core/src/*.rs"
+    "${CMAKE_CURRENT_SOURCE_DIR}/rust/full/napi/src/*.rs"
+    "${CMAKE_CURRENT_SOURCE_DIR}/rust/full/Cargo.toml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/rust/full/core/Cargo.toml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/rust/full/napi/Cargo.toml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/rust/full/napi/build.rs"
+    "${CMAKE_CURRENT_SOURCE_DIR}/rust/kdc_core/src/*.rs"
+    "${CMAKE_CURRENT_SOURCE_DIR}/rust/kdc_core/Cargo.toml"
+)
+
+add_custom_command(
+    OUTPUT "${RUST_SO}"
+    COMMAND ${CMAKE_COMMAND} -E env
+        "OHOS_NDK=${OHOS_NDK_DIR}"
+        "OHOS_NDK_HOME=${OHOS_SDK_ROOT}"
+        "CC_${RUST_TRIPLE_ENV}=${RUST_CLANG} --target=${RUST_CLANG_TARGET} --sysroot=${RUST_SYSROOT} -D__MUSL__"
+        "AR_${RUST_TRIPLE_ENV}=${RUST_LLVM_AR}"
+        "CARGO_TARGET_${RUST_TRIPLE_UPPER}_LINKER=${RUST_WRAPPER}"
+        "${RUST_CARGO_EXECUTABLE}" build --release
+            --manifest-path "${RUST_MANIFEST}"
+            --target "${RUST_TARGET}"
+            --target-dir "${RUST_TARGET_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${RUST_BUILT_SO}" "${RUST_SO}"
+    DEPENDS ${RUST_SRCS}
+    COMMENT "cargo build kdeconnect_napi (${RUST_TARGET})"
+    VERBATIM
+)
+
+add_custom_target(kdeconnect_napi ALL DEPENDS "${RUST_SO}")

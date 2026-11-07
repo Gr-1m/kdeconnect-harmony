@@ -1,5 +1,11 @@
 # KDE Connect 仓库级 AGENTS.md
 
+> **2026-11-07 分支说明（`dev/native-rust`，本文件所在分支）**：native 层已全 Rust 化
+> （`entry/src/main/cpp/rust/full/`，ohos-rs + rustls），C++/BearSSL 代码已删除；
+> 构建、测试、设备验证与差异见 `devdocs/FULL_RUST.md`。`main` 分支仍是 C++ 栈，
+> 合并本分支前需按该文件 §7 评估风险。多模拟器并存时用
+> `HDC_TARGET=127.0.0.1:<port>` 指定 `sign-debug.sh`/`launch-app.sh` 目标。
+
 > **2026-09-12 迁移说明（zcode 落地）**：本文件自旧工作区拷入**仓库根**（新正本，Syncthing 双机可见；旧工作区已降级为只读参考）。阅读下文时按此映射：
 > - 「主开发对象 `kdeconnect-harmony-PreDev/`」→ **现在就是本仓库根**（重建后的工程直接位于仓库根：`entry/`、`AppScope/`、`tools/`…）；
 > - 「中心仓库 gitcode 尚未同步 / 不 add remote」→ 本仓库已 clone 自 gitcode（remote origin 已配置，分支 `dev/zcodeinit`），**提交/推送纪律（2026-10-21 用户指令更新）**：`commit` 与 `push` 统一由**总指挥 AtomCode** 执行；Omp 不再负责提交/推送，只做 Native C++ 实现、构建与验证（CodeArts 专职 ArkTS）；
@@ -54,6 +60,7 @@ packet 以换行分隔的 JSON 字符串发送：`{"id", "type", "body", "versio
 - **中心仓库**：<https://gitcode.com/Gr1m/kdeconnect-harmony>（GPL-2.0-or-later，2026-09-19 由 GPL-3.0 变更）。**版权署名（2026-09-22 用户指令）**：**暂留占位** `SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors`（官方产品名 + 移植限定词 + 集体主体，**不落个人**）；**定稿前冻结、不来回改**；正式筹备 KDE 孵化 checklist 时再改为真实作者署名。**已同步（2026-09-15）**：`main` 与本机工程**同根**（初始提交 `8d6c639`），本机开发分支 `dev/zcodeinit` 已 push（首个 push 2026-09-15，`71c7b46..3c34001`），`main` 已推进到与 `dev/zcodeinit` 一致。开发仍在 `dev/zcodeinit`，**提交/推送纪律（2026-10-21 用户指令更新）**：`commit` 与 `push` 统一由总指挥 AtomCode 执行；Omp 不再负责提交/推送。**仍需先确认**的动作：回退/删除他人改动、跨车道合并、改他人在途文件。仓库范围**只有 `kdeconnect-harmony-PreDev/` 工程**（meta/android/kde 参考仓库与根 `docs/` 不入仓库）。
 - **GitHub 镜像（2026-09-15 建）**：<https://github.com/Gr-1m/kdeconnect-harmony>（GPL-2.0-or-later，2026-09-19 由 GPL-3.0 变更）。本机已配置第二远端 **`github`**（SSH；`~/.ssh/config` 需有 `github.com` → `IdentityFile ~/.ssh/github_ed25519`，否则报 `Permission denied (publickey)` —— 2026-09-15 踩过）。该仓库初始只是 `LICENSE` 空壳、与本机历史**无关**，已用 gitcode 侧历史**强推覆盖**（`git push --force github main:main`，`dev/zcodeinit` 一并新推；两分支与 gitcode 指向同一提交）。日常 push 由 AtomCode 执行；两个远端内容应保持一致。
 - **双分支拓扑（2026-10-22 用户裁决，Omp MSG167 转达）**：`main` = **HDS 产品线**（HdsSideBar/HdsNavigation + 0.8.2 功能改动）；`dev/arkts-standard-ui` = **标准 ArkUI 线**（SideBarContainer/去 HDS 迁移）。`NavPrototype.ets` + `main_pages.json` 的 NavPrototype 注册 + `devdocs/DESIGN_NAV_REFACTOR_20261019.md` **只进标准分支，不入 main**；native 修复先落 main、再定期 merge 到 UI 分支；抽屉内容组件按容器无关设计（DrawerContentModel）供两分支复用。分支创建/同步/commit/push 由总指挥 AtomCode 执行，Omp 不操作分支。
+- **main 的 C++ 备份分支（2026-11-07 用户指令）**：`backup/main-cpp` 长期保留「最后一份带 C++/BearSSL 原生栈的 main」，供其他开源维护者参考或自建分支；在 `dev/native-rust` 合入 `main` 之前，该分支随 `main` 快进（`tools/sync-main-backup.sh`，本机已装 post-commit/post-merge 钩子，仅 main 触发）；一旦 `main` 不含 `entry/src/main/cpp/net/net_stack.h`（Rust 已并入）即**冻结**。备份分支的推送由 AtomCode 执行；`main` 侧的修改请照常提交，钩子会自动跟随。
 - **本机 CachyOS** 为开发正本，**常规开发循环（改码→构建→ohemu 双端模拟器验证→commit/push）全部在 Linux 端闭环**（2026-10-22 用户指令：不再经 Syncthing 跨机送达、不等待 Win10）；**Win10**（LTSC 21H1，DevEco Studio 26.0.0.821）**仅真机验证时介入**——由总指挥届时下发消息到 Win10 侧 DevEco。**同一文件不要两台机器同时改**。
 - 同步约定：改前先 pull、提交后 push；换行符：Win10 设 `core.autocrlf true`、本机设 `core.autocrlf input`，避免 CRLF diff 噪音。
 - **共享目录的版本标记（2026-09-14 起）**：`.git` **不同步**——Syncthing 搬不动活着的 git 仓库（`index`/`refs` 靠原子重命名与锁，冲突副本无法像普通文件那样手工合并，且会让两台机器都「看起来拥有历史」而破坏单写者不变式）。Win10 侧改用 `AgentsConversion/GIT_REVISION.md` 判断「同步过来的文件对应哪个提交」：由 `tools/sync-revision.sh` 在本机每次提交/合并/切分支后自动刷新（git hook）。新机器/新克隆需执行一次 `tools/sync-revision.sh --install`（hook 只写在本机 `.git/hooks`，不随同步）。该标记文件不是仓库内容，勿手改。

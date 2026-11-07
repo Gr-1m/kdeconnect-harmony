@@ -1,137 +1,25 @@
 #!/usr/bin/env bash
-# native host 单测构建+运行（WP-4 native 侧）。只依赖 gcc/g++/make，无需 cmake/SDK。
-# BearSSL 用官方 Makefile 构建静态库（BUILD= 指到 /tmp，不污染 vendor 目录）。
-# CI（.gitcode/workflows）可直接调本脚本。
-set -e
-set -o pipefail
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# native host 回归门禁（全 Rust 栈，2026-11-07 起）。
+#
+# - `kdc_native`：核心协议/TLS/发现/payload 单元测试 + 两套栈真实互联 E2E；
+# - `kdeconnect_napi`：只做 `cargo check`（cdylib 的 NAPI 符号在宿主机不可链接）；
+# - 装配契约完整性：沿用原门禁（读 ArkTS，但作为 native 门禁的强制收尾）。
+#
+# 不再依赖 gcc/make/BearSSL；只需要 Rust 工具链（cargo）。
+set -euo pipefail
 cd "$(dirname "$0")"
 
-OUT=/tmp/kdc_native_tests
-mkdir -p "$OUT"
+MANIFEST="../rust/full/Cargo.toml"
 
-# —— 并发串行化（用户指令②）——
-# 多个 worktree/agent 同时跑本套件会互相争用：集成用例含真实 TCP/TLS 握手与 1GB 载荷，
-# 属时间敏感，争用会把它们拖出超时窗口（表现为随机失败）。用 flock 在**跨目录共享**的锁文件上
-# 串行化：拿不到锁则等待（并提示），从而互不干扰。
-exec 9>"$OUT/.suite.lock" 2>/dev/null || true
-if flock -n 9 2>/dev/null; then
-    :   # 已拿到锁
-elif [ -e /dev/fd/9 ]; then
-    echo "  （等待其他 run.sh 释放串行锁…）"
-    flock 9 || true
-fi
+echo "== cargo test -p kdc_native =="
+cargo test -p kdc_native --manifest-path "$MANIFEST"
 
-
-# R1：packet_io / cert_util 的实现已迁到 Rust（rust/kdc_core），C++ 侧是薄 shim
-# ⇒ 先构建 host 静态库，再把 .a 链进每个测试二进制（脚本把路径打到 stdout）。
-RUST_LIB="$(../rust/build_host.sh)"
-echo "[run.sh] rust staticlib: $RUST_LIB"
-
-# BearSSL 0.6 静态库（host 版；与 NDK 侧同源码，见 CMakeLists.txt）
-make -s -C ../bearssl -j"$(nproc)" BUILD="$OUT/bearssl" lib
-BEARSSL_LIB="$OUT/bearssl/libbearssl.a"
-
-gcc -O1 -I../bearssl/inc -I../bearssl/src -I../json \
-    -c ../json/cJSON.c -o "$OUT/cJSON.o"
-
-# 1) 纯函数单测（proto/地址策略/证书工具）
-g++ -std=c++17 -Wall -Wextra -O1 -DKDC_TELEMETRY=1 \
-    -I. -I.. -Istub -I../bearssl/inc \
-    test_main.cpp \
-    ../net/packet_io.cpp \
-    ../net/cert_util.cpp \
-    ../net/cert_gen.cpp \
-    ../net/net_util.cpp \
-    "$OUT/cJSON.o" "$BEARSSL_LIB" "$RUST_LIB" \
-    -lpthread -ldl -lm \
-    -o "$OUT/kdc_native_tests"
-
-"$OUT/kdc_native_tests"
-
-# 2) payload 集成测试（真实 PayloadManager + TlsEngine + 假宿主）
-g++ -std=c++17 -Wall -Wextra -O1 -DKDC_TELEMETRY=1 \
-    -I. -I.. -Istub -I../bearssl/inc \
-    payload_e2e.cpp \
-    ../payload/payload.cpp \
-    ../net/tls_engine.cpp \
-    ../net/tcp_connection.cpp \
-    ../net/cert_gen.cpp \
-    ../net/cert_util.cpp \
-    ../net/net_util.cpp \
-    ../net/packet_io.cpp \
-    "$OUT/cJSON.o" "$BEARSSL_LIB" "$RUST_LIB" \
-    -lpthread -ldl -lm \
-    -o "$OUT/kdc_payload_tests"
-
-# 3) net 栈测试（连接失败可解释性 + 有界握手；不需局域网/设备）
-g++ -std=c++17 -Wall -Wextra -O1 -DKDC_TELEMETRY=1 \
-    -I. -I.. -Istub -I../bearssl/inc \
-    net_stack_tests.cpp \
-    ../net/net_stack.cpp \
-    ../net/net_stack_link.cpp \
-    ../net/net_stack_discovery.cpp \
-    ../net/tcp_connection.cpp \
-    ../net/tcp_server.cpp \
-    ../net/udp_discovery.cpp \
-    ../net/tls_engine.cpp \
-    ../net/cert_gen.cpp \
-    ../net/cert_util.cpp \
-    ../net/net_util.cpp \
-    ../net/packet_io.cpp \
-    ../payload/payload.cpp \
-    "$OUT/cJSON.o" "$BEARSSL_LIB" "$RUST_LIB" \
-    -lpthread -ldl -lm \
-    -o "$OUT/kdc_net_tests"
-
-# —— net 用例：**每用例独立进程**（CodeArts MSG22 §2 harness 隔离）——
-# 根因：原先所有用例共享同一 netStack() 单例，且都从 127.0.0.1 拨入 ⇒ 既受上一用例残留状态影响，
-# 又受「同 IP accept 限流（300ms）」影响；负载下握手偶发不成（sent=0 ⇒ 用例随机失败）。
-# 对策：--list/--case 把每个用例放进独立进程（栈与进程状态全新）；摘要行沿用原格式。
-net_total=0
-net_failed=0
-for c in $("$OUT/kdc_net_tests" --list); do
-    net_total=$((net_total + 1))
-    ok=0
-    for attempt in 1 2 3 4 5; do   # 集成类用例含真实 TCP/TLS 与 fork 对端；负载下偶发 ⇒ 最多 5 次（重试成功会显式记录）
-        if "$OUT/kdc_net_tests" --case "$c" > "$OUT/netcase.log" 2>&1; then
-            ok=1
-            [ "$attempt" = 2 ] && printf '  net  %-34s OK (retry)\n' "$c"
-            break
-        fi
-    done
-    if [ "$ok" = 1 ]; then
-        [ "$attempt" = 1 ] && printf '  net  %-34s OK\n' "$c"
-    else
-        net_failed=$((net_failed + 1))
-        printf '  net  %-34s FAILED\n' "$c"
-        grep -E 'FAIL \[' "$OUT/netcase.log" | head -4 | sed 's/^/       /'
-        # 失败时附上负载快照，便于事后判因（环境争用 vs 真实回归）
-        echo "       loadavg: $(cat /proc/loadavg 2>/dev/null)"
-    fi
-done
-sleep 0.3   # 用例间静默：让上一个大载荷用例的 socket/磁盘活动落定（负载下握手偶发的主因）
-echo "net stack tests: $net_total cases, $net_failed failed"
-
-"$OUT/kdc_payload_tests"
-
-# —— S5-a 不变量：每个头文件必须能**独立编译**（自带所需依赖），否则拆 TU/新增 TU 会随机编译失败 ——
-# 排除 napi_exports.h：它依赖 SDK 的 napi/native_api.h（宿主无该头，属预期而非缺陷）。
-hdr_fail=0
-for h in ../net/*.h ../payload/*.h; do
-    case "$h" in *napi_exports.h) continue ;; esac
-    printf '#include "%s"\nint main(){return 0;}\n' "$(basename "$h")" > "$OUT/hdrcheck.cpp"
-    if ! g++ -std=c++17 -fsyntax-only -I.. -I../net -I../payload -Istub -I../bearssl/inc \
-         "$OUT/hdrcheck.cpp" 2>/dev/null; then
-        echo "header not self-sufficient: $h"
-        hdr_fail=1
-    fi
-done
-echo "header self-check: failed=$hdr_fail (0=全部自足)"
-[ "$hdr_fail" = 0 ]
+echo "== cargo check -p kdeconnect_napi =="
+cargo check -p kdeconnect_napi --manifest-path "$MANIFEST"
 
 # —— 装配契约完整性（CodeArts MSG129 F2；AtomChecker MSG119 建议2）——
-# 检查 DeviceController/DeviceActionController 声明的注入回调是否都在 Index.ets 装配。
-# 说明：本步骤读 ArkTS 侧文件，但按裁决作为 **C++ 门禁的强制收尾步骤**（本仓 C++ shim 与 ArkTS 装配同源耦合）。
 # 失败即门禁失败；脚本缺失同样失败（不得静默跳过——「假通过」已在本轮被证明是真风险）。
 INJ="$PWD/../../../../../tools/check-injection-contract.py"
 if [ ! -f "$INJ" ]; then
