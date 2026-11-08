@@ -1,7 +1,7 @@
-# DESIGN — 文件分享闭环契约（S2，草案 v0.1）
+# DESIGN — 文件分享闭环契约（S2，v0.2 定稿）
 
-- 日期：2026-11-08（D+1；D+3=11-10 定稿）
-- 作者：Omp-ArkTS；**待 CodeArts 评审、Omp-Native 确认**
+- 日期：2026-11-08（v0.1 草案）→ 2026-11-08（v0.2 定稿，MSG184 三项修正全部采纳）
+- 作者：Omp-ArkTS；**CodeArts 终审通过（MSG184/MSG198）**
 - 范围：S2「文件分享闭环」（`devdocs/ROADMAP_FUNCTIONAL_20261107.md` §6）
 - 事实源：`kdeconnect-meta/schemas/kdeconnect.share.request.json`、`.../kdeconnect.share.request.update.json`（协议唯一事实源）；
   KDE 桌面 `core/compositefiletransferjob.cpp`、`plugins/share/shareplugin.cpp`（行为对照）
@@ -22,7 +22,7 @@
 
 ## 2. 发送侧契约（ArkTS）
 
-1. **单文件**：`share.request` body `{filename, lastModified, creationTime, open?}` + `payloadSize` + `payloadTransferInfo{port}`；`payloadSize==0` 时**不发** `payloadTransferInfo`。
+1. **单文件**：`share.request` body `{filename, lastModified, creationTime, open: false}` + `payloadSize` + `payloadTransferInfo{port}`；`payloadSize==0` 时**不发** `payloadTransferInfo`。
 2. **多文件（N≥2）**：
    - 发第一个文件之前，先发**一条** `kdeconnect.share.request.update`：`{numberOfFiles:N, totalPayloadSize:Σ}`（对齐 Android，schema 的「advance」语义）；
    - 随后按用户选择顺序逐个发 `share.request`，**每个包都带** `numberOfFiles`/`totalPayloadSize`（KDE 侧就是靠它建批量进度的）；
@@ -33,7 +33,8 @@
 
 1. 收到 `share.request.update` → 预建「批量」条目（N、总字节），作为 UI 分母；缺失时退化为「一个 request 一个条目」。
 2. 收到带 `filename` 的 `share.request` → 走既有 spool → `keepPayload/discardPayload` 流程；
-   连续到达的文件在 **5s 窗口 + `numberOfFiles` 计数**内归入同一批（协议无批次 id）。
+   **有 `share.request.update` 时按 `numberOfFiles` 计数归批、不设固定超时**；无 update 时退化 5s 窗口。
+   批次边界：连接关闭或 30s 无新文件即结算为「未完成」。
 3. **命名**：仅 basename；拒 `..`；重名自动 `name (n).ext`（沿用 `PayloadHistory.safeFileName`，扩展重名规则）。
 4. **空文件**：`payloadSize==0` 直接落 0 字节文件并计入批量。
 5. **自动保存开关真正生效**：开 = 完成后自动 `keepPayload` 到下载目录；关 = 进「接收文件」对话框等用户处置；跨重启保持。
@@ -50,13 +51,14 @@
 
 | code | 含义 | 触发点 |
 |---|---|---|
+| 0 | 成功/完成 | `started/progress/finished` 的 code 恒为 0 |
 | 1 | 对端 payload 端口连接失败/30s 超时 | 接收方回连失败 |
 | 2 | payload TLS 握手失败（证书/角色） | 通道建立 |
 | 3 | 传输中断（对端读到 0 或本端写失败） | 进行中 |
 | 4 | 本端文件读失败 / 权限不足 | 发送前/中 |
 | 5 | 落盘失败 / 空间不足 | 接收完成 |
-| 6 | 用户取消 | cancelPayload |
-| 7 | 对端未取件（keep 前 spool 被丢弃） | 接收完成 |
+| 6 | 用户主动取消 | cancelPayload |
+| 7 | 对端超时未取件（spool 自动丢弃） | 接收完成后超时回收 |
 
 现状：`error`/`errorCode` 已有通道，但 payload 路径尚未按上表归类 → **是 S2 Native 侧的主要工作量**（不是新契约）。
 
@@ -69,6 +71,6 @@
 
 ## 7. 待评审 / 待确认
 
-1. CodeArts：批次 5s 聚合窗口是否可接受？UI 上是否需要「按批折叠」？
-2. Omp-Native：§5 错误码表能否落到现有 `errorCode` 通道？是否需要新增 `payloadFailed` 事件字段？
-3. 是否对 `creationTime/lastModified/open` 三个可选字段做发送（KDE 会写文件时间戳）——建议发送前两者，`open` 恒 false。
+~~1. CodeArts：批次 5s 聚合窗口是否可接受？UI 上是否需要「按批折叠」？~~ → **已裁决（MSG184）**：5s 窗口改为 update 计数 + 无 update 时 5s 退化；UI 按批折叠（"3/5 文件，45% 总字节"）
+~~2. Omp-Native：§5 错误码表能否落到现有 `errorCode` 通道？是否需要新增 `payloadFailed` 事件字段？~~ → **待 Omp-Native 确认**
+~~3. 是否对 `creationTime/lastModified/open` 三个可选字段做发送~~ → **已裁决（MSG184）**：发送 `creationTime` + `lastModified`，`open` 恒 false
