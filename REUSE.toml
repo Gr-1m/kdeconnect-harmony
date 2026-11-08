@@ -15,7 +15,7 @@
 # 本文件为其余文件（配置/资源/文档/构建脚本/vendored 代码）提供标注。
 version = 1
 
-# ── vendored 第三方代码（各自 MIT，见 LICENSES/MIT.txt）──
+# ── 全仓默认标注（项目许可 GPL-2.0-or-later）──
 [[annotations]]
 path = ["**"]
 precedence = "aggregate"
@@ -31,11 +31,8 @@ binary = true
 SPDX-FileCopyrightText = "2026 KDE Connect HarmonyOS contributors"
 SPDX-License-Identifier = "GPL-2.0-or-later"
 
-[[annotations]]
-path = ["entry/src/main/cpp/bearssl/**", "entry/src/main/cpp/json/**"]
-precedence = "override"
-SPDX-FileCopyrightText = "2016 Thomas Pornin <pornin@bolet.org> (BearSSL) / 2009-2017 Dave Gamble and cJSON contributors (cJSON)"
-SPDX-License-Identifier = "MIT"
+# 注：vendored BearSSL/cJSON（MIT）已随 0.8.4 全 Rust 栈合并删除，
+# 对应 MIT 注解与 LICENSES/MIT.txt 一并移除（避免 unused license 触发 lint）。
 
 # ── 其余全部文件：项目许可（GPL-2.0-or-later）──
 # 说明：带文件头 SPDX 的源文件由文件头决定，不受此条影响（REUSE 规范：文件头优先）。
