@@ -77,7 +77,7 @@ S1 的 ② 由用户确认后执行，不与 CodeArts 在途编辑抢跑。
 |---|---|
 | Native 方向 | **Rust 为主**：自 **0.8.x（拟 0.8.4 合入）** 起以 `dev/native-rust`（ohos-rs + rustls，TLS13+TLS12）为主开发栈 |
 | C++ 去向 | `main` 当前仍为 C++（0.8.3 收口）；合并后 C++ 冻结在 **`backup/main-cpp`**，仅作参考/回退，不再开发 |
-| 合并窗口 | **0.8.x 内、0.9.0 之前完成（拟 0.8.4）**；前置 = CodeArts 全 Rust 评审（Approved 或 Conditional 闭合）+ Omp-Native 在途收尾 + 分支 push + 用户最终批准 |
+| 合并窗口 | **已完成（0.8.4，2026-11-08）**：cutover `813d4ba`；C++ 基线冻结 `backup/main-cpp`（`427612b`，已推双远端）；双评审 Approved/Conditional Approved |
 | 版本计划 | **0.8.x = 当前全部功能开发**（S2/S4/S6 等均在 0.8.x 内完成，含 Rust 合并）；**0.9.0 = 正式进入 KDE 孵化项目**（里程碑版本，非功能版；对外动作需用户确认） |
 | A+ HUKS | **归 0.8.x（Rust 合并后实施）**：keyPem 落盘改 HUKS AES-256-GCM 加密；**不进 0.9.0**（用户 2026-11-08 确认） |
 | A/B | **后置**：C++ vs Rust 同场景 A/B 不作合并前置（Rust 已过 L0–L4 含真实 KDE 桌面）；合并后作回归/性能基线，可选最小冒烟仅补充 |
