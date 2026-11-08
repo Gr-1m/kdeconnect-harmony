@@ -76,6 +76,7 @@ git diff backup/main-cpp -- entry/src/main/cpp/types/libkdeconnect_napi/Index.d.
 git push origin main && git push github main
 # 观察 CI：reuse（应绿）+ native-tests（应绿）
 # 设备：SpatialPad 5555 / SpatialPhone 5559 安装 + 真实 KDE 桌面连接/配对/收文件/发文件
+# 外加：离线记住设备「解除配对」验收（记录 chip 变未配对、重连需重配）
 # 由 Omp-Native 执行设备复验，总指挥留证（截图/hilog）
 ```
 
