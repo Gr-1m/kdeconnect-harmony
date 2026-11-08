@@ -4,7 +4,7 @@
 
 [KDE Connect](https://kdeconnect.kde.org/) 的 HarmonyOS（OpenHarmony API 26）移植版——让你的设备通过局域网互相通信的多平台工具。
 
-> **状态**：早期开发阶段。核心网络（UDP 发现、TCP、TLS、配对）和 10 个插件已可用。已在 MatePad Mini 和 Mate 80 Pro 上与 KDE 桌面端真机验证。
+> **状态**：**0.8.4** —— native 栈已全量迁移到 Rust（`ohos-rs` + `rustls`，TLS 1.3/1.2）。核心网络（UDP 发现、TCP、TLS、配对）、文件分享（批量进度 UI）与插件集可用。已在 HarmonyOS 模拟器（折叠/平板）与真机（MatePad Mini、Mate 80 Pro）上与 KDE 桌面端验证。
 
 ## 截图
 
@@ -16,51 +16,47 @@
 | 功能 | 状态 | 协议包 |
 |---|---|---|
 | 设备发现与配对 | ✅ 可用 | `kdeconnect.identity`, `kdeconnect.pair` |
-| 文件分享 | ✅ 可用 | `kdeconnect.share.request` |
+| 文件分享 | ✅ 可用（0.8.4 起批量 UI） | `kdeconnect.share.request`, `share.request.update` |
 | 剪贴板同步（双向） | ✅ 可用 | `kdeconnect.clipboard`, `kdeconnect.clipboard.connect` |
 | 查找设备（响铃） | ✅ 可用 | `kdeconnect.ping` |
 | 电池状态（双向） | ✅ 可用 | `kdeconnect.battery`, `kdeconnect.battery.request` |
 | 网络状态上报 | ✅ 可用 | `kdeconnect.connectivity_report` |
 | 远程命令 | ✅ 可用 | `kdeconnect.runcommand` |
 | 媒体控制（控制方） | ✅ 可用 | `kdeconnect.mpris`, `kdeconnect.mpris.request` |
-| 远程输入 | ⏳ 占位 | `kdeconnect.mousepad.*` |
-| 通知 | ⏳ 占位 | `kdeconnect.notification.*` |
+| 远程输入（触摸板） | ✅ 可用 | `kdeconnect.mousepad.*` |
+| 通知 | ✅ 展示（平台不支持回复/操作） | `kdeconnect.notification.*` |
 
 ## 架构
 
 ```
-┌─────────────────────────────────────────────┐
-│              ArkTS（UI + 插件）              │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐  │
-│  │ 10 个插件 │  │PacketRouter│  │  UI 层    │  │
-│  └────┬─────┘  └────┬─────┘  └───────────┘  │
-│       │              │                        │
-├───────┼──────────────┼────────────────────────┤
-│       │   NAPI 桥接（napi_exports.cpp）       │
-├───────┼──────────────┼────────────────────────┤
-│       │              │                        │
-│  ┌────┴─────┐  ┌─────┴──────┐  ┌──────────┐  │
-│  │ Rust     │  │ C++ 网络   │  │ Payload  │  │
-│  │ kdc_core │  │ UDP/TCP/   │  │ 传输     │  │
-│  │(packet_  │  │ TLS(BearSSL│  │          │  │
-│  │ io,cert) │  │ /证书生成) │  │          │  │
-│  └──────────┘  └────────────┘  └──────────┘  │
-│              Native C++ 层                    │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│              ArkTS（UI + 插件）               │
+│  ┌────────────┐ ┌──────────────┐ ┌─────────┐ │
+│  │   插件     │ │ PacketRouter │ │  UI 层  │ │
+│  └─────┬──────┘ └──────┬───────┘ └─────────┘ │
+├────────┼───────────────┼─────────────────────┤
+│        │      NAPI 桥（ohos-rs）               │
+├────────┼───────────────┼─────────────────────┤
+│  ┌─────┴───────────────────────────────────┐  │
+│  │ Rust native — entry/src/main/cpp/rust/full/ │
+│  │  kdc_native（core）+ kdeconnect_napi       │
+│  │  发现 · TCP · TLS(rustls) · 证书(rcgen)     │
+│  │  packet 帧 · payload spool · 配对状态机     │
+│  └────────────────────────────────────────────┘
+└──────────────────────────────────────────────┘
 ```
 
-- **Native C++（NAPI）**：UDP 发现、TCP 服务端/连接、BearSSL 0.6 TLS 握手、自签证书生成、packet 序列化、payload 传输
-- **Rust staticlib**（`kdc_core`）：`packet_io` + `cert_util` — 从 C++ 迁移以获得内存安全（R1）
-- **ArkTS**：插件框架（注册表驱动）、UI、业务逻辑
+- **Rust native（`ohos-rs` + `rustls`）**：UDP 发现、TCP 服务端/连接、TLS 1.3/1.2、自签证书生成（rcgen）、packet 序列化、payload 传输与 spool、配对状态机——全部位于 `entry/src/main/cpp/rust/full/`（`core` + `napi` 两个 crate）。
+- **ArkTS**：插件框架（注册表驱动）、UI、业务逻辑；NAPI 契约冻结在 `entry/src/main/cpp/types/libkdeconnect_napi/Index.d.ts`。
+- **C++ 基线**：0.8.4 起已从 `main` 移除，冻结在分支 `backup/main-cpp`（仅历史参考/回退）。
 
 ## 技术栈
 
 | 层 | 技术 |
 |---|---|
 | UI / 业务 | ArkTS（OpenHarmony API 26，Stage 模型） |
-| Native 网络 | C++20, BearSSL 0.6, cJSON（vendored） |
-| 核心工具 | Rust（serde, serde_json, sha2, base64） |
-| 构建 | hvigorw（HarmonyOS）, CMake（native）, cargo（Rust） |
+| Native 网络 | Rust（ohos-rs, rustls, rcgen, serde, sha2） |
+| 构建 | hvigorw（HarmonyOS）, CMake → cargo（native） |
 | 协议 | KDE Connect 协议 v8 |
 
 ## 构建
@@ -69,13 +65,15 @@
 
 - HarmonyOS Command Line Tools（`/opt/command-line-tools`）
 - OpenHarmony SDK（`/opt/ohos-sdk`）
-- Rust 工具链（用于 `kdc_core` staticlib）：
+- Rust 工具链（native 栈已全 Rust 化）：
 
   ```bash
   rustup target add aarch64-unknown-linux-ohos x86_64-unknown-linux-ohos
   ```
 
-  缺 `cargo` 时 CMake 配置阶段会直接给出安装指引；交叉工具链细节见 `entry/src/main/cpp/rust/README.md` §5b。
+  CMake 只调用 `cargo` 产出 `libkdeconnect_napi.so`；架构、测试口径与已知风险见 `devdocs/FULL_RUST.md`。
+- **Windows 交叉编译**（Win10 侧 DevEco）：6 个用户级环境变量（`CC_/AR_*`、`CARGO_TARGET_*_LINKER`）
+  加 `hvigorw --stop-daemon`——见 `devdocs/CPP_GUIDE.md`“Windows 交叉编译前置”小节。
 - Python 3（用于编码守卫）
 - **新克隆的首次构建**：先 `ohpm install`（`oh_modules/` 不入库），再执行一次
   `tools/sync-revision.sh --install` 安装 git hooks（版本标记 + 编码守卫）
@@ -101,7 +99,10 @@ tools/sign-debug.sh
 ### 运行测试
 
 ```bash
-tests/run.sh   # 31 个 host 侧单元/集成测试
+entry/src/main/cpp/tests/run.sh
+# = cargo test -p kdc_native（19 个单测 + 1 个双栈互联 E2E）
+#   + cargo check -p kdeconnect_napi（NAPI 符号无法在宿主链接）
+#   + NAPI 契约完整性检查（Index.d.ts ↔ 导出字段）
 ```
 
 ## 项目结构
@@ -109,26 +110,22 @@ tests/run.sh   # 31 个 host 侧单元/集成测试
 ```
 kdeconnect-harmony/
 ├── entry/src/main/
-│   ├── cpp/                  # Native C++（NAPI）
-│   │   ├── net/              # UDP 发现、TCP 服务端、TLS 引擎、packet I/O
-│   │   │   ├── net_stack.cpp # 事件循环、连接管理、配对
-│   │   │   ├── tcp_server.cpp# TCP 监听 + accept
-│   │   │   ├── tls_engine.cpp# BearSSL TLS 握手 + I/O
-│   │   │   ├── cert_gen.cpp  # 自签证书生成
-│   │   │   ├── packet_io.h   # 帧提取（Rust FFI shim）
-│   │   │   ├── udp_discovery.cpp
-│   │   │   └── napi_*.cpp    # NAPI 桥（exports, events, init）
-│   │   ├── payload/          # Payload 传输（文件分享）
-│   │   └── rust/             # Rust staticlib（kdc_core：packet_io + cert_util）
+│   ├── cpp/
+│   │   ├── rust/full/        # Rust native workspace
+│   │   │   ├── core/         # kdc_native：发现/TCP/TLS/证书/packet/payload/状态
+│   │   │   └── napi/         # kdeconnect_napi：NAPI 导出与事件
+│   │   └── types/            # Index.d.ts（冻结的 NAPI 契约）
 │   ├── ets/
-│   │   ├── plugins/          # 10 个插件（注册表驱动）
+│   │   ├── plugins/          # 插件（注册表驱动）
 │   │   ├── net/              # PacketRouter
 │   │   ├── common/           # PayloadHistory、共享类型
-│   │   ├── components/       # DevicesTab, SettingsTab, FilesTab
+│   │   ├── components/       # DevicesTab, SettingsTab, FilesTab, DeviceInfoDialog
 │   │   └── pages/            # UI（Index.ets）
 │   └── module.json5          # 权限、abilities
 ├── tools/                    # sign-debug.sh, check-encoding.py, sync-revision.sh
-├── devdocs/                  # 开发者指南 + BUG 排查分析
+├── devdocs/                  # 开发者指南、runbook、路线图
+├── docs/kdeconnect-oh/       # 冻结接口契约与车道手册（参考）
+├── LICENSES/                 # REUSE 许可文本（GPL-2.0-or-later、CC0-1.0）
 ├── screenshots/              # 应用截图
 ├── LICENSE                   # GPL-2.0-or-later
 ```
@@ -153,7 +150,7 @@ kdeconnect-harmony/
 
 | 机器 | 操作系统 | 职责 |
 |---|---|---|
-| **CachyOS**（Linux） | CachyOS（Arch 系） | C++/Rust native 开发、host 侧测试、KDE Connect 桌面端（协议对端验证）、git 操作（单写者） |
+| **CachyOS**（Linux） | CachyOS（Arch 系） | Rust native 开发、host 侧测试、KDE Connect 桌面端（协议对端验证）、git 操作（单写者） |
 | **Win10** | Windows 10 LTSC 21H1 | ArkTS 开发（DevEco Studio）、HarmonyOS 模拟器与真机调试（MatePad Mini） |
 
 - 两台机器通过 Syncthing 共享同一个工作区——**同一文件不要两侧同时编辑**
@@ -172,7 +169,8 @@ kdeconnect-harmony/
 
 ### 编码规范
 
-- C++：见 `devdocs/CPP_GUIDE.md`
+- Rust：见 `devdocs/FULL_RUST.md`（架构、不变式、测试）
+- C++（历史，冻结在 `backup/main-cpp`）：见 `devdocs/CPP_GUIDE.md`
 - ArkTS：见 `devdocs/ARKTS_GUIDE.md`
 - 工作流：见 `devdocs/PROCESS.md`
 - 所有文本文件必须是合法 UTF-8（由 `tools/check-encoding.py` pre-commit hook 强制）
@@ -188,10 +186,10 @@ GPL-2.0-or-later — 与上游 kdeconnect-android（GPL-2.0-only）与 kdeconnec
 
 | 角色 | 承担 | 说明 |
 |---|---|---|
-| **omp**（Linux 侧） | C++ native 全栈、Rust 迁移、host 测试与真桌面验证、git 单写者 | UDP/TCP/TLS(BearSSL)/证书、NAPI 桥、payload 传输、`kdc_core`（R1 Rust 迁移）；提交与推送只由本侧执行 |
-| **DevEco Code**（Win10 侧） | ArkTS：UI、插件框架与 10 个插件 | 在 DevEco Studio 中构建，真机 / 模拟器验证 |
-| **CodeArts** | 流程总指挥：任务派发、代码评审、裁决与推送时点 | 维护 `devdocs/PROCESS.md` 与协作台账 `AgentsConversion/` |
-| **AtomCode** | 独立复核（评估方，不直接改码） | 迁移方案、全量代码审查、验收判据 |
+| **omp**（Linux 侧） | Rust native 全栈、host 测试与真桌面验证 | 发现/TCP/TLS/证书/NAPI 桥/payload；`backup/main-cpp` 仅历史参考 |
+| **DevEco Code**（Win10 侧） | ArkTS：UI、插件框架与插件集 | 在 DevEco Studio 中构建，真机 / 模拟器验证 |
+| **CodeArts** | ArkTS/UI owner；代码评审与裁决支持 | 维护 `devdocs/PROCESS.md` 与协作台账 `AgentsConversion/` |
+| **AtomCode** | 总指挥：任务派发、跨车道协调、唯一 commit/push、构建与模拟器验证 | 迁移方案、评审、验收判据 |
 | **ZCode** | 早期 C++/native 与构建奠基 | 后交棒 omp |
 
 两侧通过 Syncthing 共享工作区协作：**同一文件不双写**；`.git` 只存在于 Linux 侧（Win10 侧用

@@ -4,7 +4,7 @@
 
 A HarmonyOS (OpenHarmony API 26) port of [KDE Connect](https://kdeconnect.kde.org/) — the multi-platform tool that lets your devices communicate over the local network.
 
-> **Status**: Early development. Core networking (UDP discovery, TCP, TLS, pairing) and 10 plugins are functional. Real-device verified on MatePad Mini and Mate 80 Pro against KDE Desktop.
+> **Status**: **0.8.4** — native stack fully migrated to Rust (`ohos-rs` + `rustls`, TLS 1.3/1.2). Core networking (UDP discovery, TCP, TLS, pairing), file sharing with batch progress UI, and the plugin set are functional. Verified on HarmonyOS emulators (foldable/tablet) and real devices (MatePad Mini, Mate 80 Pro) against KDE Desktop.
 
 ## Screenshots
 
@@ -16,51 +16,48 @@ A HarmonyOS (OpenHarmony API 26) port of [KDE Connect](https://kdeconnect.kde.or
 | Feature | Status | Protocol Packet |
 |---|---|---|
 | Device discovery & pairing | ✅ Working | `kdeconnect.identity`, `kdeconnect.pair` |
-| File sharing | ✅ Working | `kdeconnect.share.request` |
+| File sharing | ✅ Working (batch UI in 0.8.4) | `kdeconnect.share.request`, `share.request.update` |
 | Clipboard sync (bidirectional) | ✅ Working | `kdeconnect.clipboard`, `kdeconnect.clipboard.connect` |
 | Find my device (ring) | ✅ Working | `kdeconnect.ping` |
 | Battery status (bidirectional) | ✅ Working | `kdeconnect.battery`, `kdeconnect.battery.request` |
 | Network connectivity report | ✅ Working | `kdeconnect.connectivity_report` |
 | Remote commands | ✅ Working | `kdeconnect.runcommand` |
 | Media control (controller) | ✅ Working | `kdeconnect.mpris`, `kdeconnect.mpris.request` |
-| Remote input | ⏳ Placeholder | `kdeconnect.mousepad.*` |
-| Notifications | ⏳ Placeholder | `kdeconnect.notification.*` |
+| Remote input (mousepad) | ✅ Working | `kdeconnect.mousepad.*` |
+| Notifications | ✅ Display (reply/action not supported by platform) | `kdeconnect.notification.*` |
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│              ArkTS (UI + Plugins)            │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐  │
-│  │ 10 Plugins│  │PacketRouter│  │  UI Layer │  │
-│  └────┬─────┘  └────┬─────┘  └───────────┘  │
-│       │              │                        │
-├───────┼──────────────┼────────────────────────┤
-│       │   NAPI Bridge (napi_exports.cpp)      │
-├───────┼──────────────┼────────────────────────┤
-│       │              │                        │
-│  ┌────┴─────┐  ┌─────┴──────┐  ┌──────────┐  │
-│  │ Rust     │  │ C++ Net    │  │ Payload  │  │
-│  │ kdc_core │  │ UDP/TCP/   │  │ Transfer │  │
-│  │ (packet_ │  │ TLS(BearSSL│  │          │  │
-│  │  io,cert)│  │ /cert gen) │  │          │  │
-│  └──────────┘  └────────────┘  └──────────┘  │
-│              Native C++ Layer                 │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│              ArkTS (UI + Plugins)             │
+│  ┌────────────┐ ┌──────────────┐ ┌─────────┐ │
+│  │  Plugins   │ │ PacketRouter │ │ UI Layer│ │
+│  └─────┬──────┘ └──────┬───────┘ └─────────┘ │
+├────────┼───────────────┼─────────────────────┤
+│        │      NAPI Bridge (ohos-rs)           │
+├────────┼───────────────┼─────────────────────┤
+│  ┌─────┴───────────────────────────────────┐  │
+│  │ Rust native — entry/src/main/cpp/rust/full/ │
+│  │  kdc_native (core) + kdeconnect_napi       │
+│  │  discovery · TCP · TLS(rustls) · certs     │
+│  │  (rcgen) · packet framing · payload spool  │
+│  │  pairing state machine                     │
+│  └────────────────────────────────────────────┘
+└──────────────────────────────────────────────┘
 ```
 
-- **Native C++ (NAPI)**: UDP discovery, TCP server/connections, BearSSL 0.6 TLS, self-signed certificate generation, packet serialization, payload transfer
-- **Rust staticlib** (`kdc_core`): `packet_io` + `cert_util` — migrated from C++ for memory safety (R1)
-- **ArkTS**: Plugin framework (registry-driven), UI, business logic
+- **Rust native (`ohos-rs` + `rustls`)**: UDP discovery, TCP server/connections, TLS 1.3/TLS 1.2, self-signed certificate generation (rcgen), packet serialization, payload transfer with spool, pairing state machine — all under `entry/src/main/cpp/rust/full/` (`core` + `napi` crates).
+- **ArkTS**: plugin framework (registry-driven), UI, business logic; NAPI contract frozen in `entry/src/main/cpp/types/libkdeconnect_napi/Index.d.ts`.
+- **C++ baseline**: removed from `main` in 0.8.4 and frozen at branch `backup/main-cpp` (historical reference / rollback only).
 
 ## Tech Stack
 
 | Layer | Technology |
 |---|---|
 | UI / Business | ArkTS (OpenHarmony API 26, Stage model) |
-| Native Networking | C++20, BearSSL 0.6, cJSON (vendored) |
-| Core Utils | Rust (serde, serde_json, sha2, base64) |
-| Build | hvigorw (HarmonyOS), CMake (native), cargo (Rust) |
+| Native Networking | Rust (ohos-rs, rustls, rcgen, serde, sha2) |
+| Build | hvigorw (HarmonyOS), CMake → cargo (native) |
 | Protocol | KDE Connect protocol v8 |
 
 ## Build
@@ -69,13 +66,17 @@ A HarmonyOS (OpenHarmony API 26) port of [KDE Connect](https://kdeconnect.kde.or
 
 - HarmonyOS Command Line Tools (`/opt/command-line-tools`)
 - OpenHarmony SDK (`/opt/ohos-sdk`)
-- Rust toolchain (for the `kdc_core` staticlib):
+- Rust toolchain (the whole native stack is Rust):
 
   ```bash
   rustup target add aarch64-unknown-linux-ohos x86_64-unknown-linux-ohos
   ```
 
-  If `cargo` is missing, CMake fails at configure time with the exact install hint; cross-toolchain details are in `entry/src/main/cpp/rust/README.md` §5b.
+  CMake only invokes `cargo` to produce `libkdeconnect_napi.so`; architecture, test criteria and
+  known risks are in `devdocs/FULL_RUST.md`.
+- **Windows cross-build** (DevEco on Win10): 6 user-level environment variables
+  (`CC_/AR_*`, `CARGO_TARGET_*_LINKER`) plus `hvigorw --stop-daemon` — see
+  `devdocs/CPP_GUIDE.md`, section "Windows 交叉编译前置".
 - Python 3 (for the encoding guard)
 - **First build on a fresh clone**: run `ohpm install` (`oh_modules/` is not tracked), then run
   `tools/sync-revision.sh --install` once to install the git hooks (revision marker + encoding guard)
@@ -101,7 +102,10 @@ tools/sign-debug.sh
 ### Run Tests
 
 ```bash
-tests/run.sh   # 31 host-side unit/integration tests
+entry/src/main/cpp/tests/run.sh
+# = cargo test -p kdc_native (19 unit + 1 cross-stack E2E)
+#   + cargo check -p kdeconnect_napi (NAPI symbols cannot link on host)
+#   + NAPI contract check (Index.d.ts ↔ exported fields)
 ```
 
 ## Project Structure
@@ -109,26 +113,22 @@ tests/run.sh   # 31 host-side unit/integration tests
 ```
 kdeconnect-harmony/
 ├── entry/src/main/
-│   ├── cpp/                  # Native C++ (NAPI)
-│   │   ├── net/              # UDP discovery, TCP server, TLS engine, packet I/O
-│   │   │   ├── net_stack.cpp # Event loop, connection management, pairing
-│   │   │   ├── tcp_server.cpp# TCP listen + accept
-│   │   │   ├── tls_engine.cpp# BearSSL TLS handshake + I/O
-│   │   │   ├── cert_gen.cpp  # Self-signed certificate generation
-│   │   │   ├── packet_io.h   # Frame extraction (Rust FFI shim)
-│   │   │   ├── udp_discovery.cpp
-│   │   │   └── napi_*.cpp    # NAPI bridge (exports, events, init)
-│   │   ├── payload/          # Payload transfer (file sharing)
-│   │   └── rust/             # Rust staticlib (kdc_core: packet_io + cert_util)
-│  &nbsp;├── ets/
-│   │   ├── plugins/          # 10 plugins (registry-driven)
+│   ├── cpp/
+│   │   ├── rust/full/        # Rust native workspace
+│   │   │   ├── core/         # kdc_native: discovery, tcp, tls, cert, packet, payload, state
+│   │   │   └── napi/         # kdeconnect_napi: NAPI exports/events
+│   │   └── types/            # Index.d.ts (frozen NAPI contract)
+│   ├── ets/
+│   │   ├── plugins/          # plugins (registry-driven)
 │   │   ├── net/              # PacketRouter
 │   │   ├── common/           # PayloadHistory, shared types
-│   │   ├── components/       # DevicesTab, SettingsTab, FilesTab
+│   │   ├── components/       # DevicesTab, SettingsTab, FilesTab, DeviceInfoDialog
 │   │   └── pages/            # UI (Index.ets)
 │   └── module.json5          # Permissions, abilities
 ├── tools/                    # sign-debug.sh, check-encoding.py, sync-revision.sh
-├── devdocs/                  # Developer guides + bugfix analysis
+├── devdocs/                  # Developer guides, runbooks, roadmaps
+├── docs/kdeconnect-oh/       # Frozen interface contract & lane playbook (reference)
+├── LICENSES/                 # REUSE license texts (GPL-2.0-or-later, CC0-1.0)
 ├── screenshots/              # App screenshots
 ├── LICENSE                   # GPL-2.0-or-later
 ```
@@ -153,7 +153,7 @@ This project is developed across two machines on the same LAN, with file synchro
 
 | Machine | OS | Responsibilities |
 |---|---|---|
-| **CachyOS** (Linux) | CachyOS (Arch-based) | C++/Rust native development, host-side tests, KDE Connect desktop (for protocol verification), git operations (single writer) |
+| **CachyOS** (Linux) | CachyOS (Arch-based) | Rust native development, host-side tests, KDE Connect desktop (for protocol verification), git operations (single writer) |
 | **Win10** | Windows 10 LTSC 21H1 | ArkTS development in DevEco Studio, HarmonyOS emulator & real-device debugging (MatePad Mini) |
 
 - Both machines share one working tree via Syncthing — **never edit the same file from both sides simultaneously**
@@ -172,9 +172,10 @@ This project is developed across two machines on the same LAN, with file synchro
 
 ### Coding Standards
 
-- C++: See `devdocs/CPP_GUIDE.md`
-- ArkTS: See `devdocs/ARKTS_GUIDE.md`
-- Workflow: See `devdocs/PROCESS.md`
+- Rust: see `devdocs/FULL_RUST.md` (architecture, invariants, tests)
+- C++ (historical, frozen at `backup/main-cpp`): see `devdocs/CPP_GUIDE.md`
+- ArkTS: see `devdocs/ARKTS_GUIDE.md`
+- Workflow: see `devdocs/PROCESS.md`
 - All text files must be valid UTF-8 (enforced by `tools/check-encoding.py` pre-commit hook)
 
 ## License
@@ -188,10 +189,10 @@ Requirements and key decisions come from **security development engineer Gr%1m**
 
 | Role | Scope | Notes |
 |---|---|---|
-| **omp** (Linux side) | All C++ native code, the Rust migration, host tests, real-desktop verification, git single writer | UDP/TCP/TLS (BearSSL), certificates, NAPI bridge, payload transfer, `kdc_core` (R1 Rust migration); commits and pushes are made from this side only |
-| **DevEco Code** (Win10 side) | ArkTS: UI, plugin framework and the 10 plugins | Builds in DevEco Studio; verifies on real devices / emulator |
-| **CodeArts** | Process owner: task dispatch, code review, adjudication and push timing | Maintains `devdocs/PROCESS.md` and the coordination log `AgentsConversion/` |
-| **AtomCode** | Independent review (assessment only, no code changes) | Migration plan, full-code reviews, acceptance criteria |
+| **omp** (Linux side) | Rust native stack, host tests, real-desktop verification | discovery/TCP/TLS/certs/NAPI bridge/payload; `backup/main-cpp` kept only as historical reference |
+| **DevEco Code** (Win10 side) | ArkTS: UI, plugin framework and plugins | Builds in DevEco Studio; verifies on real devices / emulator |
+| **CodeArts** | ArkTS/UI owner; code review and adjudication support | Maintains `devdocs/PROCESS.md` and the coordination log `AgentsConversion/` |
+| **AtomCode** | Commander: task dispatch, cross-lane coordination, sole commit/push, build & emulator verification | Migration plan, reviews, acceptance criteria |
 | **ZCode** | Early C++/native and build bootstrap | Handed over to omp later |
 
 Both sides share one working tree via Syncthing: **never write the same file from both sides**; `.git` exists on the Linux
