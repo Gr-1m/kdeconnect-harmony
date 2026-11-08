@@ -1,5 +1,10 @@
 # KDE Connect（HarmonyOS）— C++ Native 标准化开发指导（v0.1）
 
+> **2026-11-07 分支说明（`dev/native-rust`）**：本分支 native 层已全 Rust 化，
+> C++/BearSSL 代码与旧 host 测试已删除；构建/测试/行为对照见
+> `devdocs/FULL_RUST.md`。本文件仅作为**历史行为参考**，其中的路径/命令已失效；
+> `Index.d.ts` 契约与协议常量仍然有效。
+
 > 2026-09-12，zcode（本机 native agent，兼部分总指挥职责）起草。
 > 适用于新仓库 `kdeconnect-harmony`（gitcode 中心仓库 clone，分支 `dev/zcodeinit`）的重建工作。
 > 读者：C++ native agent（当前 zcode）、CodeArts（评审/单测/CI）；DevEco Code 只需关注 §5 契约与 WP 表中的契约触碰点。

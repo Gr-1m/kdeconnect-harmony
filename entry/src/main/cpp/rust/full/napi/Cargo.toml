@@ -1,0 +1,19 @@
+[package]
+name = "kdeconnect_napi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "KDE Connect HarmonyOS NAPI bridge (full Rust)"
+
+[lib]
+name = "kdeconnect_napi"
+crate-type = ["cdylib"]
+
+[dependencies]
+kdc_native = { path = "../core" }
+napi-ohos = { version = "1.2", default-features = false, features = ["napi4"] }
+napi-derive-ohos = "1.2"
+libc.workspace = true
+
+[build-dependencies]
+napi-build-ohos = "1.2"
