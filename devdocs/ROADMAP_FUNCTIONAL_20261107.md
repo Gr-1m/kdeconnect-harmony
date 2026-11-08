@@ -93,4 +93,16 @@ S1 的 ② 由用户确认后执行，不与 CodeArts 在途编辑抢跑。
 - 开发依赖由 Omp-ArkTS 实施时列出并与用户逐项确认：`mainPaneScroller`/`bindToScrollable`/标题栏穿透绑定、`WIDE_RAIL_LIMIT`/`onPaneArea`/`sideBySide?3:2` 容量逻辑、主区 section 2 新增 Refresh；
 - 归属：Omp-ArkTS 实现，CodeArts 复核，总指挥三实例复验后提交。
 
+### 7.2 后续技术决策（2026-11-08 用户拍板，全部采纳建议）
+
+| 项 | 裁决 |
+|---|---|
+| 全 Rust 合并 | **批准**；执行时机 = Omp-Native 在途 10 文件（doc 驱动加固）落地 + 门禁后，由总指挥 cutover → `backup/main-cpp` 冻结 → **0.8.4** |
+| 桥层职责边界 | **方案 A**：协议逻辑下沉 Rust 引擎。分两阶段：① 合并后先按 kcbridge 形态对齐命令/事件/错误码（机械、可 Mock）；② 0.8.x 内把 `PacketRouter`/配对状态机/插件路由下沉引擎，ArkTS 保留 UI 与插件层、引擎可 Mock |
+| 状态管理 V2 | **批准试点**：仅叶子组件对照 + `LogsTab` 页面先行；`animateTo`（DrawerOverlay/Index 两处）专项复验；试点文件与 S2 不重叠 |
+| `docs/kdeconnect-oh` | **入库**（11 篇/172K；`.gitignore` 加例外 `!docs/kdeconnect-oh/**`；08 冻结契约/09 车道所有权/10 流水线为权威参考） |
+| 四点菜单优化 | backlog（用户：先不急） |
+| `signingConfig` | 维持 **`matepadiani`**（Win10 真机零配额已验证） |
+
+
 
