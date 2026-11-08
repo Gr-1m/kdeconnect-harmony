@@ -19,8 +19,8 @@ use crate::payload;
 use crate::state::{role_for, Shared};
 use crate::tls::{self, TlsSession};
 use crate::types::{
-    ConnectionState, EventType, NetEvent, TlsRole, MAX_IDENTITY_PACKET_SIZE, MAX_PACKET_SIZE,
-    PLAIN_IDENTITY_TIMEOUT_MS,
+    ConnectionState, EventType, NetEvent, TlsRole, CONN_RATE_LIMIT_MS, MAX_IDENTITY_PACKET_SIZE,
+    MAX_PACKET_SIZE, PLAIN_IDENTITY_TIMEOUT_MS,
 };
 use crate::{loge, logi, logw};
 
@@ -249,7 +249,9 @@ fn incoming_inner(
                 map.insert(key, now);
                 previous
             })
-            .is_some_and(|prev| now.duration_since(prev).as_millis() < 300);
+            .is_some_and(|prev| {
+                now.duration_since(prev).as_millis() < u128::from(CONN_RATE_LIMIT_MS)
+            });
         if too_soon {
             return Err(ConnError::Protocol(
                 "connection rate limited (retry later)".to_owned(),

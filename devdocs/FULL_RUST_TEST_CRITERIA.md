@@ -7,8 +7,8 @@
 
 | 层 | 位置 | 命令 | 覆盖对象 | 当前结果 |
 |---|---|---|---|---|
-| L0 纯函数差分 | `rust/kdc_core` | `cargo test --manifest-path entry/src/main/cpp/rust/kdc_core/Cargo.toml` | 帧切分/identity/证书工具；与 C++ 基线 **7896 组逐字节差分**（R1，历史证据） | 45 passed |
-| L1 核心单元 | `rust/full/core` | `cargo test -p kdc_native` | 见 §2 清单（18 个） | 18 passed |
+| L0 纯函数差分 | `rust/kdc_core` | `cargo test --manifest-path entry/src/main/cpp/rust/kdc_core/Cargo.toml` | 帧切分/identity/证书工具；与 C++ 基线 **7896 组逐字节差分**（R1，历史证据） | 46 passed |
+| L1 核心单元 | `rust/full/core` | `cargo test -p kdc_native` | 见 §2 清单（19 个） | 19 passed |
 | L2 双栈集成（host） | `rust/full/core/tests/stack_e2e.rs` | 同上（1 个用例、3 个场景） | 两套 Rust 栈真实 TCP/TLS：连接/身份/配对/控制帧/payload + **两条负路径** | 1 passed（3.6s） |
 | L3 设备集成（ohemu） | 平板 5555 | `HDC_TARGET=127.0.0.1:5555 tools/sign-debug.sh all` + `tools/launch-app.sh` | init/start、TCP/UDP 1716、与**真实 KDE 桌面** TLS/identity/配对/文件接收 | 见 FULL_RUST §6（人工取证） |
 | L4 构建/打包 | 工程根 | `hvigorw --no-daemon assembleHap` | 双 ABI 交叉编译、`.so` 进 HAP、NAPI 注册与契约 | BUILD SUCCESSFUL |
@@ -23,6 +23,7 @@ cert_gen::shift_is_calendar_years / generated_validity_matches_calendar_years
 discovery::binds_and_sends_loopback / default_port
 net_util::port_probe_finds_listener / private_ipv4_boundaries
 packet::extracts_frames_from_bytes / identity_roundtrip / oversize_line_is_dropped / packet_metadata
+        / device_name_filter_follows_spec
 payload::filename_extraction / payload_listener_binds_range
 stack::listener_falls_back_when_busy
 tls::builds_both_configs

@@ -110,7 +110,7 @@ cargo build --release --manifest-path entry/src/main/cpp/rust/full/napi/Cargo.to
 
 | 项 | 结果 |
 |---|---|
-| `cargo test -p kdc_native` | 18 unit + 1 E2E 全绿（E2E 含正向 + **CN 不符 / 信任钉扎不符两条负路径**） |
+| `cargo test -p kdc_native` | 19 unit + 1 E2E 全绿（E2E 含正向 + **CN 不符 / 信任钉扎不符两条负路径**） |
 | E2E：A 拨 B | TLS 角色 server/client 正确；双方 `connected`；identity/`pairingRequest` 到达 |
 | E2E：B→A packet | `kdeconnect.ping` 原样 `packetReceived` |
 | E2E：A→B 200KB payload | 双向 finished；sha/字节一致；`keepPayload` 落盘成功 |
@@ -170,7 +170,7 @@ cargo build --release --manifest-path entry/src/main/cpp/rust/full/napi/Cargo.to
 
 1. **架构/构建/差异/风险**：本文件 §2–§7。
 2. **测试与行为对照**：
-   - `cargo test -p kdc_native`（18 unit + 1 双栈 E2E）；
+   - `cargo test -p kdc_native`（19 unit + 1 双栈 E2E）；
    - `entry/src/main/cpp/tests/run.sh`（cargo test + NAPI check + 注入契约）；
    - `hvigorw --no-daemon assembleHap`（双 ABI Rust `.so` 进 HAP）；
    - 设备侧：ohemu 平板 5555 ↔ 真实 KDE——TLS/identity/配对/文件接收（见 §6）；
@@ -192,6 +192,25 @@ cargo build --release --manifest-path entry/src/main/cpp/rust/full/napi/Cargo.to
 5. **合并顺序（建议，由 AtomCode/用户执行）**：
    先提交本分支（clean cutover 单独一次提交）→ rebase/merge 当时的 main（`Index.d.ts`
    零改动需复核）→ 跑 `cargo test` + `tests/run.sh` + `hvigorw assembleHap` + 平板/手机冒烟。
+
+## 7.95 对 `docs/kdeconnect-oh` 规格的加固与后置重构
+
+用户 2026-11-08 选择 **C**：现分支按规格加固、规格作为 0.9.0 后重构计划。
+
+本分支已采纳（与两套架构兼容的协议事实/工程约定）：
+
+- 数值字段 **number 或数字字符串双兼容**（`kdc_core::packet`；发送仍为 number）；
+- 同设备重连限速 **300ms → 500ms**（`limits.rs`，对齐桌面/iOS）；
+- TLS **客户端角色限 TLS1.2**（服务端角色仍 1.2+1.3，对齐 Android `SSLContext("TLSv1.2")`）；
+- verifier **要求证书链恰一张**（KDE 三端均为单张自签）；
+- 证书 Subject 补 `O=KDE, OU=KDE Connect`；
+- `deviceName` 过滤 `["',;:.!?()\[\]<>]` + 截 32 字符 + 空值回退；
+- 协议常量收敛到 **`limits.rs` 单一来源**（`types.rs` 重导出）；
+- `lib.rs` 记录行为不变式 I1–I5。
+
+未采纳（属后置重构，见 `devdocs/PLAN_OH_KDECONNECT_MIGRATION.md`）：5 crate 拆分、
+`kcbridge.d.ts` v1 契约（kind/错误码/contractVersion）、EngineActor+tokio、引擎内配对状态机、
+`capabilities.v1.json` 单一能力源、lints/deny/audit/fuzz 全套闸门。
 
 ## 8. 与 main / C++ 备份分支的关系
 

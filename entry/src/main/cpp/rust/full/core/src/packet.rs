@@ -30,6 +30,22 @@ pub fn extract_frame(buf: &mut Vec<u8>, max_size: usize) -> Option<Result<Vec<u8
     }
 }
 
+/// deviceName 过滤（kdeconnect-oh `01 §4`）：去掉 `["',;:.!?()\[\]<>]`，截 32 字符；
+/// 过滤后为空则回退固定名，保证 identity 的 `deviceName` 非空（对端会因此拒绝）。
+pub fn sanitize_device_name(name: &str) -> String {
+    const INVALID: &[char] = &[
+        '"', '\'', ',', ';', ':', '.', '!', '?', '(', ')', '[', ']', '<', '>',
+    ];
+    let filtered: String = name.chars().filter(|c| !INVALID.contains(c)).collect();
+    let truncated: String = filtered.chars().take(32).collect();
+    let trimmed = truncated.trim();
+    if trimmed.is_empty() {
+        "KDE Connect".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
 /// 构建 `kdeconnect.identity` 帧（带 `\n`）。
 pub fn build_identity(
     device_id: &str,
@@ -41,7 +57,7 @@ pub fn build_identity(
 ) -> String {
     kdc_core::packet::build_identity(
         device_id,
-        device_name,
+        &sanitize_device_name(device_name),
         device_type,
         tcp_port,
         PROTOCOL_VERSION,
@@ -78,6 +94,18 @@ pub fn frame_limit(is_identity_hint: bool) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_name_filter_follows_spec() {
+        // 过滤 ["',;:.!?()\[\]<>] + 截 32 字符；空则回退（kdeconnect-oh 01 §4）。
+        assert_eq!(sanitize_device_name("My, Phone: !?"), "My Phone");
+        assert_eq!(
+            sanitize_device_name(&"x".repeat(40)),
+            "x".repeat(32).as_str()
+        );
+        assert_eq!(sanitize_device_name("<<>>"), "KDE Connect");
+        assert_eq!(sanitize_device_name("  "), "KDE Connect");
+    }
 
     #[test]
     fn extracts_frames_from_bytes() {

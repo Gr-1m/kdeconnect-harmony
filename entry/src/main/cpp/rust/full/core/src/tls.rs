@@ -46,11 +46,17 @@ impl ServerCertVerifier for AcceptAnyServerVerifier {
     fn verify_server_cert(
         &self,
         _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
+        intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, Error> {
+        // KDE 三端都只发一张自签证书；链长 >1 视为异常（kdeconnect-oh 06 §2.7.1）。
+        if !intermediates.is_empty() {
+            return Err(Error::General(
+                "peer chain must be exactly one self-signed certificate".to_owned(),
+            ));
+        }
         Ok(ServerCertVerified::assertion())
     }
 
@@ -120,9 +126,14 @@ impl ClientCertVerifier for AcceptAnyClientVerifier {
     fn verify_client_cert(
         &self,
         _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
+        intermediates: &[CertificateDer<'_>],
         _now: UnixTime,
     ) -> Result<ClientCertVerified, Error> {
+        if !intermediates.is_empty() {
+            return Err(Error::General(
+                "peer chain must be exactly one self-signed certificate".to_owned(),
+            ));
+        }
         Ok(ClientCertVerified::assertion())
     }
 
@@ -193,19 +204,23 @@ pub fn build_context(cert_pem: &str, key_pem: &str) -> Result<TlsContext, String
     let key = read_key(key_pem)?;
     let provider = Arc::new(ring::default_provider());
 
-    // 显式 TLS1.2 + TLS1.3：KDE/Android 都有 TLS1.2 上限的实现；android 侧文档明确。
-    let versions: &[&'static rustls::SupportedProtocolVersion] =
+    // 角色版本策略（kdeconnect-oh 06 §2.7.4）：
+    // - 服务端角色（拨号方）接受 TLS1.2 + TLS1.3；
+    // - 客户端角色（被拨方）最高 TLS1.2 —— Android `SSLContext.getInstance("TLSv1.2")`
+    //   注明 1.3 在部分设备有问题，保守对齐。
+    let server_versions: &[&'static rustls::SupportedProtocolVersion] =
         &[&rustls::version::TLS13, &rustls::version::TLS12];
+    let client_versions: &[&'static rustls::SupportedProtocolVersion] = &[&rustls::version::TLS12];
 
     let server = ServerConfig::builder_with_provider(provider.clone())
-        .with_protocol_versions(versions)
+        .with_protocol_versions(server_versions)
         .map_err(|e| format!("server protocol versions: {e}"))?
         .with_client_cert_verifier(Arc::new(AcceptAnyClientVerifier))
         .with_single_cert(certs.clone(), key.clone_key())
         .map_err(|e| format!("server config: {e}"))?;
 
     let client = ClientConfig::builder_with_provider(provider)
-        .with_protocol_versions(versions)
+        .with_protocol_versions(client_versions)
         .map_err(|e| format!("client protocol versions: {e}"))?
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(AcceptAnyServerVerifier))

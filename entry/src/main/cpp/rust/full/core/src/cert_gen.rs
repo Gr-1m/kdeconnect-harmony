@@ -44,6 +44,9 @@ pub fn generate_self_signed_ec_at(
     let mut params = CertificateParams::new(Vec::<String>::new()).map_err(|e| e.to_string())?;
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, device_id);
+    // 对齐三端 Subject：CN=<deviceId>, O=KDE, OU=KDE Connect（kdeconnect-oh 01 §4）。
+    dn.push(DnType::OrganizationName, "KDE");
+    dn.push(DnType::OrganizationalUnitName, "KDE Connect");
     params.distinguished_name = dn;
 
     params.not_before = shift_calendar_years(now, -1);

@@ -7,37 +7,8 @@
 
 use std::sync::Arc;
 
-pub const UDP_PORT: u16 = 1716;
-pub const TCP_PORT_MIN: u16 = 1716;
-pub const TCP_PORT_MAX: u16 = 1764;
-pub const PAYLOAD_PORT_MIN: u16 = 1739;
-pub const MAX_IDENTITY_PACKET_SIZE: usize = 8192;
-pub const MAX_PACKET_SIZE: usize = 32 * 1024 * 1024;
-pub const PROTOCOL_VERSION: i32 = 8;
-pub const MAX_UNPAIRED_CONNECTIONS: usize = 42;
-pub const LISTEN_BACKLOG: i32 = 42;
-pub const IDENTITY_TIMEOUT_MS: u64 = 1000;
-pub const PLAIN_IDENTITY_TIMEOUT_MS: u64 = 1000;
-pub const CONNECT_HANDSHAKE_TIMEOUT_MS: u64 = 10_000;
-pub const DISCOVERY_DEBOUNCE_MS: u64 = 500;
-pub const DISCOVERY_DEDUP_EVENT_MS: u64 = 2000;
-pub const DISCOVERY_TIMEOUT_MS: u64 = 60_000;
-pub const DISCOVERY_BROADCAST_FAST_MS: u64 = 5_000;
-pub const DISCOVERY_BROADCAST_FAST_COUNT: u32 = 5;
-pub const DISCOVERY_LONG_INTERVAL_MS: u64 = 60_000;
-pub const DISCOVERY_BROADCAST_WHILE_LINKED: bool = false;
-pub const CONN_RATE_LIMIT_MS: u64 = 300;
-pub const PORT_PROBE_TIMEOUT_MS: u64 = 500;
-pub const MAX_TX_QUEUE_BYTES: usize = 8 * 1024 * 1024;
-pub const LOOP_TICK_MS: u64 = 200;
-pub const PAYLOAD_ACCEPT_TIMEOUT_MS: u64 = 30_000;
-pub const PAYLOAD_CHUNK: usize = 16 * 1024;
-pub const PAYLOAD_PROGRESS_INTERVAL_MS: u64 = 100;
-pub const PAYLOAD_STALL_TIMEOUT_MS: u64 = 30_000;
-pub const PAYLOAD_JOB_REAP_MS: u64 = 5_000;
-pub const PAYLOAD_RECEIVE_KEEP_MS: u64 = 24 * 60 * 60 * 1000;
-pub const PAYLOAD_SPOOL_DIR_DEFAULT: &str =
-    "/data/storage/el2/base/haps/entry/cache/kdeconnect_payloads";
+// 常量的唯一定义在 `limits.rs`；这里重导出，保持既有 `crate::types::<CONST>` 路径可用。
+pub use crate::limits::*;
 
 /// 对端 identity 的公开字段（`kdeconnect.identity` 的 `body`）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

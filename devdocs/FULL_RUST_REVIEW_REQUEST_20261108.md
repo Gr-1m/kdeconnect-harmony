@@ -22,8 +22,8 @@
 
 见 `FULL_RUST_TEST_CRITERIA.md`。关键数字：
 
-- L0：`kdc_core` 45 passed（含与 C++ 基线的 7896 组逐字节差分，R1 历史证据）；
-- L1：`kdc_native` 18 unit passed；
+- L0：`kdc_core` 46 passed（含与 C++ 基线的 7896 组逐字节差分，R1 历史证据）；
+- L1：`kdc_native` 19 unit passed；
 - L2：host 双栈 E2E 1 passed（正向连接/配对/200KB payload + **CN 不符 / 钉扎不符两条负路径**）；
 - L3：ohemu 平板 5555 ↔ 真实 KDE：TLS/identity/配对（码一致）/桌面→平板 64KiB 落盘；
 - L4：`hvigorw assembleHap` 成功，双 ABI `.so` 进 HAP，`napi_register_module_v1` 与模块名正确；

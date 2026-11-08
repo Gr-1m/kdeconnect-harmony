@@ -169,6 +169,16 @@ pub fn is_valid_device_id(id: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
 }
 
+/// 数值字段兼容：`number` 或数字字符串（上游坑：Android 端经 `optString` 读 int 字段会以
+/// 字符串回发，见 kdeconnect-oh `01 §2` / `09 §7`）。发送侧一律输出 number。
+fn as_number(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
 /// 解析 identity 帧。语义与 C++ `PacketIO::parseIdentity` 等价：
 /// 非 JSON / 非对象根 / `type` 非 `"kdeconnect.identity"` / 缺 `body` / deviceId 不合法 → `None`。
 ///
@@ -201,7 +211,7 @@ pub fn parse_identity(json: &str) -> Option<DeviceInfo> {
         .unwrap_or_default()
         .to_owned();
     let tcp_port = field("tcpPort")
-        .and_then(Value::as_f64)
+        .and_then(as_number)
         .map(|port| port as u16) // 合法域 0..=65535 内与 C++ static_cast<uint16_t> 等价
         .unwrap_or(0);
 
@@ -250,7 +260,7 @@ pub fn parse_packet(json: &str) -> Option<ParsedPacket> {
 
     let payload_size = root
         .get("payloadSize")
-        .and_then(Value::as_f64)
+        .and_then(as_number)
         .map(|size| size as i64)
         .unwrap_or(0);
 
@@ -258,7 +268,7 @@ pub fn parse_packet(json: &str) -> Option<ParsedPacket> {
         .get("payloadTransferInfo")
         .and_then(Value::as_object)
         .and_then(|info| info.get("port"))
-        .and_then(Value::as_f64)
+        .and_then(as_number)
         .map(|port| port as u16) // 合法域内与 C++ static_cast<uint16_t> 等价
         .unwrap_or(0);
 
@@ -571,5 +581,24 @@ mod tests {
         let frame = build_identity(VALID_ID, "D", "phone", 1739, 8, &[], &[]);
         let v: Value = serde_json::from_str(frame.trim_end()).unwrap();
         assert_eq!(v["body"]["tcpPort"], Value::Number(1739.into()));
+    }
+
+    /// 数值字段双兼容（kdeconnect-oh `01 §2`/`09 §7`）：Android 端经 `optString` 读 int
+    /// 会以字符串回发；接受 number 与数字字符串，发送侧仍输出 number。
+    #[test]
+    fn numeric_fields_accept_numeric_strings() {
+        let identity = format!(
+            "{{\"id\":0,\"type\":\"kdeconnect.identity\",\"version\":8,\"body\":{{\
+             \"deviceId\":\"{VALID_ID}\",\"deviceName\":\"Dev\",\"deviceType\":\"phone\",\
+             \"tcpPort\":\"1716\",\"protocolVersion\":8,\"incomingCapabilities\":[],\
+             \"outgoingCapabilities\":[]}}}}"
+        );
+        assert_eq!(parse_identity(&identity).expect("string tcpPort").tcp_port, 1716);
+
+        let packet = "{\"id\":1,\"type\":\"kdeconnect.share.request\",\"body\":{},\
+                      \"payloadSize\":\"42\",\"payloadTransferInfo\":{\"port\":\"1739\"}}";
+        let parsed = parse_packet(packet).expect("string payload metadata");
+        assert_eq!(parsed.payload_size, 42);
+        assert_eq!(parsed.payload_port, 1739);
     }
 }
