@@ -8,6 +8,7 @@
 // 层次：渲染在页面根 Stack（`.zIndex(1000)`），平板下也覆盖全屏（不随 contentPanel 被侧栏裁切）。
 //
 // 行为：点遮罩或「关闭」→ onClose；卡片本身吞掉点击（不冒泡到遮罩）。
+// 「解除配对」仅 paired=true 时显示；二次确认后回调 onUnpairRemembered。
 
 @Component
 export struct DeviceInfoDialog {
@@ -23,7 +24,17 @@ export struct DeviceInfoDialog {
   @Prop unpairedLabel: string = '';
   @Prop offlineLabel: string = '';
   @Prop closeLabel: string = '';
+  /** 已本地化的「解除配对」按钮文案 */
+  @Prop unpairLabel: string = '';
+  /** 已本地化的确认弹窗标题 */
+  @Prop unpairConfirmTitle: string = '';
+  /** 已本地化的确认弹窗消息 */
+  @Prop unpairConfirmMsg: string = '';
+  /** 已本地化的「取消」按钮文案 */
+  @Prop cancelLabel: string = '';
   onClose: () => void = () => {
+  };
+  onUnpairRemembered: (deviceId: string) => void = (_deviceId: string) => {
   };
 
   build() {
@@ -69,6 +80,34 @@ export struct DeviceInfoDialog {
           Blank()
         }
         .width('100%')
+
+        if (this.paired) {
+          Button(this.unpairLabel)
+            .fontSize(14)
+            .width('100%')
+            .height(42)
+            .backgroundColor($r('app.color.danger_bg'))
+            .fontColor($r('app.color.danger_text'))
+            .borderRadius(12)
+            .onClick((): void => {
+              AlertDialog.show({
+                title: this.unpairConfirmTitle,
+                message: this.unpairConfirmMsg,
+                primaryButton: {
+                  value: this.cancelLabel,
+                  action: (): void => {
+                  }
+                },
+                secondaryButton: {
+                  value: this.unpairLabel,
+                  fontColor: $r('app.color.danger_text'),
+                  action: (): void => {
+                    this.onUnpairRemembered(this.deviceId);
+                  }
+                }
+              });
+            })
+        }
 
         Button(this.closeLabel)
           .fontSize(14)

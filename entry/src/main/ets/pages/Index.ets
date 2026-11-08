@@ -1987,8 +1987,22 @@ struct Index {
           unpairedLabel: this.notify.resText($r('app.string.remembered_unpaired').id),
           offlineLabel: this.notify.resText($r('app.string.device_offline').id),
           closeLabel: this.notify.resText($r('app.string.action_close').id),
+          unpairLabel: this.notify.resText($r('app.string.unpair_action').id),
+          unpairConfirmTitle: this.notify.resText($r('app.string.unpair_remembered_confirm_title').id),
+          unpairConfirmMsg: this.notify.resText($r('app.string.unpair_remembered_confirm_msg').id),
+          cancelLabel: this.notify.resText($r('app.string.action_cancel').id),
           onClose: (): void => {
             this.rememberedDetail = undefined;
+          },
+          onUnpairRemembered: (deviceId: string): void => {
+            try {
+              native.removeTrustedCertificate(deviceId);
+              this.deviceController.setPairedFlag(deviceId, false);
+              this.notify.toast(this.notify.resText($r('app.string.toast_unpair_remembered_ok').id));
+              this.rememberedDetail = undefined;
+            } catch (e) {
+              this.notify.toast(this.notify.resText($r('app.string.toast_unpair_remembered_fail').id));
+            }
           }
         })
           .zIndex(1000)

@@ -669,6 +669,22 @@
       "value": "Close"
     },
     {
+      "name": "unpair_remembered_confirm_title",
+      "value": "Unpair Device"
+    },
+    {
+      "name": "unpair_remembered_confirm_msg",
+      "value": "Only local trust will be removed. The offline device will not be notified."
+    },
+    {
+      "name": "toast_unpair_remembered_ok",
+      "value": "Unpaired"
+    },
+    {
+      "name": "toast_unpair_remembered_fail",
+      "value": "Failed to unpair"
+    },
+    {
       "name": "action_send_pick",
       "value": "Choose & send"
     },

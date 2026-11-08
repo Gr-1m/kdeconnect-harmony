@@ -649,6 +649,22 @@
       "value": "关闭"
     },
     {
+      "name": "unpair_remembered_confirm_title",
+      "value": "解除配对"
+    },
+    {
+      "name": "unpair_remembered_confirm_msg",
+      "value": "仅解除本地信任，不会通知对端（设备离线）"
+    },
+    {
+      "name": "toast_unpair_remembered_ok",
+      "value": "已解除配对"
+    },
+    {
+      "name": "toast_unpair_remembered_fail",
+      "value": "解除配对失败"
+    },
+    {
       "name": "action_send_pick",
       "value": "选择发送"
     },
