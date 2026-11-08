@@ -14,7 +14,7 @@
 AGENTS1.md
 /EMULATOR_NOTES.md
 KICKOFF_PROMPT.md
-docs/
+docs/*
 !docs/kdeconnect-oh/
 !docs/kdeconnect-oh/**
 docs_old/
