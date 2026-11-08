@@ -19,7 +19,7 @@
 
 import native from 'libkdeconnect_napi.so';
 import { NetEvent } from 'libkdeconnect_napi.so';
-import { PayloadTransfer, PayloadDirection, PayloadState } from '../model/PayloadModels';
+import { PayloadTransfer, PayloadDirection, PayloadState, PayloadBatch, PayloadBatchState } from '../model/PayloadModels';
 import { PayloadHistory } from '../common/PayloadHistory';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { Context, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
@@ -38,6 +38,13 @@ export class PayloadController {
   dialogOpen: boolean = false;               // 原 @State receivedDialogOpen
   detailOpen: boolean = false;               // 原 @State payloadDetailOpen
   detailId: number = 0;                      // 原 @State payloadDetailId
+
+  // S2 接收批次（契约 v0.2 §3）：按批归并显示；开批/计数/结算规则见 onBatchHint 与 attachToReceiveBatch
+  batches: PayloadBatch[] = [];
+  private batchSeq: number = 0;
+  private batchTimers: Map<number, number> = new Map();
+  /** 已计入 doneFiles 的 transferId（防重复累加） */
+  private terminalIds: number[] = [];
 
   // 多选发送串行队列（原 private 字段）
   sendQueue: SendJob[] = [];
@@ -114,6 +121,232 @@ export class PayloadController {
       this.payloads = next;
       console.info(`KDC payload inflight -> failed (${reason}) dev=${deviceId.substring(0, 8)}`);
     }
+    // S2：连接关闭 → 该设备的活跃批次结算为「未完成」
+    this.settleBatchesForDevice(deviceId, 'incomplete',
+      `device disconnected (${reason})`);
+  }
+
+  // ==================== S2 接收批次（契约 v0.2 §3）====================
+
+  /** 插件预告入口（Index 经 eventBus 'share.batch' 调用）：numberOfFiles/totalPayloadSize */
+  onBatchHint(deviceId: string, numberOfFiles: number, totalPayloadSize: number, isUpdate: boolean): void {
+    if (deviceId.length === 0 || numberOfFiles <= 0) {
+      return;
+    }
+    const idx: number = this.activeReceiveBatchIndex(deviceId);
+    if (idx < 0) {
+      this.openBatch(deviceId, numberOfFiles, totalPayloadSize, isUpdate);
+      this.log(`batch opened by ${isUpdate ? 'update' : 'request'}: ${numberOfFiles} files / ${totalPayloadSize} B`);
+      return;
+    }
+    // 已有活跃批：刷新分母（对端可能修正总计）
+    this.batches = this.batches.map((b: PayloadBatch, i: number): PayloadBatch => {
+      if (i !== idx) {
+        return b;
+      }
+      const next: PayloadBatch = this.copyBatch(b);
+      next.expectedFiles = numberOfFiles;
+      next.totalBytes = totalPayloadSize;
+      next.declaredByUpdate = next.declaredByUpdate || isUpdate;
+      return next;
+    });
+  }
+
+  private copyBatch(b: PayloadBatch): PayloadBatch {
+    const next: PayloadBatch = {
+      batchId: b.batchId,
+      deviceId: b.deviceId,
+      direction: b.direction,
+      expectedFiles: b.expectedFiles,
+      totalBytes: b.totalBytes,
+      transferIds: b.transferIds.slice(0),
+      doneFiles: b.doneFiles,
+      doneBytes: b.doneBytes,
+      state: b.state,
+      declaredByUpdate: b.declaredByUpdate,
+      collapsed: b.collapsed,
+      lastFileAtMs: b.lastFileAtMs
+    };
+    return next;
+  }
+
+  private activeReceiveBatchIndex(deviceId: string): number {
+    for (let i = 0; i < this.batches.length; i++) {
+      const b: PayloadBatch = this.batches[i];
+      if (b.deviceId === deviceId && b.direction === 'receive' && b.state === 'active') {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  private openBatch(deviceId: string, expected: number, total: number, declared: boolean): void {
+    this.batchSeq++;
+    const b: PayloadBatch = {
+      batchId: this.batchSeq,
+      deviceId: deviceId,
+      direction: 'receive',
+      expectedFiles: expected,
+      totalBytes: total,
+      transferIds: [],
+      doneFiles: 0,
+      doneBytes: 0,
+      state: 'active',
+      declaredByUpdate: declared,
+      collapsed: false,
+      lastFileAtMs: Date.now()
+    };
+    this.batches = [b].concat(this.batches);
+    this.armBatchIdleTimer(b.batchId);
+  }
+
+  /** 30s 无新文件 → 结算「未完成」（契约 §3 批次边界） */
+  private armBatchIdleTimer(batchId: number): void {
+    this.clearBatchTimer(batchId);
+    const t: number = setTimeout((): void => {
+      this.batchTimers.delete(batchId);
+      this.settleBatch(batchId, 'incomplete', 'no new file for 30s');
+    }, 30000);
+    this.batchTimers.set(batchId, t);
+  }
+
+  private clearBatchTimer(batchId: number): void {
+    const t: number | undefined = this.batchTimers.get(batchId);
+    if (t !== undefined) {
+      clearTimeout(t);
+      this.batchTimers.delete(batchId);
+    }
+  }
+
+  private settleBatch(batchId: number, state: PayloadBatchState, why: string): void {
+    let hit: boolean = false;
+    this.batches = this.batches.map((b: PayloadBatch): PayloadBatch => {
+      if (b.batchId !== batchId || b.state !== 'active') {
+        return b;
+      }
+      hit = true;
+      const next: PayloadBatch = this.copyBatch(b);
+      next.state = state;
+      return next;
+    });
+    if (hit) {
+      this.clearBatchTimer(batchId);
+      this.log(`batch #${batchId} settled ${state} (${why})`);
+    }
+  }
+
+  private settleBatchesForDevice(deviceId: string, state: PayloadBatchState, why: string): void {
+    for (const b of this.batches) {
+      if (b.deviceId === deviceId && b.state === 'active') {
+        this.settleBatch(b.batchId, state, why);
+      }
+    }
+  }
+
+  /** 接收条目挂批：无活跃批则开批；未声明批超 5s 退化窗口则结算旧批后开新批 */
+  private attachToReceiveBatch(item: PayloadTransfer, isNewEntry: boolean, state: PayloadState): void {
+    const now: number = Date.now();
+    // ① 该 transferId 已归过批（含已结算批）：只更新计数，绝不新建（否则同一文件会出现在两个批里）
+    const owner: PayloadBatch | undefined = this.batchOfTransfer(item.transferId);
+    if (owner !== undefined) {
+      this.updateBatchCounters(owner.batchId, item, state, now);
+      return;
+    }
+    let idx: number = this.activeReceiveBatchIndex(item.deviceId);
+    if (idx >= 0 && isNewEntry && !this.batches[idx].declaredByUpdate
+      && now - this.batches[idx].lastFileAtMs > 5000) {
+      this.settleBatch(this.batches[idx].batchId, 'done', '5s degrade window closed');
+      idx = -1;
+    }
+    if (idx < 0) {
+      this.openBatch(item.deviceId, 0, 0, false);
+      idx = 0;
+    }
+    const batchId: number = this.batches[idx].batchId;
+    this.updateBatchCounters(batchId, item, state, now);
+  }
+
+  /** 把一次 payload 事件计入批（新增 transferId / 终态计数）；完成判定只看**已终态**文件数 */
+  private updateBatchCounters(batchId: number, item: PayloadTransfer, state: PayloadState, now: number): void {
+    this.batches = this.batches.map((b: PayloadBatch): PayloadBatch => {
+      if (b.batchId !== batchId) {
+        return b;
+      }
+      const next: PayloadBatch = this.copyBatch(b);
+      if (!next.transferIds.includes(item.transferId)) {
+        next.transferIds = next.transferIds.concat([item.transferId]);
+      }
+      next.lastFileAtMs = now;
+      const terminal: boolean = state === 'finished' || state === 'failed' || state === 'cancelled';
+      // 只在「本条首次进入终态」时计数：doneFiles 以 transferIds 中已终态数为准，避免重复累加
+      if (terminal && !this.terminalIds.includes(item.transferId)) {
+        this.terminalIds = this.terminalIds.concat([item.transferId]);
+        next.doneFiles++;
+        next.doneBytes += item.bytesDone > 0 ? item.bytesDone : item.size;
+      }
+      return next;
+    });
+    const b2: PayloadBatch | undefined = this.batchById(batchId);
+    if (b2 === undefined) {
+      return;
+    }
+    if (b2.state === 'active') {
+      this.armBatchIdleTimer(batchId);
+      // 完成判定：**所有声明文件都已终态**才算完成（先前用「已见文件数」会在最后一个文件刚 started 时就结算，
+      // 于是它的 finished 事件找不到活跃批、另开一个批 —— 2026-11-08 实机复现）
+      if (b2.expectedFiles > 0 && b2.doneFiles >= b2.expectedFiles) {
+        this.settleBatch(batchId, 'done', `${b2.doneFiles}/${b2.expectedFiles} files terminal`);
+      }
+    }
+  }
+
+  batchById(batchId: number): PayloadBatch | undefined {
+    for (const b of this.batches) {
+      if (b.batchId === batchId) {
+        return b;
+      }
+    }
+    return undefined;
+  }
+
+  batchOfTransfer(transferId: number): PayloadBatch | undefined {
+    for (const b of this.batches) {
+      if (b.transferIds.includes(transferId)) {
+        return b;
+      }
+    }
+    return undefined;
+  }
+
+  toggleBatch(batchId: number): void {
+    this.batches = this.batches.map((b: PayloadBatch): PayloadBatch => {
+      if (b.batchId !== batchId) {
+        return b;
+      }
+      const next: PayloadBatch = this.copyBatch(b);
+      next.collapsed = !next.collapsed;
+      return next;
+    });
+  }
+
+  /** 批头文案："3/5 文件 · 45% 占总字节"（分母未知时用已见文件数） */
+  batchSummary(b: PayloadBatch): string {
+    // 分母取「声明数」与「实见数」的较大者：对端可能把批量拆成多条单文件 share（每条声明 1），
+    // 这时按实见数显示，避免出现 "2/1 文件" 这种自相矛盾的数字
+    const seen: number = b.transferIds.length;
+    const total: number = Math.max(b.expectedFiles, seen);
+    const unit: string = this.resText($r('app.string.files_batch_unit').id);
+    let text: string = `${b.doneFiles}/${total} ${unit}`;
+    if (b.totalBytes > 0) {
+      const pct: number = Math.min(100, Math.floor(b.doneBytes * 100 / b.totalBytes));
+      text = `${text} · ${pct}% ${this.resText($r('app.string.files_batch_of_total').id)}`;
+    }
+    return text;
+  }
+
+  /** 批状态后缀：未完成 / 空串 */
+  batchStateText(b: PayloadBatch): string {
+    return b.state === 'incomplete' ? this.resText($r('app.string.files_batch_incomplete').id) : '';
   }
 
   // ========== payload 事件处理（原 L1770–L1824）==========
@@ -139,7 +372,8 @@ export class PayloadController {
       size: event.payloadSize ?? (idx >= 0 ? this.payloads[idx].size : 0),
       bytesDone: event.payloadBytesDone ?? 0,
       filePath: event.payloadFilePath ?? (idx >= 0 ? this.payloads[idx].filePath : ''),
-      settled: settled
+      settled: settled,
+      errorCode: event.errorCode
     };
     if (idx >= 0) {
       this.payloads = this.payloads.map((p: PayloadTransfer) => p.transferId === tid ? item : p);
@@ -153,6 +387,10 @@ export class PayloadController {
       this.onSendPayloadSettled(tid, state, event.errorCode !== undefined ? event.errorCode : 0);
       item.timeMs = Date.now();
       this.putReceivedHistory(item);
+    }
+    // S2：接收方向挂到批次（新建批 / 计数 / 结算），发送方向不参与批次
+    if (item.direction === 'receive' && item.deviceId.length > 0) {
+      this.attachToReceiveBatch(item, idx < 0, state);
     }
     if (state === 'finished' && item.direction === 'receive' && !item.settled && item.filePath.length > 0) {
       this.log(`auto-save received #${tid} ${item.fileName}`);
@@ -200,6 +438,12 @@ export class PayloadController {
     this.history = [];
     this.payloads = this.payloads.filter((p: PayloadTransfer) =>
       p.direction !== 'receive' || p.state === 'started' || p.state === 'progress');
+    // 清历史时一并清批次（否则批头会引用已被移除的 transferId）
+    for (const b of this.batches) {
+      this.clearBatchTimer(b.batchId);
+    }
+    this.batches = [];
+    this.terminalIds = [];
     this.clearPersistedHistory();
     this.log('received file history cleared');
     this.toast(this.resText($r('app.string.toast_history_cleared').id));
@@ -231,7 +475,15 @@ export class PayloadController {
       }
       return this.resText(p.settled ? $r('app.string.files_saved').id : $r('app.string.files_finished').id);
     }
-    return this.resText(p.state === 'failed' ? $r('app.string.files_failed').id : $r('app.string.files_cancelled').id);
+    if (p.state === 'cancelled') {
+      // code 6 = 用户主动取消（契约 §5）
+      return this.resText($r('app.string.files_cancelled').id);
+    }
+    if (p.errorCode === 7) {
+      // 对端超时未取件（spool 自动回收）
+      return this.resText($r('app.string.files_peer_unfetched').id);
+    }
+    return this.resText($r('app.string.files_failed').id);
   }
 
   // ========== 标记已处置（原 L1925–L1940）==========

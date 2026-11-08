@@ -23,7 +23,17 @@ export interface PluginEvent {
   runOutput?: RunOutputPayload;
   // 阶段4 方向C（A2）：对端通知（单条；每个 kdeconnect.notification 包 = 一条）
   notification?: NotificationItem;
+  // S2：多文件分享的总量预告（kdeconnect.share.request.update 或带 numberOfFiles 的 request）
+  shareBatch?: ShareBatchPayload;
   text?: string;
+}
+
+// 多文件批次预告（S2 契约 v0.2 §2/§3）
+export interface ShareBatchPayload {
+  numberOfFiles: number;
+  totalPayloadSize: number;
+  /** true = 来自 share.request.update（advance 语义）；false = 带总量的 share.request */
+  isUpdate: boolean;
 }
 
 export interface BatteryPayload {

@@ -326,21 +326,39 @@ export class DeviceController {
       const r: RememberedDevice = { id: t.id, name: t.name, paired: t.paired };
       return r;
     });
-    this.log(`trust store: ${this.trustedDevices.length} device(s)`);
-    for (const t of this.trustedDevices) {
-      if (t.certPem.length > 0) {
-        try {
-          this.setTrustedCertificate(t.id, t.certPem);
-        } catch (e) {
-          this.log(`pin rehydrate failed: ${t.id}`);
-        }
-      }
-    }
+    this.log(`trust store: ${this.trustedDevices.length} device(s) loaded`);
     this.trustLoaded = true;
     for (const p of this.pendingKnown) {
       this.rememberKnown(p.id, p.name);
     }
     this.pendingKnown = [];
+  }
+
+  /**
+   * 把已加载的信任证书登记到 native（pin）——**必须在页面注入 setTrustedCertificate 之后调用**。
+   * 2026-11-08 实测根因：aboutToAppear 里 `await TrustStore.load()` + rehydrateTrust 早于注入块执行，
+   * 那时 `setTrustedCertificate` 还是默认空实现 ⇒ pin 从未落到 native ⇒ 入向文件被
+   * Rust 侧 payload 准入以 "payload rejected: device not paired/trusted"（error 13/5）拒绝。
+   */
+  applyTrustPins(): void {
+    let pinned: number = 0;
+    const noCert: string[] = [];
+    for (const t of this.trustedDevices) {
+      if (t.certPem.length > 0) {
+        try {
+          this.setTrustedCertificate(t.id, t.certPem);
+          pinned++;
+        } catch (e) {
+          this.log(`pin rehydrate failed: ${t.id}`);
+        }
+      } else {
+        noCert.push(t.id.substring(0, 8));
+      }
+    }
+    console.info(`KDC trust pins: ${pinned}/${this.trustedDevices.length} applied`
+      + (noCert.length > 0 ? `, missing cert: ${noCert.join(',')}` : ''));
+    this.log(`trust pins: ${pinned}/${this.trustedDevices.length}`
+      + (noCert.length > 0 ? ` (missing cert: ${noCert.join(',')})` : ''));
   }
 
   isTrusted(deviceId: string): boolean {

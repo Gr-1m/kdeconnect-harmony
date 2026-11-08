@@ -823,6 +823,26 @@
     {
       "name": "settings_advanced",
       "value": "Advanced Settings"
+    },
+    {
+      "name": "files_batch_unit",
+      "value": "files"
+    },
+    {
+      "name": "files_batch_of_total",
+      "value": "of total bytes"
+    },
+    {
+      "name": "files_batch_incomplete",
+      "value": "incomplete"
+    },
+    {
+      "name": "files_peer_unfetched",
+      "value": "Peer did not fetch the file"
+    },
+    {
+      "name": "files_batches",
+      "value": "Incoming batches"
     }
   ]
 }

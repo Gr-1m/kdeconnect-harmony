@@ -803,6 +803,26 @@
     {
       "name": "settings_advanced",
       "value": "高级设置"
+    },
+    {
+      "name": "files_batch_unit",
+      "value": "文件"
+    },
+    {
+      "name": "files_batch_of_total",
+      "value": "占总字节"
+    },
+    {
+      "name": "files_batch_incomplete",
+      "value": "未完成"
+    },
+    {
+      "name": "files_peer_unfetched",
+      "value": "对端超时未取件"
+    },
+    {
+      "name": "files_batches",
+      "value": "接收批次"
     }
   ]
 }

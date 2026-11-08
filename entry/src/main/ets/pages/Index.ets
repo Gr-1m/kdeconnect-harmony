@@ -12,7 +12,7 @@ import uiMaterial from '@ohos.arkui.uiMaterial';
 import deviceInfo from '@ohos.deviceInfo';
 import { PacketRouter, RouterCallbacks } from '../net/PacketRouter';
 import { PluginBase } from '../plugins/PluginBase';
-import { PluginEvent } from '../plugins/PluginEvent';
+import { PluginEvent, ShareBatchPayload } from '../plugins/PluginEvent';
 import { PluginRegistry } from '../plugins/PluginRegistry';
 import { PluginHost } from '../plugins/PluginHost';
 import { PingPlugin } from '../plugins/PingPlugin';
@@ -30,7 +30,7 @@ import { NotificationPlugin } from '../plugins/NotificationPlugin';
 import { NotificationItem } from '../model/NotificationModels';
 import { NotificationStore } from '../common/NotificationStore';
 import { DeviceItem, BatteryItem, RememberedDevice } from '../model/DeviceModels';
-import { PayloadTransfer } from '../model/PayloadModels';
+import { PayloadTransfer, PayloadBatch } from '../model/PayloadModels';
 import { MprisSnapshot } from '../model/MprisModels';
 import { TrustedDevice } from '../model/TrustModels';
 import { TrustStore } from '../common/TrustStore';
@@ -374,6 +374,13 @@ struct Index {
     this.eventBus.on('mpris.playerUpdate', (id: string, ev: PluginEvent): void => { this.onMprisPlayerUpdate(id, ev); });
     this.eventBus.on('systemvolume.sinks', (id: string, ev: PluginEvent): void => { this.onSystemVolumeSinks(id, ev); });
     this.eventBus.on('battery', (id: string, ev: PluginEvent): void => { this.pluginHandlers.onBattery(id, ev); });
+    // S2：多文件分享的总量预告（share.request.update / 带 numberOfFiles 的 request）
+    this.eventBus.on('share.batch', (id: string, ev: PluginEvent): void => {
+      const b: ShareBatchPayload | undefined = ev.shareBatch;
+      if (b !== undefined) {
+        this.payloadController.onBatchHint(id, b.numberOfFiles, b.totalPayloadSize, b.isUpdate);
+      }
+    });
     // 远程输入：对端键盘 ready/idle（仅当前对话框设备有效；design §1.2/§3）
     this.eventBus.on('mousepadKeyboardState', (id: string, ev: PluginEvent): void => {
       if (this.remoteInputOpen && id === this.remoteInputDeviceId) {
@@ -513,6 +520,8 @@ struct Index {
       } catch (e) {
       }
     };
+    // pin 登记必须在此注入之后（否则落到默认空实现 → 入向文件被 native 以 not trusted 拒绝）
+    this.deviceController.applyTrustPins();
     this.deviceController.removeTrustedCertificate = (deviceId: string): void => {
       try {
         native.removeTrustedCertificate(deviceId);
@@ -1332,6 +1341,8 @@ struct Index {
   // setTimeout 双写：switchTab(0) 会触发 HdsTabs onChange，把 deviceSection 回写为
   // drawerSectionByTab[0]=0；下一次宏任务再置 3，保证手动连接表单最终可见。
   private openManualConnectPage(): void {
+    // 同步映射：否则切走再切回设备页会被 onChange 用陈旧分区覆盖（同 2026-11-08 分区跳错 bug）
+    this.drawerSectionByTab[0] = 3;
     this.switchTab(0);
     this.deviceController.deviceSection = 3;
     setTimeout(() => {
@@ -1444,6 +1455,7 @@ struct Index {
       },
       onOpenDevice: (d: DeviceItem): void => {
         this.actionController.openDeviceDetail(d);
+        this.rememberDeviceSection();
       },
       onClipboardPaste: (granted: boolean): void => {
         this.actionController.onClipboardPasteResult(granted);
@@ -1466,6 +1478,14 @@ struct Index {
       connectedCount: this.deviceController.connectedDevices.length,
       immersive: this.immersiveSupported,
       payloads: this.payloadController.payloads,
+      batches: this.payloadController.batches,
+      onToggleBatch: (batchId: number): void => {
+        this.payloadController.toggleBatch(batchId);
+      },
+      batchSummaryOf: (b: PayloadBatch): string => this.payloadController.batchSummary(b),
+      batchStateOf: (b: PayloadBatch): string => this.payloadController.batchStateText(b),
+      batchItemsOf: (b: PayloadBatch): PayloadTransfer[] =>
+        this.payloadController.payloads.filter((p: PayloadTransfer) => b.transferIds.includes(p.transferId)),
       onSavePayload: (p: PayloadTransfer): void => {
         this.payloadController.savePayload(p);
       },
@@ -1523,12 +1543,28 @@ struct Index {
   }
 
   private pickDrawerSection(index: number): void {
-    this.drawerSectionByTab[this.currentTab] = index;
-    this.deviceController.deviceSection = this.drawerSectionByTab[0];
-    AppStorage.setOrCreate('sideSettingsSection', this.drawerSectionByTab[2]);
+    this.rememberTabSection(index);
     if (!this.sideBySide) {
       this.closeDrawer();
     }
+  }
+
+  /**
+   * 记住「当前页签最近一次分区选择」——**侧栏/抽屉选分区**与**打开设备详情**都必须写这里。
+   * 2026-11-08 用户实测 bug：点「发现设备」后再点已连接设备（分区 0），切到文件/设置再切回设备页，
+   * 分区被 `onChange` 用陈旧的 drawerSectionByTab[0]（=2）覆盖 ⇒ 跳回发现设备页。
+   * 成因：`openDeviceDetail` 只改 deviceSection，没有同步这份映射。
+   */
+  private rememberTabSection(index: number): void {
+    this.drawerSectionByTab[this.currentTab] = index;
+    this.deviceController.deviceSection = this.drawerSectionByTab[0];
+    AppStorage.setOrCreate('sideSettingsSection', this.drawerSectionByTab[2]);
+  }
+
+  /** 打开设备详情 = 设备页签的分区归 0；无论当前在哪个页签，都要同步映射（否则切回设备页会跳错分区） */
+  private rememberDeviceSection(): void {
+    this.drawerSectionByTab[0] = 0;
+    this.deviceController.deviceSection = 0;
   }
 
   private appVersion(): string {
@@ -1558,6 +1594,7 @@ struct Index {
       },
       onOpenDevice: (d: DeviceItem): void => {
         this.actionController.openDeviceDetail(d);
+        this.rememberDeviceSection();
         if (!this.sideBySide) {
           this.closeDrawer();
         }

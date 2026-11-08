@@ -23,15 +23,39 @@ export class SharePlugin extends PluginBase {
     super();
     this.displayName = 'Share';
     this.description = 'Send and receive files/URLs';
-    this.supportedPacketTypes = ['kdeconnect.share.request'];
+    // incoming 含 share.request.update（与 Android/oh 契约 §10 一致）：多文件批量预告
+    this.supportedPacketTypes = ['kdeconnect.share.request', 'kdeconnect.share.request.update'];
     this.outgoingPacketTypes = ['kdeconnect.share.request'];
   }
 
   onPacketReceived(packetType: string, body: Object): boolean {
+    if (packetType === 'kdeconnect.share.request.update') {
+      // S2：批量总量预告 → 交给 PayloadController 开批（UI 分母）
+      const u: ShareRequestBody = body as ShareRequestBody;
+      const n: number = u.numberOfFiles ?? 0;
+      if (n > 0) {
+        this.notifyEvent({
+          kind: 'share.batch',
+          shareBatch: { numberOfFiles: n, totalPayloadSize: u.totalPayloadSize ?? 0, isUpdate: true }
+        });
+        this.log(`batch announced: ${n} files / ${u.totalPayloadSize ?? 0} bytes`);
+      } else {
+        this.log('share.request.update without numberOfFiles (ignored)');
+      }
+      return true;
+    }
     if (packetType !== 'kdeconnect.share.request') {
       return false;
     }
     const b: ShareRequestBody = body as ShareRequestBody;
+    // 带 numberOfFiles 的 request 也刷新批量分母（KDE 侧就是用它建批量进度的）
+    const n: number = b.numberOfFiles ?? 0;
+    if (n > 0) {
+      this.notifyEvent({
+        kind: 'share.batch',
+        shareBatch: { numberOfFiles: n, totalPayloadSize: b.totalPayloadSize ?? 0, isUpdate: false }
+      });
+    }
     if (b.filename !== undefined && b.filename.length > 0) {
       this.lastFileName = b.filename;
       this.lastPayloadSize = b.totalPayloadSize ?? 0;
