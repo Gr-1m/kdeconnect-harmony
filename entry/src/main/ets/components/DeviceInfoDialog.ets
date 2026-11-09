@@ -10,31 +10,31 @@
 // 行为：点遮罩或「关闭」→ onClose；卡片本身吞掉点击（不冒泡到遮罩）。
 // 「解除配对」仅 paired=true 时显示；二次确认后回调 onUnpairRemembered。
 
-@Component
+@ComponentV2
 export struct DeviceInfoDialog {
   /** 设备显示名 */
-  @Prop deviceName: string = '';
+  @Param deviceName: string = '';
   /** 设备 ID（= 证书 CN） */
-  @Prop deviceId: string = '';
+  @Param deviceId: string = '';
   /** 已本地化的「设备 ID」标签 */
-  @Prop deviceIdLabel: string = '';
+  @Param deviceIdLabel: string = '';
   /** 已配对（决定状态 chip 文案与配色） */
-  @Prop paired: boolean = false;
-  @Prop pairedLabel: string = '';
-  @Prop unpairedLabel: string = '';
-  @Prop offlineLabel: string = '';
-  @Prop closeLabel: string = '';
+  @Param paired: boolean = false;
+  @Param pairedLabel: string = '';
+  @Param unpairedLabel: string = '';
+  @Param offlineLabel: string = '';
+  @Param closeLabel: string = '';
   /** 已本地化的「解除配对」按钮文案 */
-  @Prop unpairLabel: string = '';
+  @Param unpairLabel: string = '';
   /** 已本地化的确认弹窗标题 */
-  @Prop unpairConfirmTitle: string = '';
+  @Param unpairConfirmTitle: string = '';
   /** 已本地化的确认弹窗消息 */
-  @Prop unpairConfirmMsg: string = '';
+  @Param unpairConfirmMsg: string = '';
   /** 已本地化的「取消」按钮文案 */
-  @Prop cancelLabel: string = '';
-  onClose: () => void = () => {
+  @Param cancelLabel: string = '';
+  @Event onClose: () => void = () => {
   };
-  onUnpairRemembered: (deviceId: string) => void = (_deviceId: string) => {
+  @Event onUnpairRemembered: (deviceId: string) => void = (_deviceId: string) => {
   };
 
   build() {
