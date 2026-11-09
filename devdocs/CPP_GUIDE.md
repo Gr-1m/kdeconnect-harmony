@@ -285,28 +285,41 @@ protocolVersion=8；UDP 1716；TCP 1716–1764 顺序探测；payload 端口 ≥
 ```
 error occurred in cc-rs: failed to find tool "C:/Program": 系统找不到指定的文件。 (os error 2)
 ```
-**对策**：用**无空格路径**指向同一目录 —— 建目录联接（junction，普通用户即可，无需管理员）：
+**对策**：用**无空格路径**指向同一目录 —— 建目录联接（junction，普通用户即可，无需管理员）。
+⚠️ **指向 `native`（不是 `native\llvm`）**：`cc-rs`/`cargo` 会按空格切分 `CC`/`AR`/`RUSTFLAGS` 的**整个取值**，
+而其中同时含 `…/llvm/bin/clang.exe` 与 `--sysroot=…/sysroot` ⇒ **两个路径都**必须无空格：
 ```powershell
-cmd /c mklink /J C:\Users\<user>\ohos-llvm "C:\Program Files\Huawei\DevEco Studio\sdk\default\openharmony\native\llvm"
-# 然后把 9.1 的值改成 C:\Users\<user>\ohos-llvm\bin\clang.exe / llvm-ar.exe
+cmd /c mklink /J C:\Users\<user>\ohos-llvm "C:\Program Files\Huawei\DevEco Studio\sdk\default\openharmony\native"
+setx OHOS_LLVM_LINK C:\Users\<user>\ohos-llvm        # 指向 native（内含 llvm/ 与 sysroot/）
 ```
-> junction 指向 `native\llvm`（**不是** `llvm\bin`），这样 `clang.exe` 仍能按相对路径找到
-> `../lib/clang/...` 的内建资源。
+> junction 目录名随意（沿用 `ohos-llvm` 即可）；因为它指向 `native`，`llvm/bin/clang.exe` 与
+> `sysroot/` 同时在无空格路径下，`clang` 仍能按相对结构找到 `llvm/lib/clang/...`。
+> junction 若仍指向 `native\llvm`，则 `<link>/llvm/bin/clang.exe` 不存在 ⇒ 会被判定「未配置」并落到
+> SDK 原路径（随后 FATAL，见下）。
 
-**关键：CC/AR 由 `CMakeLists.txt` 显式设置，外部环境变量会被覆盖**（MSG164/165 实测：6 个
-`$env:`/`setx` 全设也不生效）⇒ 真正的开关是 **`OHOS_LLVM_LINK`**（CMake 读它来替换 `llvm` 目录）：
+**关键：CC/AR/链接器由 `CMakeLists.txt` 显式设置，外部环境变量会被覆盖**（MSG164/165 实测：6 个
+`$env:`/`setx` 全设也不生效）⇒ 真正的开关是 **`OHOS_LLVM_LINK`**：
 
 ```cmake
-set(RUST_LLVM_DIR "${OHOS_NDK_DIR}/llvm")
-if(WIN32 AND DEFINED ENV{OHOS_LLVM_LINK} AND EXISTS "$ENV{OHOS_LLVM_LINK}/bin/clang.exe")
-    set(RUST_LLVM_DIR "$ENV{OHOS_LLVM_LINK}")   # 例：C:\Users\<user>\ohos-llvm
+set(RUST_NDK_ROOT "${OHOS_NDK_DIR}")                  # 无空格根：llvm + sysroot 都从它派生
+if(DEFINED ENV{OHOS_LLVM_LINK}
+   AND (EXISTS "$ENV{OHOS_LLVM_LINK}/llvm/bin/clang" OR EXISTS "$ENV{OHOS_LLVM_LINK}/llvm/bin/clang.exe"))
+    set(RUST_NDK_ROOT "$ENV{OHOS_LLVM_LINK}")          # 例：C:\Users\<user>\ohos-llvm（junction → native）
 endif()
+set(RUST_LLVM_DIR "${RUST_NDK_ROOT}/llvm")
+set(RUST_SYSROOT  "${RUST_NDK_ROOT}/sysroot")
 ```
 
-- `OHOS_LLVM_LINK` **必须用户级持久化**（`setx OHOS_LLVM_LINK C:\Users\<user>\ohos-llvm`）且
-  **构建前 `--stop-daemon`**（daemon 不继承新环境变量）；
-- 未设时回退 SDK 原路径，并在**路径含空格**时打印 `WARNING`（报错更清晰，不再只看到 `C:/Program`）；
-- Windows 上取 `clang.exe`/`llvm-ar.exe`，Linux/mac 仍取 `clang`/`llvm-ar`（`if(WIN32)` 分支，非 Windows 行为零改动）。
+- ⚠️ **不要用 `if(WIN32)` 判宿主**：本工程交叉编译到 OHOS（`CMakeCache` 里 `CMAKE_SYSTEM_NAME=OHOS`），
+  此时 `WIN32` **恒假** ⇒ 分支永不生效（v1 补丁就是这样静默失效的，Win10 远程实测）。
+  现改为**按「磁盘上是否真有 `clang.exe`」判定**，宿主无关；等价可用 `CMAKE_HOST_WIN32`。
+- `OHOS_LLVM_LINK` **必须用户级持久化**（`setx …`）且 **构建前 `--stop-daemon`**（daemon 不继承新变量）；
+- 未设 → 回退 SDK 原路径；Windows 宿主上若路径**仍含空格** → **FATAL 并给出 mklink/setx 命令**
+  （避免 20 分钟后才在 ring 的 cc-rs 里看到 `failed to find tool "C:/Program"`）；
+- Windows 上取 `clang.exe`/`llvm-ar.exe`，且**链接器不用 sh wrapper**（Windows 无 `/bin/sh`）：
+  直接用 `clang.exe` + `CARGO_TARGET_<triple>_RUSTFLAGS=-C link-arg=--target=… -C link-arg=--sysroot=…`
+  （与 `rust/wrappers/*-clang` 的三个参数等价；`-D__MUSL__` 只在预处理期有意义）；
+- Linux/mac：仍取 `clang`/`llvm-ar` 与仓库内 sh wrapper（**零改动**，`build.ninja` 里 `LINKER=` 不变）。
 
 ### 9.3 环境变量必须"进到构建进程里"
 - **`hvigorw --stop-daemon` 必须**：hvigor daemon **不继承**新设置的环境变量（改完不重启 daemon 等于没改）。
@@ -320,8 +333,9 @@ endif()
 ### 9.4 其他 Windows 差异
 - `CMakeLists.txt` 里判 `clang` 存在时需 **`clang` / `clang.exe` 双判**（Windows 文件带 `.exe`）——
   已入库 `2b49851`。
-- Rust 侧 `RUST_CLANG`/`RUST_LLVM_AR` 走 `if(WIN32)` 分支取 `.exe`，并支持 `OHOS_LLVM_LINK`
-  无空格 junction 覆盖（MSG202 补丁，见 §9.2）。
+- Rust 侧工具选择：**按 `clang.exe` 是否存在判定**（不要用 `WIN32`，见 §9.2），`.exe` 分支取
+  `clang.exe`/`llvm-ar.exe`、链接器=clang.exe+RUSTFLAGS；POSIX 分支保持 sh wrapper。
+  历史：`2b49851`（判据 `.exe` 双判）→ `57cbfbf`（`WIN32` 分支，**静默失效**）→ 本 v2 修正。
 - 直接用 `hvigorw.js` 时需自设 `DEVECO_SDK_HOME=<DevEco SDK>`（`devecocli build` 会代为设置）。
 - 签名：真机走 `build-profile.json5` 的 `signingConfig`（如 `matepadmini`）由 hvigor 本地重签，
   **不消耗华为云配额**；`tools/sign-debug.ps1`（OpenHarmony 材料）**仅适用模拟器**，

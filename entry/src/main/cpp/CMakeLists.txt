@@ -70,25 +70,48 @@ endif()
 set(RUST_SO "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/libkdeconnect_napi.so")
 set(RUST_BUILT_SO "${RUST_TARGET_DIR}/${RUST_TARGET}/release/libkdeconnect_napi.so")
 set(RUST_WRAPPER "${CMAKE_CURRENT_SOURCE_DIR}/rust/wrappers/${RUST_CLANG_TARGET}-clang")
-# Windows：cc-rs 按空格切分 CC/AR 值 ⇒ SDK 含空格路径（C:\Program Files\…）会被截断成 "C:/Program"，
-# 而 add_custom_command 显式设置 CC_<triple>/AR_<triple>，外部环境变量一律被覆盖。
-# 故允许用无空格 junction 覆盖 llvm 目录（建法与实测见 devdocs/CPP_GUIDE.md §9.2）。
-set(RUST_LLVM_DIR "${OHOS_NDK_DIR}/llvm")
-if(WIN32 AND DEFINED ENV{OHOS_LLVM_LINK} AND EXISTS "$ENV{OHOS_LLVM_LINK}/bin/clang.exe")
-    set(RUST_LLVM_DIR "$ENV{OHOS_LLVM_LINK}")
+# ---------------------------------------------------------------------------
+# 宿主工具选择（Windows 修正 v2，2026-11-09；由 Win10 远程实测驱动）
+# ① 本工程**交叉编译**到 OHOS（CMakeCache: `CMAKE_SYSTEM_NAME=OHOS`）⇒ CMake 的 `WIN32` 恒为
+#    FALSE，`if(WIN32)` 分支永不生效（v1 静默失效的根因）。故一律按「磁盘上实际存在哪个可执行
+#    文件」判定（`clang.exe` ↔ `clang`），宿主无关、不会误判。
+# ② cc-rs / cargo 会把 `CC_/AR_/RUSTFLAGS` 的取值**按空格切分**，而 Windows 上 SDK 默认装在
+#    `C:\Program Files\…`（含空格）⇒ 需要一个**无空格等价根**（llvm 与 sysroot 都要 relocate）：
+#      cmd /c mklink /J C:\Users\<user>\ohos-llvm "<sdk>\default\openharmony\native"
+#      setx OHOS_LLVM_LINK C:\Users\<user>\ohos-llvm        # 指向 native（内含 llvm/ 与 sysroot/）
+#    设了它 → 由它派生 `${link}/llvm` 与 `${link}/sysroot`（随之为无空格路径）；未设 → 用 SDK 原路径。
+# ③ Windows 宿主上若最终路径仍含空格 → 直接 FATAL：否则会在 ring 的 cc-rs 编译期抛出很难懂的
+#    `failed to find tool "C:/Program"`（初次踩坑耗时 20+ 分钟）。
+# ---------------------------------------------------------------------------
+set(RUST_NDK_ROOT "${OHOS_NDK_DIR}")
+if(DEFINED ENV{OHOS_LLVM_LINK}
+   AND (EXISTS "$ENV{OHOS_LLVM_LINK}/llvm/bin/clang" OR EXISTS "$ENV{OHOS_LLVM_LINK}/llvm/bin/clang.exe"))
+    set(RUST_NDK_ROOT "$ENV{OHOS_LLVM_LINK}")
 endif()
+set(RUST_LLVM_DIR "${RUST_NDK_ROOT}/llvm")
+set(RUST_SYSROOT "${RUST_NDK_ROOT}/sysroot")
 
-if(WIN32)
-    if("${RUST_LLVM_DIR}" MATCHES " ")
-        message(WARNING
-            "OHOS SDK 路径含空格，cc-rs 会误切分 CC ⇒ 请设 OHOS_LLVM_LINK 指向无空格 junction"
-            "（devdocs/CPP_GUIDE.md §9.2）；当前值：${RUST_LLVM_DIR}")
+set(RUST_ENV_EXTRA)
+if(EXISTS "${RUST_LLVM_DIR}/bin/clang.exe")
+    if("${RUST_NDK_ROOT}" MATCHES " ")
+        message(FATAL_ERROR
+            "OHOS SDK 路径含空格（${RUST_NDK_ROOT}）⇒ cc-rs/cargo 会误切分 CC/AR/sysroot。"
+            "请在 Windows 上建无空格 junction 指向 SDK 的 native 目录并设 OHOS_LLVM_LINK："
+            "cmd /c mklink /J C:\\Users\\<user>\\ohos-llvm \"<sdk>\\default\\openharmony\\native\"；"
+            "setx OHOS_LLVM_LINK C:\\Users\\<user>\\ohos-llvm（见 devdocs/CPP_GUIDE.md §9.2）")
     endif()
+    # Windows 宿主：clang.exe/llvm-ar.exe；且无 /bin/sh ⇒ 链接器不用 sh wrapper，
+    # 直接用 clang.exe，并把 wrapper 的有效参数（--target/--sysroot）以 -C link-arg 等价传入
+    # （-D__MUSL__ 只在预处理期有意义，链接期无效，故不传）。
     set(RUST_CLANG "${RUST_LLVM_DIR}/bin/clang.exe")
     set(RUST_LLVM_AR "${RUST_LLVM_DIR}/bin/llvm-ar.exe")
+    set(RUST_LINKER "${RUST_CLANG}")
+    list(APPEND RUST_ENV_EXTRA
+        "CARGO_TARGET_${RUST_TRIPLE_UPPER}_RUSTFLAGS=-C link-arg=--target=${RUST_CLANG_TARGET} -C link-arg=--sysroot=${RUST_SYSROOT}")
 else()
     set(RUST_CLANG "${RUST_LLVM_DIR}/bin/clang")
     set(RUST_LLVM_AR "${RUST_LLVM_DIR}/bin/llvm-ar")
+    set(RUST_LINKER "${RUST_WRAPPER}")
 endif()
 
 file(GLOB_RECURSE RUST_SRCS CONFIGURE_DEPENDS
@@ -109,7 +132,8 @@ add_custom_command(
         "OHOS_NDK_HOME=${OHOS_SDK_ROOT}"
         "CC_${RUST_TRIPLE_ENV}=${RUST_CLANG} --target=${RUST_CLANG_TARGET} --sysroot=${RUST_SYSROOT} -D__MUSL__"
         "AR_${RUST_TRIPLE_ENV}=${RUST_LLVM_AR}"
-        "CARGO_TARGET_${RUST_TRIPLE_UPPER}_LINKER=${RUST_WRAPPER}"
+        "CARGO_TARGET_${RUST_TRIPLE_UPPER}_LINKER=${RUST_LINKER}"
+        ${RUST_ENV_EXTRA}
         "${RUST_CARGO_EXECUTABLE}" build --release
             --manifest-path "${RUST_MANIFEST}"
             --target "${RUST_TARGET}"
