@@ -219,7 +219,9 @@ fn two_stacks_connect_pair_and_transfer_payload() {
     assert!(a2.connect_to_peer("127.0.0.1".to_owned(), b2.bound_tcp_port()));
     let err = events
         .wait(Duration::from_secs(8), |e| {
-            e.event_type == EventType::Error && e.device_id == a2_id && e.error_code == 13
+            e.event_type == EventType::Error
+                && e.device_id == a2_id
+                && e.error_code == kdc_native::errors::CERT_MISMATCH
         })
         .expect("B2 must reject CN mismatch with EACCES");
     assert!(
@@ -254,7 +256,11 @@ fn two_stacks_connect_pair_and_transfer_payload() {
                 && e.error_message.contains("certificate mismatch")
         })
         .expect("B3 must reject pinned certificate mismatch");
-    assert_eq!(err.error_code, 13, "pinning mismatch should be EACCES");
+    assert_eq!(
+        err.error_code,
+        kdc_native::errors::CERT_MISMATCH,
+        "pinning mismatch should be CERT_MISMATCH(201)"
+    );
     assert!(
         events
             .wait(Duration::from_secs(1), |e| {

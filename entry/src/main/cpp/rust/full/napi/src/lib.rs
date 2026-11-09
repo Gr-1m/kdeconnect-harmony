@@ -200,7 +200,13 @@ pub fn connect_to_peer(host: String, port: u16) {
     if let Some(stack) = stack::current() {
         stack.connect_to_peer(host, port);
     } else {
-        kdc_native::events::emit_error("", "", port, libc::EINVAL, "net stack not started");
+        kdc_native::events::emit_error(
+            "",
+            "",
+            port,
+            kdc_native::errors::NOT_STARTED,
+            "net stack not started",
+        );
     }
 }
 

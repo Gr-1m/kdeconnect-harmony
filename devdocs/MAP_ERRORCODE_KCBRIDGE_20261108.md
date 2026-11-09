@@ -8,7 +8,9 @@
 >
 > **2026-11-09 实现状态**：payload 路径 0–7 **已落地**（`core/src/payload.rs` 的 `pub mod code`；
 > 含 spool 超时补 `failed code=7` 事件、`cancelPayload` → 6）；E2E 增加「cancel → code 6」断言。
-> 控制路径的 E 码（§2）仍待 CodeArts 对 §4 三项裁决后随桥层阶段 1 落地。
+> 控制路径 E 码（§2）**已按 `contract/errors.v1.json` 落地**（MSG199 §1 裁决）：新增
+> `core/src/errors.rs`（101–503 + `Disposition` + `is_throw`，穷举分级 + 单测），所有 `error`
+> 事件改用该编号；E2E 负路径断言由 errno 13 → `CERT_MISMATCH(201)`。
 
 ## 1. payload 路径：现有 → 契约 v0.2（0–7）
 

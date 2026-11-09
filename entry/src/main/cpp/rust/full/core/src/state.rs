@@ -345,7 +345,13 @@ impl Shared {
         };
         let queued = conn.tx_bytes.load(Ordering::Relaxed);
         if queued + frame.len() > MAX_TX_QUEUE_BYTES {
-            self.emit_error(device_id, libc::ENOBUFS, "sendPacket: tx queue full", "", 0);
+            self.emit_error(
+                device_id,
+                crate::errors::SEND_FAILED,
+                "sendPacket: tx queue full",
+                "",
+                0,
+            );
             return false;
         }
         conn.tx_bytes.fetch_add(frame.len(), Ordering::Relaxed);

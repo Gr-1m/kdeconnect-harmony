@@ -150,7 +150,7 @@ impl Stack {
         if host.is_empty() {
             self.shared.emit_error(
                 "",
-                libc::EINVAL,
+                crate::errors::BAD_PARAM,
                 "connectToPeer: host required when port unknown",
                 "",
                 0,
@@ -479,7 +479,7 @@ fn probe_then_dial(shared: Arc<Shared>, host: String) {
     }
     if port == 0 {
         logi!("port probe: no listener on {host} in {min}-{max}");
-        emit_connect_error(&host, 0, libc::EHOSTUNREACH, "port probe");
+        emit_connect_error(&host, 0, crate::errors::PEER_NOT_CONNECTED, "port probe");
         return;
     }
     logi!("port resolved for {host}: {port}");

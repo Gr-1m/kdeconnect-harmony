@@ -213,6 +213,10 @@ cargo build --release --manifest-path entry/src/main/cpp/rust/full/napi/Cargo.to
   3 中断 / 4 读失败 / 5 落盘 / 6 取消 / 7 对端未取件），替换原 errno 直出；spool 超时回收前补
   `failed code=7` 事件；`cancelPayload` → 6；E2E 增加「cancel → code 6」断言（19+1 全绿）。
 - **start 日志补 pin 计数**：`net stack started … trusted=<n>`，设备实测 `trusted=1`。
+- **控制路径错误码对齐 `contract/errors.v1.json`（101–503）**：新增 `core/src/errors.rs`
+  （码表 + `Disposition` 穷举分级 + `is_throw`，单测锁定）；`connection.rs`/`state.rs`/`stack.rs`/
+  `napi` 的 `error` 事件全部改用该编号（证书→201、协议/限速/未配对→202、超长→203、身份非法→204、
+  连接/探测失败→301、tx 队列满→403、未启动→102）；E2E 负路径断言改 `CERT_MISMATCH(201)`。
 
 未采纳（属后置重构，见 `devdocs/PLAN_OH_KDECONNECT_MIGRATION.md`）：5 crate 拆分、
 `kcbridge.d.ts` v1 契约（kind/错误码/contractVersion）、EngineActor+tokio、引擎内配对状态机、

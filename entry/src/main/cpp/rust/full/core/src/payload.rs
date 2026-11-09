@@ -360,7 +360,7 @@ fn send_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, listener: TcpListener,
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            Err(e) => {
+            Err(_e) => {
                 job.finish(&shared, "failed", code::PORT_TIMEOUT, "payload accept failed");
                 return;
             }
@@ -413,12 +413,12 @@ fn send_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, listener: TcpListener,
             }
             Ok(n) => n,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => {
+            Err(_e) => {
                 job.finish(&shared, "failed", code::READ_FAILED, "payload source read failed");
                 return;
             }
         };
-        if let Err(e) = tls_write_all(&mut session, &mut stream, &buf[..n]) {
+        if let Err(_e) = tls_write_all(&mut session, &mut stream, &buf[..n]) {
             job.finish(&shared, "failed", code::INTERRUPTED, "payload tls write failed");
             return;
         }
@@ -491,7 +491,7 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
         Duration::from_millis(PAYLOAD_ACCEPT_TIMEOUT_MS),
     ) {
         Ok(s) => s,
-        Err(e) => {
+        Err(_e) => {
             job.finish(&shared, "failed", code::PORT_TIMEOUT, "payload connect failed");
             return;
         }
@@ -545,7 +545,7 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
             Err(e)
                 if e.kind() == io::ErrorKind::WouldBlock
                     || e.kind() == io::ErrorKind::TimedOut => {}
-            Err(e) => {
+            Err(_e) => {
                 job.finish(&shared, "failed", code::INTERRUPTED, "payload tls read failed");
                 return;
             }
@@ -557,7 +557,7 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
                     break;
                 }
                 Ok(n) => {
-                    if let Err(e) = file.write_all(&buf[..n]) {
+                    if let Err(_e) = file.write_all(&buf[..n]) {
                         job.finish(&shared, "failed", code::DISK_FAILED, "payload spool write failed");
                         return;
                     }
@@ -570,7 +570,7 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
                     }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                Err(e) => {
+                Err(_e) => {
                     job.finish(&shared, "failed", code::INTERRUPTED, "payload tls read failed");
                     return;
                 }

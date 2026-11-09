@@ -23,7 +23,7 @@ pub fn emit(event: NetEvent) {
     }
 }
 
-/// 统一错误事件：`errorCode` 为 errno 或协议自定义码。
+/// 统一错误事件：`errorCode` 使用 **kcbridge 错误码**（`contract/errors.v1.json`，见 `crate::errors`）。
 pub fn emit_error(device_id: &str, host: &str, port: u16, code: i32, message: &str) {
     emit(NetEvent {
         event_type: crate::types::EventType::Error,
@@ -36,17 +36,23 @@ pub fn emit_error(device_id: &str, host: &str, port: u16, code: i32, message: &s
     });
 }
 
-/// 出向连接失败：带目标地址与真实 errno，UI 可直接提示「连接失败/对端无响应」。
+/// 出向连接失败（kcbridge 码，无 OS errno 细节）：UI 可直接提示「连接失败/对端无响应」。
 pub fn emit_connect_error(host: &str, port: u16, code: i32, stage: &str) {
+    crate::logw!("connect error {host}:{port} code={code} stage={stage}");
+    emit_error("", host, port, code, &format!("{stage} ({host}:{port})"));
+}
+
+/// 出向连接失败（带 OS errno 细节，便于诊断；`code` 仍为 kcbridge 码）。
+pub fn emit_connect_error_os(host: &str, port: u16, code: i32, stage: &str, errno: i32) {
     crate::logw!(
-        "connect error {host}:{port} code={code} stage={stage} ({})",
-        crate::types::errno_text(code)
+        "connect error {host}:{port} code={code} stage={stage} os_errno={errno} ({})",
+        crate::types::errno_text(errno)
     );
     emit_error(
         "",
         host,
         port,
         code,
-        &format!("{stage} ({host}:{port}): {}", crate::types::errno_text(code)),
+        &format!("{stage} ({host}:{port}): {}", crate::types::errno_text(errno)),
     );
 }

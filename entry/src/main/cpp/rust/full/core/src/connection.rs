@@ -13,7 +13,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::events::emit_connect_error;
+use crate::events::{emit_connect_error, emit_connect_error_os};
 use crate::packet;
 use crate::payload;
 use crate::state::{role_for, Shared};
@@ -127,17 +127,28 @@ pub fn run_incoming(
         if !handle.shutdown.load(Ordering::SeqCst) {
             match err {
                 ConnError::Io(e) => {
-                    let code = e.raw_os_error().unwrap_or(libc::EIO);
                     let device = handle.device_id().unwrap_or_default();
-                    shared.emit_error(&device, code, &format!("plain identity read failed: {e}"), &handle.host, 0);
+                    shared.emit_error(
+                        &device,
+                        crate::errors::PROTOCOL_VIOLATION,
+                        &format!("plain identity read failed: {e}"),
+                        &handle.host,
+                        0,
+                    );
                 }
                 ConnError::Tls(message) => {
                     let device = handle.device_id().unwrap_or_default();
-                    shared.emit_error(&device, libc::EIO, &format!("tls handshake failed: {message}"), &handle.host, 0);
+                    shared.emit_error(
+                        &device,
+                        crate::errors::PROTOCOL_VIOLATION,
+                        &format!("tls handshake failed: {message}"),
+                        &handle.host,
+                        0,
+                    );
                 }
                 ConnError::Protocol(message) => {
                     let device = handle.device_id().unwrap_or_default();
-                    shared.emit_error(&device, libc::EACCES, &message, &handle.host, 0);
+                    shared.emit_error(&device, protocol_code(&message), &message, &handle.host, 0);
                 }
                 ConnError::Closed => {}
             }
@@ -157,7 +168,12 @@ pub fn run_outgoing(shared: Arc<Shared>, handle: Arc<ConnHandle>, rx: Receiver<V
         &match format!("{}:{}", handle.host, handle.port).parse() {
             Ok(addr) => addr,
             Err(_) => {
-                emit_connect_error(&handle.host, handle.port, libc::EINVAL, "connect failed");
+                emit_connect_error(
+                    &handle.host,
+                    handle.port,
+                    crate::errors::BAD_PARAM,
+                    "invalid address",
+                );
                 shared.finalize_conn(handle.id, "invalid address");
                 return;
             }
@@ -166,8 +182,13 @@ pub fn run_outgoing(shared: Arc<Shared>, handle: Arc<ConnHandle>, rx: Receiver<V
     ) {
         Ok(stream) => stream,
         Err(e) => {
-            let code = e.raw_os_error().unwrap_or(libc::ECONNREFUSED);
-            emit_connect_error(&handle.host, handle.port, code, "connect failed");
+            emit_connect_error_os(
+                &handle.host,
+                handle.port,
+                crate::errors::PEER_NOT_CONNECTED,
+                "connect failed",
+                e.raw_os_error().unwrap_or(libc::ECONNREFUSED),
+            );
             shared.finalize_conn(handle.id, "connect failed");
             return;
         }
@@ -179,15 +200,31 @@ pub fn run_outgoing(shared: Arc<Shared>, handle: Arc<ConnHandle>, rx: Receiver<V
         if !handle.shutdown.load(Ordering::SeqCst) {
             match err {
                 ConnError::Io(e) => {
-                    let code = e.raw_os_error().unwrap_or(libc::EIO);
-                    emit_connect_error(&handle.host, handle.port, code, "connect failed");
+                    emit_connect_error_os(
+                        &handle.host,
+                        handle.port,
+                        crate::errors::PEER_NOT_CONNECTED,
+                        "connect failed",
+                        e.raw_os_error().unwrap_or(libc::EIO),
+                    );
                 }
                 ConnError::Tls(message) => {
-                    emit_connect_error(&handle.host, handle.port, libc::EIO, &format!("tls handshake failed: {message}"));
+                    emit_connect_error(
+                        &handle.host,
+                        handle.port,
+                        crate::errors::PROTOCOL_VIOLATION,
+                        &format!("tls handshake failed: {message}"),
+                    );
                 }
                 ConnError::Protocol(message) => {
                     let device = handle.device_id().unwrap_or_default();
-                    shared.emit_error(&device, libc::EACCES, &message, &handle.host, handle.port);
+                    shared.emit_error(
+                        &device,
+                        protocol_code(&message),
+                        &message,
+                        &handle.host,
+                        handle.port,
+                    );
                 }
                 ConnError::Closed => {
                     logi!(
@@ -201,6 +238,23 @@ pub fn run_outgoing(shared: Arc<Shared>, handle: Arc<ConnHandle>, rx: Receiver<V
         }
     }
     shared.finalize_conn(handle.id, "outgoing closed");
+}
+
+/// `ConnError::Protocol` 文案 → kcbridge 错误码（`contract/errors.v1.json`）。
+/// 依据 MAP_ERRORCODE_KCBRIDGE §2：证书类→201、超长→203、身份非法→204、其余协议违例→202。
+fn protocol_code(message: &str) -> i32 {
+    let m = message.to_ascii_lowercase();
+    if m.contains("cert") || m.contains("cn ") || m.contains("cn=") || m.contains("cn !=") {
+        crate::errors::CERT_MISMATCH
+    } else if m.contains("too large") {
+        crate::errors::LINE_TOO_LONG
+    } else if m.contains("from self") || m.contains("rate limited") {
+        crate::errors::PROTOCOL_VIOLATION
+    } else if m.contains("identity") {
+        crate::errors::IDENTITY_INVALID
+    } else {
+        crate::errors::PROTOCOL_VIOLATION
+    }
 }
 
 #[derive(Debug)]
@@ -613,7 +667,7 @@ fn handle_frame(
                 if cn.is_empty() || cn != info.device_id {
                     shared.emit_error(
                         &info.device_id,
-                        libc::EACCES,
+                        crate::errors::CERT_MISMATCH,
                         "peer cert CN != deviceId",
                         &handle.host,
                         handle.port,
@@ -626,7 +680,7 @@ fn handle_frame(
                     if leaf != trusted_der {
                         shared.emit_error(
                             &info.device_id,
-                            libc::EACCES,
+                            crate::errors::CERT_MISMATCH,
                             "certificate mismatch (device re-pair required)",
                             &handle.host,
                             handle.port,
@@ -699,7 +753,7 @@ fn handle_frame(
         } else {
             shared.emit_error(
                 &device_id,
-                libc::EACCES,
+                crate::errors::PROTOCOL_VIOLATION,
                 "payload rejected: device not paired/trusted",
                 &handle.host,
                 0,
@@ -714,9 +768,15 @@ fn handle_frame(
         } else {
             "not trusted"
         };
+        // 端口缺失属「payload 超时」类（401）；其余（deviceId 未知/未受信）属策略拒绝（202）。
+        let code = if parsed.payload_port == 0 {
+            crate::errors::PAYLOAD_TIMEOUT
+        } else {
+            crate::errors::PROTOCOL_VIOLATION
+        };
         shared.emit_error(
             &device_id,
-            libc::EIO,
+            code,
             &format!("payload not started ({why})"),
             &handle.host,
             0,
