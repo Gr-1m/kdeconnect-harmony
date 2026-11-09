@@ -3,11 +3,21 @@
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import { LogStore } from '../common/LogStore';
 
-@Component
+// 构建计数（V1→V2 试点硬指标「重建次数不增」的取证点；每 10 次打一行，避免日志自激）
+let LOGS_TAB_BUILDS: number = 0;
+
+@ComponentV2
 export struct LogsTab {
-  @ObjectLink logStore: LogStore;
-  @Prop immersive: boolean = false;
+  @Require @Param logStore: LogStore;
+  @Param immersive: boolean = false;
   cardMaterial: uiMaterial.Material | undefined = undefined;
+
+  onDidBuild(): void {
+    LOGS_TAB_BUILDS++;
+    if (LOGS_TAB_BUILDS > 0) {
+      console.info(`KDC builds logs=${LOGS_TAB_BUILDS}`);
+    }
+  }
 
   build() {
     Column({ space: 8 }) {

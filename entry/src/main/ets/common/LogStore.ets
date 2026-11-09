@@ -12,10 +12,14 @@
 const MAX_KEEP: number = 200;   // 环形缓冲保留行数（便于回看；UI 只展示尾部 SHOW_LINES 行）
 const SHOW_LINES: number = 50;  // UI 展示行数
 
-@Observed
+// V2 试点（MSG196）：@Observed → @ObservedV2 + text 上 @Trace —— 属性级精确更新，
+// 写 text 只重建订阅了该属性的节点（V1 的 @Observed+@ObjectLink 是整组件重建）。
+// 约束：@ObservedV2 不能被 V1 装饰器接收（本类唯一消费方是 LogsTab，已同批迁 V2）。
+@ObservedV2
 export class LogStore {
   // ⚠️ UI 唯一绑定的字段：所有写入都必须经过 append()/flush()/clear()，不要在外部直接改它。
-  text: string = '';
+  @Trace text: string = '';
+  // 非 UI 字段：不需要观测（@Trace 只加在 text 上）
   private buf: string[] = [];
 
   // 追加一行（自动打时间戳；超出上限丢最旧的）

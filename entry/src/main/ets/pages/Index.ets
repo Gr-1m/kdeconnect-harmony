@@ -183,6 +183,16 @@ struct Index {
     { label: $r('app.string.tab_logs') }
   ];
 
+  // 构建计数（V2 试点硬指标取证点；每 20 次一行）
+  private pageBuilds: number = 0;
+
+  onDidBuild(): void {
+    this.pageBuilds++;
+    if (this.pageBuilds > 0) {
+      console.info(`KDC builds page=${this.pageBuilds}`);
+    }
+  }
+
   async aboutToAppear(): Promise<void> {
     this.initImmersiveMaterial();
     this.detectScreenWidth();
