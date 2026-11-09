@@ -174,6 +174,24 @@ fn two_stacks_connect_pair_and_transfer_payload() {
     assert_eq!(saved, data, "payload bytes must match");
     eprintln!("payload e2e took {:?}", start.elapsed());
 
+    // 取消路径：契约 v0.2 code 6（用户主动取消）。
+    let cancel_id = a.send_payload(
+        &b_id,
+        "kdeconnect.share.request",
+        "{\"filename\":\"cancel.bin\"}",
+        src,
+    );
+    assert_ne!(cancel_id, 0, "cancel scenario should get a transfer id");
+    a.cancel_payload(cancel_id as u64);
+    let cancelled = events
+        .wait(Duration::from_secs(5), |e| {
+            e.event_type == EventType::PayloadTransfer
+                && e.payload_state == "cancelled"
+                && e.payload_transfer_id == cancel_id
+        })
+        .expect("cancelled event expected");
+    assert_eq!(cancelled.error_code, 6, "cancelled must use contract code 6");
+
     // 断开与停止：A 主动断开应让 B 收到 disconnected。
     a.disconnect(&b_id);
     assert!(events

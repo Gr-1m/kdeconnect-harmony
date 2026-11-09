@@ -28,6 +28,26 @@ use crate::types::{
 };
 use crate::{loge, logi, logw};
 
+/// `payloadTransfer` 事件的错误码（契约 v0.2 / `DESIGN_FILESHARE_20261110.md` §5）。
+/// ArkTS 已按此表消费（`PayloadController.ets` 的 `errorCode === 7` = 对端未取件）。
+pub mod code {
+    pub const OK: i32 = 0;
+    /// 端口连接失败 / 30s 超时（含发送方监听无人连入）。
+    pub const PORT_TIMEOUT: i32 = 1;
+    /// 通道 TLS 握手/证书/角色失败。
+    pub const TLS_FAILED: i32 = 2;
+    /// 传输中断（对端提前关闭 / 读写失败 / 无进展）。
+    pub const INTERRUPTED: i32 = 3;
+    /// 本端文件读失败 / 权限不足。
+    pub const READ_FAILED: i32 = 4;
+    /// 落盘失败 / 空间不足。
+    pub const DISK_FAILED: i32 = 5;
+    /// 用户主动取消。
+    pub const USER_CANCELLED: i32 = 6;
+    /// 对端超时未取件（spool 自动回收）。
+    pub const PEER_UNFETCHED: i32 = 7;
+}
+
 #[derive(Default)]
 struct JobState {
     name: String,
@@ -328,20 +348,20 @@ fn send_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, listener: TcpListener,
     let deadline = Instant::now() + Duration::from_millis(PAYLOAD_ACCEPT_TIMEOUT_MS);
     let mut stream = loop {
         if job.shutdown.load(Ordering::SeqCst) {
-            job.finish(&shared, "cancelled", libc::ECONNABORTED, "cancelled by local user");
+            job.finish(&shared, "cancelled", code::USER_CANCELLED, "cancelled by local user");
             return;
         }
         match listener.accept() {
             Ok((stream, _)) => break stream,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 if Instant::now() > deadline {
-                    job.finish(&shared, "failed", libc::ETIMEDOUT, "payload accept timeout");
+                    job.finish(&shared, "failed", code::PORT_TIMEOUT, "payload accept timeout");
                     return;
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
             Err(e) => {
-                job.finish(&shared, "failed", e.raw_os_error().unwrap_or(libc::EIO), "payload accept failed");
+                job.finish(&shared, "failed", code::PORT_TIMEOUT, "payload accept failed");
                 return;
             }
         }
@@ -353,12 +373,12 @@ fn send_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, listener: TcpListener,
     let mut session = match tls::server_connection(&shared.tls) {
         Ok(c) => TlsSession::Server(c),
         Err(e) => {
-            job.finish(&shared, "failed", libc::EIO, &format!("payload tls init failed: {e}"));
+            job.finish(&shared, "failed", code::TLS_FAILED, &format!("payload tls init failed: {e}"));
             return;
         }
     };
     if let Err(e) = tls_handshake(&mut session, &mut stream, Duration::from_secs(30)) {
-        job.finish(&shared, "failed", libc::ETIMEDOUT, &format!("payload tls handshake failed: {e}"));
+        job.finish(&shared, "failed", code::TLS_FAILED, &format!("payload tls handshake failed: {e}"));
         return;
     }
     job.clear_deadline();
@@ -368,7 +388,7 @@ fn send_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, listener: TcpListener,
             job.finish(
                 &shared,
                 "failed",
-                libc::EACCES,
+                code::TLS_FAILED,
                 &format!("payload peer cert mismatch (cn={other:?})"),
             );
             return;
@@ -378,13 +398,13 @@ fn send_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, listener: TcpListener,
     let mut buf = vec![0u8; PAYLOAD_CHUNK];
     loop {
         if job.shutdown.load(Ordering::SeqCst) {
-            job.finish(&shared, "cancelled", libc::ECONNABORTED, "cancelled by local user");
+            job.finish(&shared, "cancelled", code::USER_CANCELLED, "cancelled by local user");
             return;
         }
         let n = match file.read(&mut buf) {
             Ok(0) => {
                 if job.total >= 0 && job.done.load(Ordering::Relaxed) < job.total {
-                    job.finish(&shared, "failed", libc::EIO, "payload source shorter than payloadSize");
+                    job.finish(&shared, "failed", code::READ_FAILED, "payload source shorter than payloadSize");
                 } else {
                     let _ = tls_flush(&mut session, &mut stream);
                     job.finish(&shared, "finished", 0, "");
@@ -394,12 +414,12 @@ fn send_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, listener: TcpListener,
             Ok(n) => n,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => {
-                job.finish(&shared, "failed", e.raw_os_error().unwrap_or(libc::EIO), "payload source read failed");
+                job.finish(&shared, "failed", code::READ_FAILED, "payload source read failed");
                 return;
             }
         };
         if let Err(e) = tls_write_all(&mut session, &mut stream, &buf[..n]) {
-            job.finish(&shared, "failed", e.raw_os_error().unwrap_or(libc::EIO), "payload tls write failed");
+            job.finish(&shared, "failed", code::INTERRUPTED, "payload tls write failed");
             return;
         }
         job.done.fetch_add(n as i64, Ordering::Relaxed);
@@ -472,7 +492,7 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
     ) {
         Ok(s) => s,
         Err(e) => {
-            job.finish(&shared, "failed", e.raw_os_error().unwrap_or(libc::ECONNREFUSED), "payload connect failed");
+            job.finish(&shared, "failed", code::PORT_TIMEOUT, "payload connect failed");
             return;
         }
     };
@@ -483,12 +503,12 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
     let mut session = match tls::client_connection(&shared.tls, &addr.ip().to_string()) {
         Ok(c) => TlsSession::Client(c),
         Err(e) => {
-            job.finish(&shared, "failed", libc::EIO, &format!("payload tls init failed: {e}"));
+            job.finish(&shared, "failed", code::TLS_FAILED, &format!("payload tls init failed: {e}"));
             return;
         }
     };
     if let Err(e) = tls_handshake(&mut session, &mut stream, Duration::from_secs(30)) {
-        job.finish(&shared, "failed", libc::ETIMEDOUT, &format!("payload tls handshake failed: {e}"));
+        job.finish(&shared, "failed", code::TLS_FAILED, &format!("payload tls handshake failed: {e}"));
         return;
     }
     job.clear_deadline();
@@ -498,7 +518,7 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
             job.finish(
                 &shared,
                 "failed",
-                libc::EACCES,
+                code::TLS_FAILED,
                 &format!("payload peer cert mismatch (cn={other:?})"),
             );
             return;
@@ -509,7 +529,7 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
     let mut eof = false;
     while job.total < 0 || job.done.load(Ordering::Relaxed) < job.total {
         if job.shutdown.load(Ordering::SeqCst) {
-            job.finish(&shared, "cancelled", libc::ECONNABORTED, "cancelled by local user");
+            job.finish(&shared, "cancelled", code::USER_CANCELLED, "cancelled by local user");
             return;
         }
         match session.read_tls(&mut stream) {
@@ -518,7 +538,7 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
             }
             Ok(_) => {
                 if let Err(e) = session.process_new_packets() {
-                    job.finish(&shared, "failed", libc::EIO, &format!("payload tls read failed: {e}"));
+                    job.finish(&shared, "failed", code::INTERRUPTED, &format!("payload tls read failed: {e}"));
                     return;
                 }
             }
@@ -526,7 +546,7 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
                 if e.kind() == io::ErrorKind::WouldBlock
                     || e.kind() == io::ErrorKind::TimedOut => {}
             Err(e) => {
-                job.finish(&shared, "failed", e.raw_os_error().unwrap_or(libc::EIO), "payload tls read failed");
+                job.finish(&shared, "failed", code::INTERRUPTED, "payload tls read failed");
                 return;
             }
         }
@@ -538,7 +558,7 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
                 }
                 Ok(n) => {
                     if let Err(e) = file.write_all(&buf[..n]) {
-                        job.finish(&shared, "failed", e.raw_os_error().unwrap_or(libc::EIO), "payload spool write failed");
+                        job.finish(&shared, "failed", code::DISK_FAILED, "payload spool write failed");
                         return;
                     }
                     let done = job.done.fetch_add(n as i64, Ordering::Relaxed) + n as i64;
@@ -551,7 +571,7 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) => {
-                    job.finish(&shared, "failed", e.raw_os_error().unwrap_or(libc::EIO), "payload tls read failed");
+                    job.finish(&shared, "failed", code::INTERRUPTED, "payload tls read failed");
                     return;
                 }
             }
@@ -564,7 +584,7 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
             if job.total < 0 {
                 job.finish(&shared, "finished", 0, "");
             } else {
-                job.finish(&shared, "failed", libc::ECONNRESET, "payload peer closed early");
+                job.finish(&shared, "failed", code::INTERRUPTED, "payload peer closed early");
             }
             return;
         }
@@ -688,7 +708,7 @@ pub fn cancel(shared: &Shared, id: u64) {
         .and_then(|jobs| jobs.get(&id).cloned());
     if let Some(job) = job {
         if !job.finished.load(Ordering::SeqCst) {
-            job.finish(shared, "cancelled", libc::ECONNABORTED, "cancelled by local user");
+            job.finish(shared, "cancelled", code::USER_CANCELLED, "cancelled by local user");
         }
     }
 }
@@ -701,7 +721,7 @@ pub fn on_device_down(shared: &Shared, device_id: &str) {
         .unwrap_or_default();
     for job in jobs {
         if !job.finished.load(Ordering::SeqCst) && job.device_id == device_id {
-            job.finish(shared, "failed", libc::ECONNRESET, "control connection closed");
+            job.finish(shared, "failed", code::INTERRUPTED, "control connection closed");
         }
     }
 }
@@ -721,6 +741,15 @@ pub fn tick(shared: &Shared, now: Instant) {
                 if job.send && age >= u128::from(crate::types::PAYLOAD_JOB_REAP_MS) {
                     reap.push(job.id);
                 } else if !job.send && age >= u128::from(PAYLOAD_RECEIVE_KEEP_MS) {
+                    // 契约 v0.2 code 7：对端超时未取件（spool 自动回收）。
+                    // 任务已 finished，不能再走 finish()（幂等早返回），此处直接补一条 failed 事件，
+                    // ArkTS 据此把条目显示为「未取件」。
+                    job.emit(
+                        shared,
+                        "failed",
+                        code::PEER_UNFETCHED,
+                        "payload spool expired (peer did not fetch)",
+                    );
                     if let Ok(spool) = job.spool_path.lock() {
                         if !spool.is_empty() {
                             let _ = fs::remove_file(&*spool);
@@ -738,7 +767,9 @@ pub fn tick(shared: &Shared, now: Instant) {
             .and_then(|d| *d)
             .is_some_and(|d| now > d);
         if expired {
-            job.finish(shared, "failed", libc::ETIMEDOUT, "payload handshake/accept timeout");
+            // deadline 覆盖「accept 等待」与「TLS 握手」两段；统一报 1（端口超时），
+            // 具体阶段留在 errorMessage。
+            job.finish(shared, "failed", code::PORT_TIMEOUT, "payload handshake/accept timeout");
             continue;
         }
         let stalled = job
@@ -747,7 +778,7 @@ pub fn tick(shared: &Shared, now: Instant) {
             .map(|last| now.duration_since(*last).as_millis() >= u128::from(PAYLOAD_STALL_TIMEOUT_MS))
             .unwrap_or(false);
         if stalled {
-            job.finish(shared, "failed", libc::ETIMEDOUT, "payload stalled (no progress)");
+            job.finish(shared, "failed", code::INTERRUPTED, "payload stalled (no progress)");
         }
     }
     if !reap.is_empty() {

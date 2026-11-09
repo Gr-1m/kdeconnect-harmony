@@ -102,11 +102,18 @@ impl Stack {
             move || timer_loop(shared, udp, udp_port)
         });
 
+        // MSG196 §2：start 后打印「已应用 pin 数」，便于设备侧确认 TrustStore 回灌生效。
+        let trusted_count = shared
+            .trusted
+            .lock()
+            .map(|map| map.len())
+            .unwrap_or(0);
         logi!(
-            "net stack started (full Rust): deviceId={} tcpPort={} udpPort={}",
+            "net stack started (full Rust): deviceId={} tcpPort={} udpPort={} trusted={}",
             shared.config.device_id,
             bound_port,
-            udp_port
+            udp_port,
+            trusted_count
         );
         Ok(stack)
     }
