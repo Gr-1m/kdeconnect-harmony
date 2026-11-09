@@ -293,15 +293,35 @@ cmd /c mklink /J C:\Users\<user>\ohos-llvm "C:\Program Files\Huawei\DevEco Studi
 > junction 指向 `native\llvm`（**不是** `llvm\bin`），这样 `clang.exe` 仍能按相对路径找到
 > `../lib/clang/...` 的内建资源。
 
+**关键：CC/AR 由 `CMakeLists.txt` 显式设置，外部环境变量会被覆盖**（MSG164/165 实测：6 个
+`$env:`/`setx` 全设也不生效）⇒ 真正的开关是 **`OHOS_LLVM_LINK`**（CMake 读它来替换 `llvm` 目录）：
+
+```cmake
+set(RUST_LLVM_DIR "${OHOS_NDK_DIR}/llvm")
+if(WIN32 AND DEFINED ENV{OHOS_LLVM_LINK} AND EXISTS "$ENV{OHOS_LLVM_LINK}/bin/clang.exe")
+    set(RUST_LLVM_DIR "$ENV{OHOS_LLVM_LINK}")   # 例：C:\Users\<user>\ohos-llvm
+endif()
+```
+
+- `OHOS_LLVM_LINK` **必须用户级持久化**（`setx OHOS_LLVM_LINK C:\Users\<user>\ohos-llvm`）且
+  **构建前 `--stop-daemon`**（daemon 不继承新环境变量）；
+- 未设时回退 SDK 原路径，并在**路径含空格**时打印 `WARNING`（报错更清晰，不再只看到 `C:/Program`）；
+- Windows 上取 `clang.exe`/`llvm-ar.exe`，Linux/mac 仍取 `clang`/`llvm-ar`（`if(WIN32)` 分支，非 Windows 行为零改动）。
+
 ### 9.3 环境变量必须"进到构建进程里"
 - **`hvigorw --stop-daemon` 必须**：hvigor daemon **不继承**新设置的环境变量（改完不重启 daemon 等于没改）。
 - **`setx` 只对新进程生效**：在同一个 shell 里先 `$env:CC_… = …`（显式赋值）再构建最稳，
   免得构建进程继承到旧环境。
+- **但注意**：本工程 `CMakeLists.txt` 的 `add_custom_command` 会**显式设置**
+  `CC_<triple>`/`AR_<triple>`/`CARGO_TARGET_<TRIPLE>_LINKER` ⇒ 上述外部变量在**经 hvigor 构建时被覆盖**；
+  影响 Windows 成败的开关是 `OHOS_LLVM_LINK`（见 §9.2）。9.1 的变量保留给**不经 CMake 直接跑 cargo** 的场景。
 - **清 `entry/.cxx` 缓存无效**（实测）：该问题不在 CMake 缓存，而在 cargo 子进程的环境。
 
 ### 9.4 其他 Windows 差异
 - `CMakeLists.txt` 里判 `clang` 存在时需 **`clang` / `clang.exe` 双判**（Windows 文件带 `.exe`）——
   已入库 `2b49851`。
+- Rust 侧 `RUST_CLANG`/`RUST_LLVM_AR` 走 `if(WIN32)` 分支取 `.exe`，并支持 `OHOS_LLVM_LINK`
+  无空格 junction 覆盖（MSG202 补丁，见 §9.2）。
 - 直接用 `hvigorw.js` 时需自设 `DEVECO_SDK_HOME=<DevEco SDK>`（`devecocli build` 会代为设置）。
 - 签名：真机走 `build-profile.json5` 的 `signingConfig`（如 `matepadmini`）由 hvigor 本地重签，
   **不消耗华为云配额**；`tools/sign-debug.ps1`（OpenHarmony 材料）**仅适用模拟器**，

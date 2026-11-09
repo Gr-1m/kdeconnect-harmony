@@ -70,8 +70,26 @@ endif()
 set(RUST_SO "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/libkdeconnect_napi.so")
 set(RUST_BUILT_SO "${RUST_TARGET_DIR}/${RUST_TARGET}/release/libkdeconnect_napi.so")
 set(RUST_WRAPPER "${CMAKE_CURRENT_SOURCE_DIR}/rust/wrappers/${RUST_CLANG_TARGET}-clang")
-set(RUST_CLANG "${OHOS_NDK_DIR}/llvm/bin/clang")
-set(RUST_LLVM_AR "${OHOS_NDK_DIR}/llvm/bin/llvm-ar")
+# Windows：cc-rs 按空格切分 CC/AR 值 ⇒ SDK 含空格路径（C:\Program Files\…）会被截断成 "C:/Program"，
+# 而 add_custom_command 显式设置 CC_<triple>/AR_<triple>，外部环境变量一律被覆盖。
+# 故允许用无空格 junction 覆盖 llvm 目录（建法与实测见 devdocs/CPP_GUIDE.md §9.2）。
+set(RUST_LLVM_DIR "${OHOS_NDK_DIR}/llvm")
+if(WIN32 AND DEFINED ENV{OHOS_LLVM_LINK} AND EXISTS "$ENV{OHOS_LLVM_LINK}/bin/clang.exe")
+    set(RUST_LLVM_DIR "$ENV{OHOS_LLVM_LINK}")
+endif()
+
+if(WIN32)
+    if("${RUST_LLVM_DIR}" MATCHES " ")
+        message(WARNING
+            "OHOS SDK 路径含空格，cc-rs 会误切分 CC ⇒ 请设 OHOS_LLVM_LINK 指向无空格 junction"
+            "（devdocs/CPP_GUIDE.md §9.2）；当前值：${RUST_LLVM_DIR}")
+    endif()
+    set(RUST_CLANG "${RUST_LLVM_DIR}/bin/clang.exe")
+    set(RUST_LLVM_AR "${RUST_LLVM_DIR}/bin/llvm-ar.exe")
+else()
+    set(RUST_CLANG "${RUST_LLVM_DIR}/bin/clang")
+    set(RUST_LLVM_AR "${RUST_LLVM_DIR}/bin/llvm-ar")
+endif()
 
 file(GLOB_RECURSE RUST_SRCS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/rust/full/core/src/*.rs"
