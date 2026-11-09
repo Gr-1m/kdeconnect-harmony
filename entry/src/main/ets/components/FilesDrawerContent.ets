@@ -5,6 +5,8 @@ import { GlassCard } from './GlassCard';
 @Component
 export struct FilesDrawerContent {
   @StorageProp('statusBarHeightPx') statusBarHeightPx: number = 0;
+  // S2 §3.5：接收文件自动保存开关（由页面写入 AppStorage，面板被 HdsSideBar 缓存也不会失联）
+  @StorageLink('autoSaveFiles') autoSaveFiles: boolean = true;
 
   build() {
     Column({ space: 10 }) {
@@ -39,9 +41,12 @@ export struct FilesDrawerContent {
             .fontSize(14)
             .fontColor($r('app.color.text_secondary'))
             .layoutWeight(1)
-          Toggle({ type: ToggleType.Switch, isOn: false })
-            .enabled(false)
-            .onChange(() => {})
+          Toggle({ type: ToggleType.Switch, isOn: this.autoSaveFiles })
+            .enabled(true)
+            .onChange((isOn: boolean) => {
+              // 写 AppStorage → 页面 @Watch 负责持久化与门控
+              this.autoSaveFiles = isOn;
+            })
         }
         .width('100%')
         .padding({ left: 12, right: 12, top: 12, bottom: 12 })

@@ -65,6 +65,8 @@ export class PayloadController {
   persistHistory: (history: PayloadTransfer[]) => Promise<void> = () => Promise.resolve();
   clearPersistedHistory: () => Promise<void> = () => Promise.resolve();
   connectedDeviceIds: () => string[] = () => [];
+  // S2 §3.5：接收完成后是否自动保存（false → 落 spool 进「待处置」，由用户保存/丢弃）
+  autoSaveEnabled: () => boolean = () => true;
 
   // ========== 状态转换（原 L1710–L1728）==========
 
@@ -393,11 +395,17 @@ export class PayloadController {
       this.attachToReceiveBatch(item, idx < 0, state);
     }
     if (state === 'finished' && item.direction === 'receive' && !item.settled && item.filePath.length > 0) {
-      this.log(`auto-save received #${tid} ${item.fileName}`);
-      this.savePayload(item).then((): void => {
-      }).catch((e: Error): void => {
-        this.log('auto-save failed: ' + e.message);
-      });
+      if (this.autoSaveEnabled()) {
+        this.log(`auto-save received #${tid} ${item.fileName}`);
+        this.savePayload(item).then((): void => {
+        }).catch((e: Error): void => {
+          this.log('auto-save failed: ' + e.message);
+        });
+      } else {
+        // 开关关闭（S2 §3.5）：不动 spool，条目留在「待处置」，用户可保存/丢弃
+        this.log(`auto-save off: #${tid} ${item.fileName} pending user action (spool)`);
+        this.toast(`${this.resText($r('app.string.files_pending_user').id)}: ${item.fileName}`);
+      }
     }
   }
 

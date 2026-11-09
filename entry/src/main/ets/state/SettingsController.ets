@@ -20,6 +20,8 @@ export const DEFAULT_DEVICE_NAME: string = 'kdeconnect-harmony';
 @Observed
 export class SettingsController {
   themeMode: number = THEME_FOLLOW_SYSTEM;
+  // S2 契约 §3.5：接收文件自动保存开关（默认开＝保持既有行为）；关＝落 spool 等用户处置
+  autoSaveFiles: boolean = true;
   language: string = LANG_SYSTEM;
   deviceName: string = DEFAULT_DEVICE_NAME;
 
@@ -36,6 +38,13 @@ export class SettingsController {
       const entries: SettingEntry[] = [{ key: 'themeMode', value: `${mode}` }];
       this.persistEntries(entries);
     }
+  }
+
+  setAutoSaveFiles(on: boolean): void {
+    this.autoSaveFiles = on;
+    this.log(`auto-save files: ${on ? 'on' : 'off'}`);
+    const entries: SettingEntry[] = [{ key: 'autoSaveFiles', value: on ? '1' : '0' }];
+    this.persistEntries(entries);
   }
 
   applyLanguage(lang: string, persist: boolean): void {

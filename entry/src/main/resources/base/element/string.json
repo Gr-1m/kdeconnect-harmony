@@ -843,6 +843,10 @@
     {
       "name": "files_batches",
       "value": "Incoming batches"
+    },
+    {
+      "name": "files_pending_user",
+      "value": "Waiting for your action"
     }
   ]
 }

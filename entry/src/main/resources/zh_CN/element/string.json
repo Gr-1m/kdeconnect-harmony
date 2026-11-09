@@ -823,6 +823,10 @@
     {
       "name": "files_batches",
       "value": "接收批次"
+    },
+    {
+      "name": "files_pending_user",
+      "value": "待你处置"
     }
   ]
 }

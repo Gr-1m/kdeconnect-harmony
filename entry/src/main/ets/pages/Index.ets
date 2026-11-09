@@ -100,6 +100,9 @@ struct Index {
   @State isLandscape: boolean = false;
   // 并排侧栏模式：**仅横屏宽屏**（左侧栏常驻 30%）；竖屏（含平板竖屏）一律走汉堡 + 抽屉
   @State sideBySide: boolean = false;
+  // S2 §3.5：接收文件自动保存开关。真源放在 AppStorage，供「文件页侧边栏」的开关（面板被 HdsSideBar 缓存）双向绑定；
+  // 页面 @Watch 负责同步到控制器（运行时门控）并持久化到 Preferences。
+  @StorageLink('autoSaveFiles') @Watch('onAutoSaveFilesChanged') autoSaveFiles: boolean = true;
   // 记住的设备详情弹窗（点击 remembered 列表行触发）
   @State rememberedDetail: RememberedDevice | undefined = undefined;
   @State immersiveSupported: boolean = false;
@@ -243,6 +246,8 @@ struct Index {
       }
       this.settingsController.themeMode = parseInt(String(await pref.get('themeMode', '0')), 10) || THEME_FOLLOW_SYSTEM;
       this.settingsController.language = String(await pref.get('language', LANG_SYSTEM));
+      this.autoSaveFiles = String(await pref.get('autoSaveFiles', '1')) === '1';
+      this.settingsController.autoSaveFiles = this.autoSaveFiles;
       // AP-3：信任设备（含旧的 rememberedDevices 一次性迁移）—— 经 DeviceController.rehydrateTrust 统一处理
       const loaded: TrustedDevice[] = await TrustStore.load(ctx);
       this.deviceController.rehydrateTrust(loaded);
@@ -451,6 +456,7 @@ struct Index {
     this.payloadController.toast = (m: string): void => { this.notify.toast(m); };
     this.payloadController.resText = (resId: number): string => this.notify.resText(resId);
     this.payloadController.hostFilesDir = (): string => this.ensureKdcDir();
+    this.payloadController.autoSaveEnabled = (): boolean => this.settingsController.autoSaveFiles;
     this.payloadController.pickSaveTarget = (name: string): Promise<string> => this.pickSaveTarget(name);
     this.payloadController.pickDownloadTarget = (name: string): Promise<string> => this.pickDownloadTarget(name);
     this.payloadController.requestWritePermission = (fileName: string): Promise<boolean> => this.ensureWritePermission(fileName);
@@ -1565,6 +1571,14 @@ struct Index {
    * 分区被 `onChange` 用陈旧的 drawerSectionByTab[0]（=2）覆盖 ⇒ 跳回发现设备页。
    * 成因：`openDeviceDetail` 只改 deviceSection，没有同步这份映射。
    */
+  /** 文件页侧边栏开关 → 同步控制器 + 持久化（AppStorage 是两侧共同真源） */
+  onAutoSaveFilesChanged(): void {
+    if (this.settingsController.autoSaveFiles === this.autoSaveFiles) {
+      return;
+    }
+    this.settingsController.setAutoSaveFiles(this.autoSaveFiles);
+  }
+
   private rememberTabSection(index: number): void {
     this.drawerSectionByTab[this.currentTab] = index;
     this.deviceController.deviceSection = this.drawerSectionByTab[0];
