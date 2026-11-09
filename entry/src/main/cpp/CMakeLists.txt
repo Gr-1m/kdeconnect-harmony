@@ -22,9 +22,11 @@ project(kdeconnect_napi_full_rust)
 
 # hvigor 的 CMake 工具链传入 OHOS_SDK_NATIVE=<sdk>/native；旧变量 NATIVEROUTER
 # 在本机配置下为空，必须优先用前者。
-if(DEFINED OHOS_SDK_NATIVE AND EXISTS "${OHOS_SDK_NATIVE}/llvm/bin/clang")
+# Windows 兼容：Windows 上 clang 的实际文件名为 clang.exe，旧写法 EXISTS ".../clang" 恒假
+# ⇒ 配置阶段直接落到 FATAL_ERROR（DevEco Win10 实测）。故两处分支都同时判 .exe。
+if(DEFINED OHOS_SDK_NATIVE AND (EXISTS "${OHOS_SDK_NATIVE}/llvm/bin/clang" OR EXISTS "${OHOS_SDK_NATIVE}/llvm/bin/clang.exe"))
     set(OHOS_NDK_DIR "${OHOS_SDK_NATIVE}")
-elseif(DEFINED NATIVEROUTER AND EXISTS "${NATIVEROUTER}/llvm/bin/clang")
+elseif(DEFINED NATIVEROUTER AND (EXISTS "${NATIVEROUTER}/llvm/bin/clang" OR EXISTS "${NATIVEROUTER}/llvm/bin/clang.exe"))
     set(OHOS_NDK_DIR "${NATIVEROUTER}")
 elseif(DEFINED NATIVEROUTER)
     get_filename_component(OHOS_NDK_DIR "${NATIVEROUTER}" DIRECTORY)
@@ -34,8 +36,8 @@ endif()
 get_filename_component(OHOS_SDK_ROOT "${OHOS_NDK_DIR}" DIRECTORY)
 set(RUST_SYSROOT "${OHOS_NDK_DIR}/sysroot")
 
-if(NOT EXISTS "${OHOS_NDK_DIR}/llvm/bin/clang")
-    message(FATAL_ERROR "OHOS clang not found under ${OHOS_NDK_DIR}/llvm/bin/clang")
+if(NOT (EXISTS "${OHOS_NDK_DIR}/llvm/bin/clang" OR EXISTS "${OHOS_NDK_DIR}/llvm/bin/clang.exe"))
+    message(FATAL_ERROR "OHOS clang not found under ${OHOS_NDK_DIR}/llvm/bin/ (clang / clang.exe both missing)")
 endif()
 
 set(RUST_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/rust/full/napi/Cargo.toml")
