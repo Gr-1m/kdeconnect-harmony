@@ -57,14 +57,16 @@ case "$cmd" in
     ;;
   log)
     pat=${1:-}
+    # tag 用 grep 匹配（-T KDEConnect 在真机上匹配不到 A00001/org.kde.kdeconnect/KDEConnect）
     if [ -n "$pat" ]; then
-      ssh_run "\"$HDC\" shell \"hilog -x -T KDEConnect\"" 2>/dev/null | tr -d '\r' | grep -E "$pat" | tail -40
+      ssh_run "\"$HDC\" shell \"hilog -x\"" 2>/dev/null | tr -d '\r' | grep -i "kdeconnect" | grep -E "$pat" | tail -40
     else
-      ssh_run "\"$HDC\" shell \"hilog -x -T KDEConnect\"" 2>/dev/null | tr -d '\r' | tail -60
+      ssh_run "\"$HDC\" shell \"hilog -x\"" 2>/dev/null | tr -d '\r' | grep -i "kdeconnect" | tail -60
     fi
     ;;
   shell)
-    [ -n "${1:-}" ] && ssh_run "$1" 2>&1 | tr -d '\r' || usage
+    if [ -z "${1:-}" ]; then usage; fi
+    ssh_run "$1" 2>&1 | tr -d '\r'
     ;;
   *) usage;;
 esac
