@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "plugins": [
+    { "key": "ping", "incoming": ["kdeconnect.ping"], "outgoing": ["kdeconnect.ping"], "defaultEnabled": true },
+    { "key": "mousepad", "incoming": ["kdeconnect.mousepad.keyboardstate"], "outgoing": ["kdeconnect.mousepad.request"], "defaultEnabled": true },
+    { "key": "presenter", "incoming": [], "outgoing": ["kdeconnect.presenter", "kdeconnect.mousepad.request"], "defaultEnabled": true },
+    { "key": "mpris", "incoming": ["kdeconnect.mpris"], "outgoing": ["kdeconnect.mpris.request"], "defaultEnabled": true },
+    { "key": "systemvolume", "incoming": ["kdeconnect.systemvolume"], "outgoing": ["kdeconnect.systemvolume.request"], "defaultEnabled": true },
+    { "key": "runcommand", "incoming": ["kdeconnect.runcommand"], "outgoing": ["kdeconnect.runcommand.request"], "defaultEnabled": true },
+    { "key": "share", "incoming": ["kdeconnect.share.request", "kdeconnect.share.request.update"], "outgoing": ["kdeconnect.share.request"], "defaultEnabled": true },
+    { "key": "findmyphone", "incoming": ["kdeconnect.findmyphone.request"], "outgoing": [], "defaultEnabled": true },
+    { "key": "findremotedevice", "incoming": [], "outgoing": ["kdeconnect.findmyphone.request"], "defaultEnabled": true },
+    { "key": "clipboard", "incoming": ["kdeconnect.clipboard", "kdeconnect.clipboard.connect"], "outgoing": ["kdeconnect.clipboard", "kdeconnect.clipboard.connect"], "defaultEnabled": true },
+    { "key": "receivenotifications", "incoming": ["kdeconnect.notification"], "outgoing": ["kdeconnect.notification.request"], "defaultEnabled": true },
+    { "key": "battery", "incoming": ["kdeconnect.battery"], "outgoing": ["kdeconnect.battery"], "defaultEnabled": false },
+    { "key": "connectivityreport", "incoming": [], "outgoing": ["kdeconnect.connectivity_report"], "defaultEnabled": false },
+    { "key": "sftp", "incoming": ["kdeconnect.sftp.request"], "outgoing": ["kdeconnect.sftp"], "defaultEnabled": false }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "codes": [
+    { "code": 101, "name": "NOT_READY", "kind": "throw", "disposition": "FatalLink" },
+    { "code": 102, "name": "NOT_STARTED", "kind": "throw", "disposition": "FatalLink" },
+    { "code": 103, "name": "ALREADY_STARTED", "kind": "throw", "disposition": "FatalLink" },
+    { "code": 104, "name": "BAD_JSON", "kind": "throw", "disposition": "DropPacket" },
+    { "code": 105, "name": "BAD_PARAM", "kind": "throw", "disposition": "DropPacket" },
+    { "code": 109, "name": "CONTRACT_MISMATCH", "kind": "throw", "disposition": "FatalLink" },
+    { "code": 201, "name": "CERT_MISMATCH", "kind": "event", "disposition": "FatalLink" },
+    { "code": 202, "name": "PROTOCOL_VIOLATION", "kind": "event", "disposition": "FatalLink" },
+    { "code": 203, "name": "LINE_TOO_LONG", "kind": "event", "disposition": "FatalLink" },
+    { "code": 204, "name": "IDENTITY_INVALID", "kind": "event", "disposition": "FatalLink" },
+    { "code": 205, "name": "CLOCK_SKEW", "kind": "event", "disposition": "DropPacket" },
+    { "code": 301, "name": "PEER_NOT_CONNECTED", "kind": "event", "disposition": "DropPacket" },
+    { "code": 302, "name": "OFFER_TIMEOUT", "kind": "event", "disposition": "DropPacket" },
+    { "code": 303, "name": "TRANSFER_CANCELLED", "kind": "event", "disposition": "DropPacket" },
+    { "code": 401, "name": "PAYLOAD_TIMEOUT", "kind": "event", "disposition": "DropPacket" },
+    { "code": 402, "name": "FILE_IO", "kind": "event", "disposition": "Infra" },
+    { "code": 403, "name": "SEND_FAILED", "kind": "event", "disposition": "DropPacket" },
+    { "code": 501, "name": "ENGINE_PANIC", "kind": "event", "disposition": "Infra" },
+    { "code": 502, "name": "IDENTITY_INVALID_ON_START", "kind": "event", "disposition": "Infra" },
+    { "code": 503, "name": "INIT_FAILED", "kind": "event", "disposition": "Infra" }
+  ]
+}

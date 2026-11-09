@@ -208,6 +208,12 @@ cargo build --release --manifest-path entry/src/main/cpp/rust/full/napi/Cargo.to
 - 协议常量收敛到 **`limits.rs` 单一来源**（`types.rs` 重导出）；
 - `lib.rs` 记录行为不变式 I1–I5。
 
+0.9.0 后（本批已落地）：
+- **payload 错误码对齐契约 v0.2（0–7）**：`payload.rs` 新增 `mod code`（1 端口超时 / 2 TLS /
+  3 中断 / 4 读失败 / 5 落盘 / 6 取消 / 7 对端未取件），替换原 errno 直出；spool 超时回收前补
+  `failed code=7` 事件；`cancelPayload` → 6；E2E 增加「cancel → code 6」断言（19+1 全绿）。
+- **start 日志补 pin 计数**：`net stack started … trusted=<n>`，设备实测 `trusted=1`。
+
 未采纳（属后置重构，见 `devdocs/PLAN_OH_KDECONNECT_MIGRATION.md`）：5 crate 拆分、
 `kcbridge.d.ts` v1 契约（kind/错误码/contractVersion）、EngineActor+tokio、引擎内配对状态机、
 `capabilities.v1.json` 单一能力源、lints/deny/audit/fuzz 全套闸门。
