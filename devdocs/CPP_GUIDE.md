@@ -260,3 +260,50 @@ protocolVersion=8；UDP 1716；TCP 1716–1764 顺序探测；payload 端口 ≥
 - 参考实现三目录（meta/kde/android）只读。
 - 跨层改动（涉及 d.ts 或跨端常量）先走 §5.4 流程；跨机同步一律走 gitcode，不依赖共享目录。
 - 本文档由 native agent 维护；结构、命令、分工变化时同改动更新本文并通知各 agent。
+
+## 9. Windows 交叉编译前置（DevEco Win10 实测，2026-11-08）
+
+> 全 Rust 栈（`ring` 等含 C 代码的 crate）在 Windows 上构建时，`cc-rs` **必须**拿到目标三元的
+> C 编译器/归档器；否则在 `BuildNativeWithNinja` 阶段报
+> `error occurred in cc-rs: failed to find tool "cc": program not found`。
+
+### 9.1 必须的 6 个环境变量（用户级，`setx` 持久化）
+| 变量 | 值 |
+|---|---|
+| `CC_x86_64_unknown_linux_ohos` | `<LLVM_BIN>\clang.exe` |
+| `AR_x86_64_unknown_linux_ohos` | `<LLVM_BIN>\llvm-ar.exe` |
+| `CC_aarch64_unknown_linux_ohos` | `<LLVM_BIN>\clang.exe` |
+| `AR_aarch64_unknown_linux_ohos` | `<LLVM_BIN>\llvm-ar.exe` |
+| `CARGO_TARGET_X86_64_UNKNOWN_LINUX_OHOS_LINKER` | `<LLVM_BIN>\clang.exe` |
+| `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER` | `<LLVM_BIN>\clang.exe` |
+
+`<LLVM_BIN>` = `<DevEco SDK>\default\openharmony\native\llvm\bin`（默认
+`C:\Program Files\Huawei\DevEco Studio\sdk\default\openharmony\native\llvm\bin`）。
+
+### 9.2 ⚠️ 路径**含空格**会把 `cc-rs` 打挂（实测，必读）
+`cc-rs` 对 `CC`/`AR` 的值**按空格切分**（视为"命令 + 参数"）⇒ 直接填 SDK 默认路径会报：
+```
+error occurred in cc-rs: failed to find tool "C:/Program": 系统找不到指定的文件。 (os error 2)
+```
+**对策**：用**无空格路径**指向同一目录 —— 建目录联接（junction，普通用户即可，无需管理员）：
+```powershell
+cmd /c mklink /J C:\Users\<user>\ohos-llvm "C:\Program Files\Huawei\DevEco Studio\sdk\default\openharmony\native\llvm"
+# 然后把 9.1 的值改成 C:\Users\<user>\ohos-llvm\bin\clang.exe / llvm-ar.exe
+```
+> junction 指向 `native\llvm`（**不是** `llvm\bin`），这样 `clang.exe` 仍能按相对路径找到
+> `../lib/clang/...` 的内建资源。
+
+### 9.3 环境变量必须"进到构建进程里"
+- **`hvigorw --stop-daemon` 必须**：hvigor daemon **不继承**新设置的环境变量（改完不重启 daemon 等于没改）。
+- **`setx` 只对新进程生效**：在同一个 shell 里先 `$env:CC_… = …`（显式赋值）再构建最稳，
+  免得构建进程继承到旧环境。
+- **清 `entry/.cxx` 缓存无效**（实测）：该问题不在 CMake 缓存，而在 cargo 子进程的环境。
+
+### 9.4 其他 Windows 差异
+- `CMakeLists.txt` 里判 `clang` 存在时需 **`clang` / `clang.exe` 双判**（Windows 文件带 `.exe`）——
+  已入库 `2b49851`。
+- 直接用 `hvigorw.js` 时需自设 `DEVECO_SDK_HOME=<DevEco SDK>`（`devecocli build` 会代为设置）。
+- 签名：真机走 `build-profile.json5` 的 `signingConfig`（如 `matepadmini`）由 hvigor 本地重签，
+  **不消耗华为云配额**；`tools/sign-debug.ps1`（OpenHarmony 材料）**仅适用模拟器**，
+  真机会报 `9568257 fail to verify pkcs7`。
+
