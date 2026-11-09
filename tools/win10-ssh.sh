@@ -49,7 +49,7 @@ case "$cmd" in
   build)
     task=${1:-assembleHap}
     # 内联设置 OHOS_LLVM_LINK（无空格 junction），避免依赖 setx 持久化
-    ssh_run "cd /d \"$REPO\" & set DEVECO_SDK_HOME=$DEVECO_SDK & set OHOS_LLVM_LINK=%USERPROFILE%\\ohos-llvm & \"$HVIGOR\" --stop-daemon & \"$HVIGOR\" --no-daemon $task" 2>&1 | tr -d '\r'
+    ssh_run "cd /d \"$REPO\" & set \"DEVECO_SDK_HOME=$DEVECO_SDK\" & set \"OHOS_LLVM_LINK=%USERPROFILE%\\ohos-llvm\" & set \"JAVA_HOME=C:\\Program Files\\Huawei\\DevEco Studio\\jbr\" & set \"PATH=C:\\Program Files\\Huawei\\DevEco Studio\\jbr\\bin;%PATH%\" & \"$HVIGOR\" --stop-daemon & \"$HVIGOR\" --no-daemon $task" 2>&1 | tr -d '\r'
     ;;
   install)
     hap=${1:-sign\\entry-debug-signed.hap}
