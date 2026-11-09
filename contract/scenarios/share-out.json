@@ -1,0 +1,16 @@
+{
+  "name": "share-out",
+  "steps": [
+    { "do": ["start", null] },
+    { "emit": [0, "{\"version\":1,\"tcpPort\":1716}"] },
+    { "emit": [3, "{\"info\":{\"deviceId\":\"b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\",\"name\":\"Work PC\",\"type\":\"desktop\",\"protocolVersion\":8,\"incoming\":[\"kdeconnect.share.request\"],\"outgoing\":[\"kdeconnect.share.request\"],\"certificatePem\":\"...\"}}"] },
+    { "emit": [7, "{\"deviceId\":\"b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\",\"verificationKey\":\"A82E8F8A\",\"name\":\"Work PC\"}"] },
+    { "expectCall": ["acceptPair", "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"] },
+    { "emit": [5, "{\"info\":{\"deviceId\":\"b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\",\"name\":\"Work PC\",\"pairState\":\"Paired\",\"certificatePem\":\"...\"}}"] },
+    { "do": ["sendFile", "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", "kdeconnect.share.request", "{\"filename\":\"document.pdf\"}", "/data/storage/el2/base/files/kdeconnect/document.pdf", "document.pdf"] },
+    { "emit": [10, "{\"transferId\":1,\"deviceId\":\"b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\",\"size\":204800}"] },
+    { "emit": [12, "{\"transferId\":1,\"bytes\":102400,\"total\":204800}"] },
+    { "emit": [12, "{\"transferId\":1,\"bytes\":204800,\"total\":204800}"] },
+    { "emit": [13, "{\"transferId\":1,\"ok\":true}"] }
+  ]
+}
