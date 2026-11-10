@@ -38,11 +38,10 @@ pull_layout() { # $1 remote json name, $2 local path
   "$HELPER" shell "type C:\\\\Users\\\\xiaoyi\\\\$1" 2>/dev/null > "$2"
 }
 
-# 切到「文件」页签（底部 tab）：先 dump 找 tab 坐标再点
-goto_files_tab() {
+# 取底部「文件」页签坐标（空=不在主页面）
+tab_coords() {
   pull_layout "nav.json" "$TMP/nav.json"
-  local coords
-  coords=$(python3 - "$TMP/nav.json" <<'PY'
+  python3 - "$TMP/nav.json" <<'PY'
 import json, sys
 raw = open(sys.argv[1], encoding='utf-8', errors='replace').read()
 i = raw.find('{')
@@ -75,13 +74,24 @@ def walk(n):
 walk(d)
 print(f'{(best[0] + best[2]) // 2} {(best[1] + best[3]) // 2}' if best else '')
 PY
-)
+}
+
+# 切到「文件」页签；不在主页面时先按 Back 返回
+goto_files_tab() {
+  local coords
+  coords=$(tab_coords)
+  if [ -z "$coords" ]; then
+    echo "  当前不在主页面 → 发送 Back"
+    "$HELPER" shell "$HDC_WIN shell uitest uiInput keyEvent Back" >/dev/null 2>&1
+    sleep 1
+    coords=$(tab_coords)
+  fi
   if [ -n "$coords" ]; then
     echo "  切到文件页：click $coords"
     "$HELPER" shell "$HDC_WIN shell uitest uiInput click $coords" >/dev/null 2>&1
     sleep 1
   else
-    echo "  WARN: 未找到「文件」页签坐标（保持当前页）"
+    echo "  WARN: 仍未找到「文件」页签（保持当前页）"
   fi
 }
 
