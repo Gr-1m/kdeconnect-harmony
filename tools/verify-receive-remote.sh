@@ -38,6 +38,53 @@ pull_layout() { # $1 remote json name, $2 local path
   "$HELPER" shell "type C:\\\\Users\\\\xiaoyi\\\\$1" 2>/dev/null > "$2"
 }
 
+# 切到「文件」页签（底部 tab）：先 dump 找 tab 坐标再点
+goto_files_tab() {
+  pull_layout "nav.json" "$TMP/nav.json"
+  local coords
+  coords=$(python3 - "$TMP/nav.json" <<'PY'
+import json, sys
+raw = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+i = raw.find('{')
+if i < 0:
+    print(''); sys.exit(0)
+d = json.loads(raw[i:])
+root = d.get('attributes', {}) or {}
+H = 0
+try:
+    b = root.get('bounds', '')
+    if b:
+        H = int(b.strip('[]').split(',')[3])
+except Exception:
+    H = 0
+best = None
+def walk(n):
+    global best
+    a = n.get('attributes', {}) or {}
+    t = (a.get('text') or '').strip()
+    b = a.get('bounds', '')
+    if t == '文件' and b:
+        try:
+            x1, y1, x2, y2 = map(int, b.strip('[]').split(','))
+        except Exception:
+            return
+        if H > 0 and y1 > H * 0.7:
+            if best is None or y1 > best[1]:
+                best = (x1, y1, x2, y2)
+    for c in (n.get('children') or []): walk(c)
+walk(d)
+print(f'{(best[0] + best[2]) // 2} {(best[1] + best[3]) // 2}' if best else '')
+PY
+)
+  if [ -n "$coords" ]; then
+    echo "  切到文件页：click $coords"
+    "$HELPER" shell "$HDC_WIN shell uitest uiInput click $coords" >/dev/null 2>&1
+    sleep 1
+  else
+    echo "  WARN: 未找到「文件」页签坐标（保持当前页）"
+  fi
+}
+
 # 解析布局：打印批次相关文本；返回 0=含测试文件, 1=未见, 2=解析失败
 analyze_layout() { # $1 local json
   python3 - "$1" <<'PY'
@@ -73,6 +120,7 @@ PY
 
 wait_and_assert() { # $1 tag, $2 local json path
   local tag=$1 local=$2 i ok=1
+  goto_files_tab
   for i in 1 2 3 4 5 6; do
     pull_layout "layout-$tag.json" "$local"
     if analyze_layout "$local"; then ok=0; break; fi
