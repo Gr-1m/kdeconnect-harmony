@@ -48,30 +48,39 @@ i = raw.find('{')
 if i < 0:
     print(''); sys.exit(0)
 d = json.loads(raw[i:])
-root = d.get('attributes', {}) or {}
+nodes = []
+def walk(n):
+    a = n.get('attributes', {}) or {}
+    nodes.append(a)
+    for c in (n.get('children') or []): walk(c)
+walk(d)
 H = 0
 try:
-    b = root.get('bounds', '')
+    b = (d.get('attributes', {}) or {}).get('bounds', '')
     if b:
         H = int(b.strip('[]').split(',')[3])
 except Exception:
     H = 0
+if H <= 0:  # root 无 bounds 时退回「所有节点 y2 最大值」
+    for a in nodes:
+        b = a.get('bounds', '')
+        if b:
+            try:
+                H = max(H, int(b.strip('[]').split(',')[3]))
+            except Exception:
+                pass
 best = None
-def walk(n):
-    global best
-    a = n.get('attributes', {}) or {}
-    t = (a.get('text') or '').strip()
+for a in nodes:
+    if (a.get('text') or '').strip() != '文件':
+        continue
     b = a.get('bounds', '')
-    if t == '文件' and b:
-        try:
-            x1, y1, x2, y2 = map(int, b.strip('[]').split(','))
-        except Exception:
-            return
-        if H > 0 and y1 > H * 0.7:
-            if best is None or y1 > best[1]:
-                best = (x1, y1, x2, y2)
-    for c in (n.get('children') or []): walk(c)
-walk(d)
+    try:
+        x1, y1, x2, y2 = map(int, b.strip('[]').split(','))
+    except Exception:
+        continue
+    if H > 0 and y1 > H * 0.7:
+        if best is None or y1 > best[1]:
+            best = (x1, y1, x2, y2)
 print(f'{(best[0] + best[2]) // 2} {(best[1] + best[3]) // 2}' if best else '')
 PY
 }
