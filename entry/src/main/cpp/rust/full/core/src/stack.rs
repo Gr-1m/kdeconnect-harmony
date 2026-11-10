@@ -502,12 +502,19 @@ pub fn start_global_with(
     caps: Option<(Vec<String>, Vec<String>)>,
 ) -> bool {
     {
-        let guard = match CURRENT.lock() {
-            Ok(g) => g,
+        // 契约 103 ALREADY_STARTED：重复启动 ⇒ 派事件后拒绝（幂等失败的调用方需可观测）。
+        let already = match CURRENT.lock() {
+            Ok(g) => g.is_some(),
             Err(_) => return false,
         };
-        if guard.is_some() {
-            loge!("net stack already running");
+        if already {
+            crate::events::emit_error(
+                "",
+                "",
+                0,
+                crate::errors::ALREADY_STARTED,
+                "net stack already running",
+            );
             return false;
         }
     }

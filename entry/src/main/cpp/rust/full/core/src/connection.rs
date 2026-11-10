@@ -22,7 +22,7 @@ use crate::types::{
     ConnectionState, EventType, NetEvent, TlsRole, CONN_RATE_LIMIT_MS, MAX_IDENTITY_PACKET_SIZE,
     MAX_PACKET_SIZE, PLAIN_IDENTITY_TIMEOUT_MS,
 };
-use crate::{loge, logi, logw};
+use crate::{loge, logi};
 
 const READ_POLL_MS: u64 = 50;
 const PLAIN_READ_POLL_MS: u64 = 10;
@@ -541,6 +541,8 @@ fn read_loop(
 ) -> Result<(), ConnError> {
     stream.set_read_timeout(Some(Duration::from_millis(READ_POLL_MS)))?;
     let mut rx_buf: Vec<u8> = Vec::new();
+    // 帧切分游标：已确认「不含 '\n'」的缓冲前缀长度（见步骤 5）。
+    let mut scan_from: usize = 0;
 
     loop {
         if handle.shutdown.load(Ordering::SeqCst) {
@@ -579,16 +581,33 @@ fn read_loop(
         drain_out(&mut session, stream, &rx, &mut pending_out, handle)?;
         flush_tls(&mut session, stream)?;
 
-        // 5) 按 '\n' 切帧并派发
-        while let Some(item) = packet::extract_frame(&mut rx_buf, MAX_PACKET_SIZE) {
+        // 5) 按 '\n' 切帧并派发。
+        //    `scan_from` = 已确认「不含 '\n'」的前缀长度：每轮只扫新增字节，
+        //    否则一条 32 MiB 的无换行帧会被反复从头扫描（O(n²)，实测单连接烧 ~100 s CPU）。
+        loop {
+            let (item, next_from) =
+                packet::extract_frame_from(&mut rx_buf, MAX_PACKET_SIZE, scan_from);
+            scan_from = next_from;
             match item {
-                Ok(frame) => {
+                None => break,
+                Some(Ok(frame)) => {
                     if handle_frame(shared, handle, &frame).is_err() {
                         return Ok(());
                     }
                 }
-                Err(()) => {
-                    logw!("oversize frame dropped (id={})", handle.id);
+                Some(Err(())) => {
+                    // 契约 203 LINE_TOO_LONG：disposition=FatalLink ⇒ 派事件 + 断链
+                    // （与明文 identity 超长路径行为一致）。
+                    let device_id = handle.device_id().unwrap_or_default();
+                    shared.emit_error(
+                        &device_id,
+                        crate::errors::LINE_TOO_LONG,
+                        "frame exceeds max size",
+                        &handle.host,
+                        handle.port,
+                    );
+                    shared.close_conn(handle.id, "line too long");
+                    return Ok(());
                 }
             }
         }
@@ -641,7 +660,15 @@ fn handle_frame(
     let parsed = match packet::parse_packet(json) {
         Some(p) => p,
         None => {
-            loge!("invalid JSON frame dropped (id={})", handle.id);
+            // 契约 104 BAD_JSON：disposition=DropPacket ⇒ 派事件、链路继续。
+            let device_id = handle.device_id().unwrap_or_default();
+            shared.emit_error(
+                &device_id,
+                crate::errors::BAD_JSON,
+                "invalid JSON frame",
+                &handle.host,
+                handle.port,
+            );
             return Ok(());
         }
     };
@@ -751,6 +778,8 @@ fn handle_frame(
                 &parsed.body,
             );
         } else {
+            // 契约 202 disposition=FatalLink：未配对设备发 payload 请求 ⇒ 派事件 + 断链
+            // （AGENTS.md：未配对设备只收 `kdeconnect.pair`，其余丢弃并 unpair）。
             shared.emit_error(
                 &device_id,
                 crate::errors::PROTOCOL_VIOLATION,
@@ -758,29 +787,32 @@ fn handle_frame(
                 &handle.host,
                 0,
             );
+            shared.close_conn(handle.id, "payload request from untrusted peer");
+            return Err(());
         }
     }
     if parsed.payload_size != 0 && transfer_id == 0 {
-        let why = if parsed.payload_port == 0 {
-            "port missing/0"
-        } else if device_id.is_empty() {
-            "deviceId unknown"
+        // 端口缺失属「payload 超时」类（401, DropPacket）⇒ 只派事件；
+        // 其余（deviceId 未知/未受信，见上一条 FatalLink 分支）属策略拒绝（202）⇒ 派事件 + 断链。
+        if parsed.payload_port == 0 {
+            shared.emit_error(
+                &device_id,
+                crate::errors::PAYLOAD_TIMEOUT,
+                "payload not started (port missing/0)",
+                &handle.host,
+                0,
+            );
         } else {
-            "not trusted"
-        };
-        // 端口缺失属「payload 超时」类（401）；其余（deviceId 未知/未受信）属策略拒绝（202）。
-        let code = if parsed.payload_port == 0 {
-            crate::errors::PAYLOAD_TIMEOUT
-        } else {
-            crate::errors::PROTOCOL_VIOLATION
-        };
-        shared.emit_error(
-            &device_id,
-            code,
-            &format!("payload not started ({why})"),
-            &handle.host,
-            0,
-        );
+            shared.emit_error(
+                &device_id,
+                crate::errors::PROTOCOL_VIOLATION,
+                "payload not started (deviceId unknown)",
+                &handle.host,
+                0,
+            );
+            shared.close_conn(handle.id, "payload request from unknown/untrusted peer");
+            return Err(());
+        }
     }
 
     shared.emit_event(NetEvent {

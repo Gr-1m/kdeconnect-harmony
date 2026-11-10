@@ -56,11 +56,17 @@ pub enum FrameScan {
 
 /// 只扫描、不分配、不改写（R-OPT-1）：语义与 `extract_frame` 完全一致 ——
 /// 供 FFI 侧直接对调用方缓冲做一次扫描，避免 `from_utf8(..).to_string()` + `to_owned()` 两次拷贝。
-pub fn scan_frame(buf: &[u8], max_size: usize) -> FrameScan {
+///
+/// **游标版（`from`）**：调用方可保证 `buf[..from]` 在此前的调用中已确认「不含 `'\n'`」
+/// （即那一段是新数据到来前就扫过的前缀），本函数只从 `from` 起找帧尾。
+/// 这让「一条超长行分多次到达」的总扫描量从 O(n²) 降为 O(n)
+/// （实测：32 MiB 无换行帧若每轮从头扫，单连接就要烧 ~100 s CPU）。
+pub fn scan_frame_from(buf: &[u8], max_size: usize, from: usize) -> FrameScan {
     if buf.is_empty() {
         return FrameScan::Half;
     }
-    match buf.iter().position(|&b| b == b'\n') {
+    let from = from.min(buf.len());
+    match buf[from..].iter().position(|&b| b == b'\n') {
         None => {
             if buf.len() > max_size {
                 FrameScan::DroppedOversize { consumed: buf.len() }
@@ -68,8 +74,8 @@ pub fn scan_frame(buf: &[u8], max_size: usize) -> FrameScan {
                 FrameScan::Half
             }
         }
-        Some(pos) => {
-            let frame_len = pos + 1;
+        Some(rel) => {
+            let frame_len = from + rel + 1;
             if frame_len > max_size {
                 FrameScan::DroppedOversize { consumed: frame_len }
             } else {
@@ -77,6 +83,11 @@ pub fn scan_frame(buf: &[u8], max_size: usize) -> FrameScan {
             }
         }
     }
+}
+
+/// [`scan_frame_from`] 的 `from = 0` 特化（每次从头扫；缓冲较小时足够）。
+pub fn scan_frame(buf: &[u8], max_size: usize) -> FrameScan {
+    scan_frame_from(buf, max_size, 0)
 }
 
 pub fn extract_frame(buf: &mut String, max_size: usize) -> FrameOutcome {
@@ -338,6 +349,22 @@ mod tests {
             FrameOutcome::Frame("{\"type\":\"kdeconnect.ping\"}\n".to_string())
         );
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn scan_from_only_looks_at_new_bytes() {
+        // 前缀已确认无 '\n' ⇒ 只从游标处找帧尾（帧长仍按缓冲起点计算）。
+        assert!(matches!(
+            scan_frame_from(b"0123456789\n", 1024, 5),
+            FrameScan::Frame { len: 11 }
+        ));
+        // 前缀未扫过时不得跳过已存在的 '\n'。
+        assert!(matches!(
+            scan_frame_from(b"a\n", 1024, 0),
+            FrameScan::Frame { len: 2 }
+        ));
+        // 游标越界按长度截断（防御式）。
+        assert!(matches!(scan_frame_from(b"abc", 1024, 99), FrameScan::Half));
     }
 
     #[test]

@@ -16,16 +16,36 @@ pub use kdc_core::packet::ParsedPacket;
 /// - `Some(Err(()))`：超限行已丢弃（调用方跳过，继续下一帧）。
 #[allow(clippy::result_unit_err)]
 pub fn extract_frame(buf: &mut Vec<u8>, max_size: usize) -> Option<Result<Vec<u8>, ()>> {
-    match kdc_core::packet::scan_frame(buf, max_size) {
-        kdc_core::packet::FrameScan::Half => None,
+    extract_frame_from(buf, max_size, 0).0
+}
+
+/// 游标版 [`extract_frame`]：返回 `(本轮的帧结果, 下一轮应传入的游标)`。
+///
+/// 游标 = 缓冲区**前缀**中已确认「不含 `'\n'`」的字节数。控制链路的读循环每轮只扫新增字节，
+/// 从而把「超长行分多次到达」的扫描量从 O(n²) 降为 O(n)（32 MiB 单帧实测 ~100 s CPU → 秒级）。
+#[allow(clippy::result_unit_err)]
+pub fn extract_frame_from(
+    buf: &mut Vec<u8>,
+    max_size: usize,
+    from: usize,
+) -> (Option<Result<Vec<u8>, ()>>, usize) {
+    let from = from.min(buf.len());
+    match kdc_core::packet::scan_frame_from(buf, max_size, from) {
+        kdc_core::packet::FrameScan::Half => {
+            // 半包：`buf[from..]` 已确认不含 '\n'，连同调用方的不变量 ⇒ 整个缓冲都已扫过
+            // ⇒ 游标推进到缓冲末尾（这正是 O(n) 的来源：下次只扫新到达的字节）。
+            (None, buf.len())
+        }
         kdc_core::packet::FrameScan::DroppedOversize { consumed } => {
             buf.drain(..consumed);
-            Some(Err(()))
+            // 超长行整行（或整个缓冲）已丢弃，剩余字节均未扫描。
+            (Some(Err(())), 0)
         }
         kdc_core::packet::FrameScan::Frame { len } => {
             let frame = buf[..len].to_vec();
             buf.drain(..len);
-            Some(Ok(frame))
+            // 被消费的前缀同样**不含** `'\n'`，故已扫前缀随之缩短（不变量保持）。
+            (Some(Ok(frame)), from.saturating_sub(len))
         }
     }
 }
@@ -125,6 +145,50 @@ mod tests {
             Some(Err(()))
         ));
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn cursor_scan_never_misses_a_split_frame() {
+        // 一条帧分三次到达：游标只推进到已扫前缀，最后一片到齐后必须出帧。
+        let mut buf: Vec<u8> = Vec::new();
+        let mut from = 0usize;
+        for (part, done) in [
+            (&b"{\"id\":1"[..], false),
+            (&b",\"type\":\"a\""[..], false),
+            (&b"}\n"[..], true),
+        ] {
+            buf.extend_from_slice(part);
+            let (item, next) = extract_frame_from(&mut buf, MAX_PACKET_SIZE, from);
+            from = next;
+            if done {
+                assert_eq!(item.unwrap().unwrap(), b"{\"id\":1,\"type\":\"a\"}\n");
+            } else {
+                assert!(item.is_none(), "半包不应出帧");
+                assert_eq!(from, buf.len(), "游标须推进到已扫前缀末尾");
+            }
+        }
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn cursor_handles_two_frames_and_prefix_shrink() {
+        let mut buf = b"aa\nbb\n".to_vec();
+        let (first, from) = extract_frame_from(&mut buf, MAX_PACKET_SIZE, 0);
+        assert_eq!(first.unwrap().unwrap(), b"aa\n");
+        let (second, _) = extract_frame_from(&mut buf, MAX_PACKET_SIZE, from);
+        assert_eq!(second.unwrap().unwrap(), b"bb\n");
+    }
+
+    #[test]
+    fn cursor_oversize_dropped_then_next_frame_intact() {
+        // 前缀已扫（无 '\n'）+ 超长行 ⇒ 丢弃整行、游标归零，后续帧不受影响。
+        let mut buf = vec![b'x'; 64];
+        buf.extend_from_slice(b"\nok\n");
+        let (item, from) = extract_frame_from(&mut buf, 32, 64);
+        assert!(matches!(item, Some(Err(()))), "超长行应被丢弃");
+        assert_eq!(from, 0);
+        let (item, _) = extract_frame_from(&mut buf, 32, from);
+        assert_eq!(item.unwrap().unwrap(), b"ok\n");
     }
 
     #[test]
