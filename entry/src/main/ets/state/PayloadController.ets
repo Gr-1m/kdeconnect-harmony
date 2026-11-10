@@ -401,7 +401,10 @@ export class PayloadController {
       fileName: resolvedName,
       size: event.payloadSize ?? (prev !== undefined && !isNewTransfer ? prev.size : 0),
       bytesDone: event.payloadBytesDone ?? 0,
-      filePath: event.payloadFilePath ?? (prev !== undefined && !isNewTransfer ? prev.filePath : ''),
+      // 事件给的路径可能是**空串**（native opt('')→undefined 之前的历史行为差异）⇒ 只有非空才采信
+      filePath: (event.payloadFilePath !== undefined && event.payloadFilePath.length > 0)
+        ? event.payloadFilePath
+        : (prev !== undefined && !isNewTransfer ? prev.filePath : ''),
       settled: isNewTransfer ? false : (prev !== undefined ? prev.settled : false),
       // 非新传输沿用处置标记（迟到的终态事件不得把 sandboxOnly/timeMs 抹掉）
       sandboxOnly: isNewTransfer ? false : (prev !== undefined ? prev.sandboxOnly === true : false),
@@ -435,7 +438,17 @@ export class PayloadController {
     if (item.direction === 'receive' && item.deviceId.length > 0) {
       this.attachToReceiveBatch(item, idx < 0, state);
     }
-    if (state === 'finished' && item.direction === 'receive' && !item.settled && item.filePath.length > 0) {
+    if (state === 'finished' && item.direction === 'receive') {
+      // MSG220 §3.1：无条件门控诊断（区分「settled 已置」「开关关」「进了分支」三种情形）
+      console.info(`KDC diag autosave gate #${tid} settled=${item.settled}`
+        + ` filePathLen=${item.filePath.length} size=${item.size} autoSave=${this.autoSaveEnabled()}`
+        // Omp-Native 定位请求：原始事件字段（区分「桥层丢字段」与「native 未回填」）
+        + ` raw=${event.payloadFilePath === undefined ? 'undefined' : `len=${event.payloadFilePath.length}`}`
+        + ` rawName=${event.payloadFileName === undefined ? 'undefined' : 'ok'}`);
+    }
+    // MSG220 §2：**不再**把 filePath 非空作为前置条件 —— 自动保存走 keepPayload(tid, dest)（native 自己搬 spool），
+    // 路径为空不代表拿不到文件；旧条件会让整段自动保存被静默跳过（真机 #5/#6 实证）
+    if (state === 'finished' && item.direction === 'receive' && !item.settled) {
       if (this.autoSaveEnabled()) {
         this.log(`auto-save received #${tid} ${item.fileName}`);
         this.savePayload(item).then((): void => {
