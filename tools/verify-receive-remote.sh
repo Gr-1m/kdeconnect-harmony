@@ -94,8 +94,48 @@ else:
 print('PASS: 存在 100% 批次' if done else 'WARN: 未见 100% 批次')
 PY
 
-step "6/6 日志（保存/失败路径）"
-"$HELPER" log 'save failed|keepPayload failed|auto-save|exported to|saved\(' | tail -12 || true
+step "6/7 重启场景（history 非空后再收文件；MSG217 缺陷 A 回归）"
+"$HELPER" shell "$HDC_WIN shell aa force-stop org.kde.kdeconnect" >/dev/null 2>&1
+sleep 2
+"$HELPER" shell "$HDC_WIN shell aa start -a EntryAbility -b org.kde.kdeconnect" | tail -1
+sleep 6
+for f in "$TMP/kdc-verify.png" "$TMP/kdc-verify.bin"; do
+  echo "share(after restart): $(basename "$f")"
+  kdeconnect-cli --share "$f" -d "$DEVICE_ID" 2>&1 | tail -1
+  sleep 3
+done
+echo "等待 40s（覆盖 watchdog 30s）..."
+sleep 40
+"$HELPER" shell "$HDC_WIN shell uitest dumpLayout -p /data/local/tmp/verify2.json" >/dev/null
+"$HELPER" shell "$HDC_WIN file recv /data/local/tmp/verify2.json C:\\Users\\xiaoyi\\verify2.json" >/dev/null
+"$HELPER" shell 'type C:\Users\xiaoyi\verify2.json' 2>/dev/null > "$TMP/layout2.json"
+python3 - "$TMP/layout2.json" <<'PY'
+import json, sys
+raw = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+i = raw.find('{')
+if i < 0:
+    print('FAIL: layout2 未取到'); sys.exit(2)
+texts = []
+def walk(n):
+    a = n.get('attributes', {}) or {}
+    t = (a.get('text') or '').strip()
+    if t: texts.append(t)
+    for c in (n.get('children') or []): walk(c)
+walk(json.loads(raw[i:]))
+bad = any('0/1 文件' in t and '0%' in t for t in texts) and any(t == '接收中' for t in texts)
+done = any('100%' in t for t in texts)
+print('重启后批次文本：')
+for t in texts:
+    if any(k in t for k in ['接收批次', '接收中', '已保存', '占', '%']):
+        print(' ', repr(t))
+print('FAIL: 重启后仍有 0% + 接收中 僵尸组合' if bad else 'PASS: 重启后无 0% + 接收中 僵尸组合')
+print('PASS: 重启后存在 100% 批次' if done else 'WARN: 重启后未见 100% 批次')
+PY
+
+step "7/7 日志（保存/失败路径 + settled 撞号签名）"
+"$HELPER" log 'save failed|keepPayload failed|auto-save|exported to|saved\(|saved to album' | tail -12 || true
+echo "--- settled 撞号检查（新 started 事件不应是 settled=true）---"
+"$HELPER" log 'KDC diag payload started' | tail -6 || true
 
 echo
 echo "=== 完成：人工确认「已保存/应用内/待处置」文案与相册（图片）是否符合 MSG212 验收口径 ==="
