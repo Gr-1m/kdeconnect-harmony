@@ -76,16 +76,19 @@ print(f'{(best[0] + best[2]) // 2} {(best[1] + best[3]) // 2}' if best else '')
 PY
 }
 
-# 切到「文件」页签；不在主页面时先按 Back 返回
+# 切到「文件」页签；不在主页面（如停在设备详情/弹窗）时强制重启到主页面
 goto_files_tab() {
-  local coords
+  local coords attempt=0
   coords=$(tab_coords)
-  if [ -z "$coords" ]; then
-    echo "  当前不在主页面 → 发送 Back"
-    "$HELPER" shell "$HDC_WIN shell uitest uiInput keyEvent Back" >/dev/null 2>&1
-    sleep 1
+  while [ -z "$coords" ] && [ "$attempt" -lt 2 ]; do
+    attempt=$((attempt + 1))
+    echo "  不在主页面 → force-stop + start（第 $attempt 次；Back 会退出应用，不能用）"
+    "$HELPER" shell "$HDC_WIN shell aa force-stop org.kde.kdeconnect" >/dev/null 2>&1
+    sleep 2
+    "$HELPER" shell "$HDC_WIN shell aa start -a EntryAbility -b org.kde.kdeconnect" >/dev/null 2>&1
+    sleep 5
     coords=$(tab_coords)
-  fi
+  done
   if [ -n "$coords" ]; then
     echo "  切到文件页：click $coords"
     "$HELPER" shell "$HDC_WIN shell uitest uiInput click $coords" >/dev/null 2>&1
