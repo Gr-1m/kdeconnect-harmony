@@ -131,6 +131,15 @@ impl PayloadJob {
 
     fn emit(&self, shared: &Shared, state: &str, code: i32, message: &str) {
         let spool = self.spool_path.lock().map(|p| p.clone()).unwrap_or_default();
+        // TEMP(MSG220 §3.1)：取证自动保存分支所需的 path 是否为空；两态验通过后连同 ArkTS 诊断一并剥离。
+        logi!(
+            "[KDC-DIAG] payload emit id={} state={} send={} spool_len={} name_len={}",
+            self.id,
+            state,
+            self.send,
+            spool.len(),
+            self.file_name.len()
+        );
         if let Ok(mut s) = self.state.lock() {
             s.name = state.to_owned();
             s.code = code;
