@@ -847,6 +847,14 @@
     {
       "name": "files_pending_user",
       "value": "Waiting for your action"
+    },
+    {
+      "name": "files_saved_in_app",
+      "value": "Saved in app"
+    },
+    {
+      "name": "files_action_export",
+      "value": "Export"
     }
   ]
 }

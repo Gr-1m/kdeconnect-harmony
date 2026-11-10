@@ -827,6 +827,14 @@
     {
       "name": "files_pending_user",
       "value": "待你处置"
+    },
+    {
+      "name": "files_saved_in_app",
+      "value": "已保存到应用内"
+    },
+    {
+      "name": "files_action_export",
+      "value": "导出"
     }
   ]
 }

@@ -27,6 +27,9 @@ export struct FilesTab {
   // 点击某一行 → 打开「文件详情」弹窗（属性 + 另存为/丢弃/取消），弹层同样由 Index 渲染
   onOpenPayload: (transferId: number) => void = () => {
   };
+  // B2：沙箱内文件的「导出」（用户手势）
+  onExportPayload: (p: PayloadTransfer) => void = () => {
+  };
   // S2 接收批次（契约 v0.2 §3）：按批折叠显示；批次内的行不再出现在下面按状态分的三组里
   @Prop batches: PayloadBatch[] = [];
   onToggleBatch: (batchId: number) => void = () => {
@@ -74,6 +77,10 @@ export struct FilesTab {
         payloadSize: p.size,
         bytesDone: p.bytesDone,
         settled: p.settled,
+        sandboxOnly: p.sandboxOnly === true,
+        onExport: (item: PayloadTransfer): void => {
+          this.onExportPayload(item);
+        },
         onSave: (item: PayloadTransfer): void => {
           this.onSavePayload(item);
         },

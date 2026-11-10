@@ -232,7 +232,11 @@ struct Index {
           size: h.size,
           bytesDone: h.bytesDone,
           filePath: h.filePath,
-          settled: true
+          settled: true,
+          // 沿用历史里的处置结果（B2：'已保存到应用内' 的标记必须跨重启保留，否则重启后文案退回“已保存”）
+          sandboxOnly: h.sandboxOnly === true,
+          timeMs: h.timeMs,
+          errorCode: h.errorCode
         };
         return settledHist;
       });
@@ -457,6 +461,8 @@ struct Index {
     this.payloadController.resText = (resId: number): string => this.notify.resText(resId);
     this.payloadController.hostFilesDir = (): string => this.ensureKdcDir();
     this.payloadController.autoSaveEnabled = (): boolean => this.settingsController.autoSaveFiles;
+    // B2：媒体库保存需要 Context
+    this.payloadController.hostContext = (): Context | undefined => this.getUIContext().getHostContext();
     this.payloadController.pickSaveTarget = (name: string): Promise<string> => this.pickSaveTarget(name);
     this.payloadController.pickDownloadTarget = (name: string): Promise<string> => this.pickDownloadTarget(name);
     this.payloadController.requestWritePermission = (fileName: string): Promise<boolean> => this.ensureWritePermission(fileName);
@@ -1520,6 +1526,9 @@ struct Index {
       onOpenPayload: (tid: number): void => {
         this.payloadController.detailId = tid;
         this.payloadController.detailOpen = true;
+      },
+      onExportPayload: (p: PayloadTransfer): void => {
+        this.payloadController.exportPayload(p);
       }
     })
   }

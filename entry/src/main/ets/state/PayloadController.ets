@@ -23,6 +23,12 @@ import { PayloadTransfer, PayloadDirection, PayloadState, PayloadBatch, PayloadB
 import { PayloadHistory } from '../common/PayloadHistory';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { Context, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
+import { photoAccessHelper } from '@kit.MediaLibraryKit';
+
+// B1：接收条目 watchdog（started 后 30s 无进展 ⇒ 落 failed，避免「接收中」僵尸常驻）
+const RECV_WATCHDOG_MS: number = 30000;
+// B3：已丢弃 transferId 的记忆上限（防止迟到事件重建条目）
+const DISCARD_KEEP: number = 200;
 
 // 多选发送的单个任务（文件已复制进沙箱，等队列轮到它）
 export interface SendJob {
@@ -43,6 +49,10 @@ export class PayloadController {
   batches: PayloadBatch[] = [];
   private batchSeq: number = 0;
   private batchTimers: Map<number, number> = new Map();
+  // B1：接收 watchdog（tid → timer）
+  private recvWatchdogs: Map<number, number> = new Map();
+  // B3：已丢弃的 transferId —— handlePayloadTransfer/cancelPayload 见到即幂等返回，防「丢弃后复活」
+  private discardedIds: number[] = [];
   /** 已计入 doneFiles 的 transferId（防重复累加） */
   private terminalIds: number[] = [];
 
@@ -67,6 +77,8 @@ export class PayloadController {
   connectedDeviceIds: () => string[] = () => [];
   // S2 §3.5：接收完成后是否自动保存（false → 落 spool 进「待处置」，由用户保存/丢弃）
   autoSaveEnabled: () => boolean = () => true;
+  // B2：媒体库（photoAccessHelper）需要 Context
+  hostContext: () => Context | undefined = () => undefined;
 
   // ========== 状态转换（原 L1710–L1728）==========
 
@@ -234,6 +246,8 @@ export class PayloadController {
     if (hit) {
       this.clearBatchTimer(batchId);
       this.log(`batch #${batchId} settled ${state} (${why})`);
+      // B1：批结算后不得残留「接收中」僵尸行
+      this.failActiveTransfersOfBatch(batchId, why);
     }
   }
 
@@ -356,6 +370,10 @@ export class PayloadController {
   handlePayloadTransfer(event: NetEvent): void {
     const tid: number = event.payloadTransferId ?? 0;
     const size: number = event.payloadSize ?? 0;
+    // B3：已丢弃的传输一律忽略（native 在 discardPayload 后仍会派发终态事件）
+    if (tid > 0 && this.discardedIds.includes(tid)) {
+      return;
+    }
     if (tid <= 0) {
       if (size > 0) {
         console.info(`KDC payload declared but not started: size=${size} dev=${(event.deviceId ?? '').substring(0, 8)} (no entry created)`);
@@ -365,16 +383,34 @@ export class PayloadController {
     const state: PayloadState = this.toState(event.payloadState ?? 'failed');
     const idx: number = this.payloads.findIndex((p: PayloadTransfer) => p.transferId === tid);
     const settled: boolean = idx >= 0 ? this.payloads[idx].settled : false;
+    // B3：新条目文件名兜底（事件未带名 → 取本地旧条目名 → 历史名），避免 UI 出现裸 #id
+    let resolvedName: string = event.payloadFileName ?? '';
+    if (resolvedName.length === 0) {
+      if (idx >= 0) {
+        resolvedName = this.payloads[idx].fileName;
+      } else {
+        for (const h of this.history) {
+          if (h.transferId === tid && h.fileName.length > 0) {
+            resolvedName = h.fileName;
+            break;
+          }
+        }
+      }
+    }
     const item: PayloadTransfer = {
       transferId: tid,
       deviceId: event.deviceId ?? '',
       direction: this.toDirection(event.payloadDirection ?? 'receive'),
       state: state,
-      fileName: event.payloadFileName ?? (idx >= 0 ? this.payloads[idx].fileName : ''),
+      fileName: resolvedName,
       size: event.payloadSize ?? (idx >= 0 ? this.payloads[idx].size : 0),
       bytesDone: event.payloadBytesDone ?? 0,
       filePath: event.payloadFilePath ?? (idx >= 0 ? this.payloads[idx].filePath : ''),
       settled: settled,
+      // B2/B3：沿用既有条目的处置标记 —— 否则迟到的终态事件会把 sandboxOnly/timeMs 抹掉，
+      // 行会从「已保存到应用内」退回「已保存」（真机验收实测复现）
+      sandboxOnly: idx >= 0 ? this.payloads[idx].sandboxOnly === true : false,
+      timeMs: idx >= 0 ? this.payloads[idx].timeMs : undefined,
       errorCode: event.errorCode
     };
     if (idx >= 0) {
@@ -383,7 +419,16 @@ export class PayloadController {
       this.payloads = [item].concat(this.payloads);
     }
     if (state !== 'progress') {
-      this.log(`payload ${state} ${item.direction} #${tid} ${item.fileName}`);
+      console.info(`KDC diag payload ${state} ${item.direction} #${tid} ${item.fileName}`
+        + ` settled=${item.settled} sandboxOnly=${item.sandboxOnly === true}`);
+    }
+    // B1：接收 watchdog —— started/progress 期间挂表，终态摘表
+    if (item.direction === 'receive') {
+      if (state === 'started' || state === 'progress') {
+        this.armReceiveWatchdog(tid);
+      } else {
+        this.clearReceiveWatchdog(tid);
+      }
     }
     if (state === 'finished' || state === 'failed' || state === 'cancelled') {
       this.onSendPayloadSettled(tid, state, event.errorCode !== undefined ? event.errorCode : 0);
@@ -407,6 +452,145 @@ export class PayloadController {
         this.toast(`${this.resText($r('app.string.files_pending_user').id)}: ${item.fileName}`);
       }
     }
+  }
+
+  // ==================== B1 接收 watchdog / 僵尸条目 ====================
+
+  private armReceiveWatchdog(tid: number): void {
+    this.clearReceiveWatchdog(tid);
+    const t: number = setTimeout((): void => {
+      this.recvWatchdogs.delete(tid);
+      this.failActiveTransfer(tid, 1, 'no progress/terminal within 30s');
+    }, RECV_WATCHDOG_MS);
+    this.recvWatchdogs.set(tid, t);
+  }
+
+  private clearReceiveWatchdog(tid: number): void {
+    const t: number | undefined = this.recvWatchdogs.get(tid);
+    if (t !== undefined) {
+      clearTimeout(t);
+      this.recvWatchdogs.delete(tid);
+    }
+  }
+
+  /** 把仍处于 started/progress 的条目落 failed（B1 传输级/批级兜底共用） */
+  private failActiveTransfer(tid: number, code: number, why: string): void {
+    let hit: boolean = false;
+    this.payloads = this.payloads.map((p: PayloadTransfer): PayloadTransfer => {
+      if (p.transferId !== tid || (p.state !== 'started' && p.state !== 'progress')) {
+        return p;
+      }
+      hit = true;
+      const failed: PayloadTransfer = {
+        transferId: p.transferId,
+        deviceId: p.deviceId,
+        direction: p.direction,
+        state: 'failed',
+        fileName: p.fileName,
+        size: p.size,
+        bytesDone: p.bytesDone,
+        filePath: p.filePath,
+        settled: p.settled,
+        errorCode: code,
+        timeMs: Date.now()
+      };
+      return failed;
+    });
+    if (hit) {
+      this.clearReceiveWatchdog(tid);
+      this.log(`payload #${tid} -> failed (${why})`);
+    }
+  }
+
+  /** B1 批级兜底：批结算时把其中仍活动的 transferIds 一并落 failed，禁止 0/1·0%「接收中」常驻 */
+  private failActiveTransfersOfBatch(batchId: number, why: string): void {
+    const b: PayloadBatch | undefined = this.batchById(batchId);
+    if (b === undefined) {
+      return;
+    }
+    for (const tid of b.transferIds) {
+      this.failActiveTransfer(tid, 1, `batch settled (${why})`);
+    }
+  }
+
+  // ==================== B2 保存：相册 / 应用内 ====================
+
+  private isImageName(name: string): boolean {
+    const lower: string = name.toLowerCase();
+    const exts: string[] = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.heic', '.heif', '.avif'];
+    for (const e of exts) {
+      if (lower.endsWith(e)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private isVideoName(name: string): boolean {
+    const lower: string = name.toLowerCase();
+    const exts: string[] = ['.mp4', '.mov', '.mkv', '.webm', '.3gp', '.avi', '.m4v'];
+    for (const e of exts) {
+      if (lower.endsWith(e)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** 免交互写相册（B2：媒体文件唯一可免手势落到用户可见位置的路径） */
+  private async saveToAlbum(srcPath: string, name: string): Promise<boolean> {
+    const ctx: Context | undefined = this.hostContext();
+    if (ctx === undefined || srcPath.length === 0) {
+      return false;
+    }
+    const video: boolean = this.isVideoName(name);
+    if (!video && !this.isImageName(name)) {
+      return false;
+    }
+    let srcFd: fileIo.File | undefined = undefined;
+    let dstFd: fileIo.File | undefined = undefined;
+    try {
+      const helper: photoAccessHelper.PhotoAccessHelper = photoAccessHelper.getPhotoAccessHelper(ctx);
+      const dot: number = name.lastIndexOf('.');
+      const ext: string = dot >= 0 ? name.substring(dot + 1) : 'jpg';
+      const photoType: photoAccessHelper.PhotoType =
+        video ? photoAccessHelper.PhotoType.VIDEO : photoAccessHelper.PhotoType.IMAGE;
+      const uri: string = await helper.createAsset(photoType, ext);
+      srcFd = fileIo.openSync(srcPath, fileIo.OpenMode.READ_ONLY);
+      dstFd = fileIo.openSync(uri, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
+      fileIo.copyFileSync(srcFd.fd, dstFd.fd);
+      this.log(`saved to album -> ${uri}`);
+      return true;
+    } catch (e) {
+      this.log('album save failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      return false;
+    } finally {
+      if (srcFd !== undefined) {
+        try {
+          fileIo.closeSync(srcFd);
+        } catch (e2) {
+        }
+      }
+      if (dstFd !== undefined) {
+        try {
+          fileIo.closeSync(dstFd);
+        } catch (e3) {
+        }
+      }
+    }
+  }
+
+  /** B2：用户手势触发的「导出」（沙箱 → 用户选的位置） */
+  async exportPayload(p: PayloadTransfer): Promise<void> {
+    const name: string = this.sanitizeFileName(p.fileName, p.transferId);
+    const src: string = `${this.hostFilesDir()}/${name}`;
+    const exported: string = await this.exportToDownloads(p, name, src);
+    if (exported.length > 0) {
+      this.markPayloadSettled(p.transferId, false);
+      this.toast(`${this.resText($r('app.string.files_saved').id)}: ${name}`);
+      return;
+    }
+    this.toast(this.resText($r('app.string.files_save_failed').id));
   }
 
   // ========== 文件名清洗（原 L1845–L1847）==========
@@ -452,6 +636,13 @@ export class PayloadController {
     }
     this.batches = [];
     this.terminalIds = [];
+    for (const t of this.discardedIds) {
+      this.clearReceiveWatchdog(t);
+    }
+    this.recvWatchdogs.forEach((v: number, k: number): void => {
+      clearTimeout(v);
+    });
+    this.recvWatchdogs.clear();
     this.clearPersistedHistory();
     this.log('received file history cleared');
     this.toast(this.resText($r('app.string.toast_history_cleared').id));
@@ -481,7 +672,13 @@ export class PayloadController {
       if (send) {
         return this.resText($r('app.string.files_sent').id);
       }
-      return this.resText(p.settled ? $r('app.string.files_saved').id : $r('app.string.files_finished').id);
+      if (!p.settled) {
+        return this.resText($r('app.string.files_finished').id);
+      }
+      // B2：仅落沙箱 → 「已保存到应用内」（不同于真正导出到用户可见位置的「已保存」）
+      return this.resText(p.sandboxOnly === true
+        ? $r('app.string.files_saved_in_app').id
+        : $r('app.string.files_saved').id);
     }
     if (p.state === 'cancelled') {
       // code 6 = 用户主动取消（契约 §5）
@@ -496,8 +693,13 @@ export class PayloadController {
 
   // ========== 标记已处置（原 L1925–L1940）==========
 
-  markPayloadSettled(transferId: number): void {
-    this.payloads = this.payloads.map((p: PayloadTransfer) => {
+  markPayloadSettled(transferId: number, sandboxOnly: boolean = false): void {
+    console.info(`KDC diag settle #${transferId} sandboxOnly=${sandboxOnly}`);
+    // B2：保留 timeMs / errorCode（此前重建对象时被丢弃）
+    this.payloads = this.payloads.map((p: PayloadTransfer): PayloadTransfer => {
+      if (p.transferId !== transferId) {
+        return p;
+      }
       const next: PayloadTransfer = {
         transferId: p.transferId,
         deviceId: p.deviceId,
@@ -507,10 +709,38 @@ export class PayloadController {
         size: p.size,
         bytesDone: p.bytesDone,
         filePath: p.filePath,
-        settled: true
+        settled: true,
+        sandboxOnly: sandboxOnly,
+        timeMs: p.timeMs,
+        errorCode: p.errorCode
       };
-      return p.transferId === transferId ? next : p;
+      return next;
     });
+    let touched: boolean = false;
+    this.history = this.history.map((h: PayloadTransfer): PayloadTransfer => {
+      if (h.transferId !== transferId) {
+        return h;
+      }
+      touched = true;
+      const next: PayloadTransfer = {
+        transferId: h.transferId,
+        deviceId: h.deviceId,
+        direction: h.direction,
+        state: h.state,
+        fileName: h.fileName,
+        size: h.size,
+        bytesDone: h.bytesDone,
+        filePath: h.filePath,
+        settled: true,
+        sandboxOnly: sandboxOnly,
+        timeMs: h.timeMs,
+        errorCode: h.errorCode
+      };
+      return next;
+    });
+    if (touched) {
+      this.persistHistory(this.history);
+    }
   }
 
   // ========== 详情弹窗辅助（原 L1945–L1976）==========
@@ -618,19 +848,24 @@ export class PayloadController {
     } catch (e) {
       this.log('keepPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
     }
-    const exported: string = await this.exportToDownloads(p, name, dest);
-    if (exported.length > 0) {
-      this.log(`exported to public dir -> ${exported}`);
-      this.markPayloadSettled(p.transferId);
-      this.toast(`${this.resText($r('app.string.files_auto_saved').id)}: ${name}`);
+    if (!sandboxOk) {
+      this.toast(this.resText($r('app.string.files_save_failed').id));
       return;
     }
-    if (sandboxOk) {
-      this.markPayloadSettled(p.transferId);
-      this.toast(`${this.resText($r('app.string.files_auto_saved').id)}: ${name}`);
-      return;
+    // ① 图片/视频：免交互入相册（用户可见）——成功才是真「已保存」
+    if (this.isImageName(name) || this.isVideoName(name)) {
+      const inAlbum: boolean = await this.saveToAlbum(dest, name);
+      if (inAlbum) {
+        this.markPayloadSettled(p.transferId, false);
+        this.toast(`${this.resText($r('app.string.files_saved').id)}: ${name}`);
+        return;
+      }
+      this.log('album path unavailable -> fall back to in-app');
     }
-    this.toast(this.resText($r('app.string.files_save_failed').id));
+    // ② 其它文件：只落应用沙箱（普通应用无免交互公共目录 API）⇒ 【不得谎报「已保存」】
+    //    文案「已保存到应用内」+ 行内「导出」入口（用户手势走 picker）
+    this.markPayloadSettled(p.transferId, true);
+    this.toast(`${this.resText($r('app.string.files_saved_in_app').id)}: ${name}`);
   }
 
   // ========== 导出到公共下载目录（原 L2094–L2155）==========
@@ -641,6 +876,10 @@ export class PayloadController {
       src = p.filePath;
     }
     if (src.length === 0) {
+      return '';
+    }
+    if (!fileIo.accessSync(src)) {
+      this.log(`export skipped: source missing (already discarded?) -> ${src}`);
       return '';
     }
     let destUri: string = '';
@@ -707,21 +946,39 @@ export class PayloadController {
 
   discardPayload(p: PayloadTransfer): void {
     console.info(`KDC discard start #${p.transferId} name=${p.fileName} before=${this.payloads.length}/${this.history.length}`);
+    // B3：先记入 discardedIds —— 之后 native 派发的迟到终态事件会被 handlePayloadTransfer 幂等忽略
+    if (!this.discardedIds.includes(p.transferId)) {
+      this.discardedIds.push(p.transferId);
+      if (this.discardedIds.length > DISCARD_KEEP) {
+        this.discardedIds = this.discardedIds.slice(this.discardedIds.length - DISCARD_KEEP);
+      }
+    }
+    this.clearReceiveWatchdog(p.transferId);
+    // 2026-11-09 用户实测：对「已 keep / 已终态」的条目 native.discardPayload() 返回 false（spool 已不在 native），
+    // 旧实现把这当成失败并打 'discardPayload failed' —— 那是**无可丢弃**，不是错误。这里分开表达。
     try {
       const ok: boolean = native.discardPayload(p.transferId);
-      this.log(ok ? `discarded #${p.transferId}` : 'discardPayload failed');
+      this.log(ok ? `discarded #${p.transferId}`
+        : `discard: native had nothing to drop (#${p.transferId}, already kept/terminal)`);
     } catch (e) {
       this.log('discardPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
     }
     const name: string = this.sanitizeFileName(p.fileName, p.transferId);
     const sandboxCopy: string = `${this.hostFilesDir()}/${name}`;
-    try {
-      if (fileIo.accessSync(sandboxCopy)) {
-        fileIo.unlinkSync(sandboxCopy);
-        this.log(`unlink sandbox copy -> ${sandboxCopy}`);
+    // 删本地副本：沙箱副本 + （未 keep 时）native spool 路径，两处都试，避免残留占盘
+    const candidates: string[] = [sandboxCopy];
+    if (p.filePath.length > 0) {
+      candidates.push(p.filePath);
+    }
+    for (const path of candidates) {
+      try {
+        if (fileIo.accessSync(path)) {
+          fileIo.unlinkSync(path);
+          this.log(`unlink -> ${path}`);
+        }
+      } catch (e2) {
+        this.log('unlink failed: ' + (e2 instanceof Error ? e2.message : 'unknown'));
       }
-    } catch (e2) {
-      this.log('unlink sandbox copy failed: ' + (e2 instanceof Error ? e2.message : 'unknown'));
     }
     this.payloads = this.payloads.filter((x: PayloadTransfer) => x.transferId !== p.transferId);
     this.history = this.history.filter((h: PayloadTransfer) => h.transferId !== p.transferId);
@@ -730,6 +987,10 @@ export class PayloadController {
   }
 
   cancelPayload(p: PayloadTransfer): void {
+    if (this.discardedIds.includes(p.transferId)) {
+      this.log(`cancel skipped: #${p.transferId} already discarded`);
+      return;
+    }
     try {
       native.cancelPayload(p.transferId);
       this.log(`payload cancel requested #${p.transferId}`);

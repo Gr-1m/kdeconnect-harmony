@@ -15,6 +15,8 @@ export struct PayloadRow {
   @Prop payloadSize: number = 0;
   @Prop bytesDone: number = 0;
   @Prop settled: boolean = false;
+  // B2：只落在应用沙箱（非媒体文件）⇒ 文案「已保存到应用内」+ 显示「导出」
+  @Prop sandboxOnly: boolean = false;
   onSave: (p: PayloadTransfer) => void = () => {
   };
   onDiscard: (p: PayloadTransfer) => void = () => {
@@ -23,6 +25,9 @@ export struct PayloadRow {
   };
   // 点击行 → 打开「文件详情」弹窗（属性 + 另存为/丢弃/取消），由 Index 渲染
   onOpen: (transferId: number) => void = () => {
+  };
+  // B2：用户手势导出（沙箱 → 用户选的位置）
+  onExport: (p: PayloadTransfer) => void = () => {
   };
 
   private isActive(): boolean {
@@ -52,7 +57,8 @@ export struct PayloadRow {
       size: this.payloadSize,
       bytesDone: this.bytesDone,
       filePath: '',
-      settled: this.settled
+      settled: this.settled,
+      sandboxOnly: this.sandboxOnly
     };
     return item;
   }
@@ -71,7 +77,9 @@ export struct PayloadRow {
             .fontSize(10)
             .fontColor($r('app.color.accent_text'))
         } else if (this.payloadState === 'finished') {
-          Text(this.settled ? $r('app.string.files_saved') : $r('app.string.files_finished'))
+          Text(this.settled
+            ? (this.sandboxOnly ? $r('app.string.files_saved_in_app') : $r('app.string.files_saved'))
+            : $r('app.string.files_finished'))
             .fontSize(10)
             .fontColor(this.settled ? $r('app.color.dot_connected') : $r('app.color.accent_text'))
         } else if (this.payloadState === 'cancelled') {
@@ -96,6 +104,22 @@ export struct PayloadRow {
           .fontColor($r('app.color.text_muted'))
           .fontFamily('monospace')
           .width('100%')
+      }
+
+      if (this.settled && this.sandboxOnly && this.payloadDirection === 'receive') {
+        Row({ space: 8 }) {
+          Button($r('app.string.files_action_export'))
+            .fontSize(12)
+            .height(32)
+            .backgroundColor($r('app.color.chip_bg'))
+            .fontColor($r('app.color.accent_text'))
+            .borderRadius(8)
+            .onClick(() => {
+              this.onExport(this.snapshot());
+            })
+        }
+        .width('100%')
+        .hitTestBehavior(HitTestMode.Block)
       }
 
       if (this.isActive() || this.isPendingSave()) {
