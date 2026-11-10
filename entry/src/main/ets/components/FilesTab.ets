@@ -4,6 +4,7 @@ import uiMaterial from '@ohos.arkui.uiMaterial';
 import { GlassCard } from './GlassCard';
 import { PayloadRow } from './PayloadRow';
 import { PayloadTransfer, PayloadBatch } from '../model/PayloadModels';
+import { PayloadController } from '../state/PayloadController';
 
 // 文件 Tab：payload 收发（发送入口 + 进度/处置）。
 // 行渲染走子组件 PayloadRow（@Prop 驱动刷新），避免 @Builder 值参数/稳定 key 导致的"进度不刷新"。
@@ -11,7 +12,9 @@ import { PayloadTransfer, PayloadBatch } from '../model/PayloadModels';
 export struct FilesTab {
   @Prop connectedCount: number = 0;
   @Prop immersive: boolean = false;
-  @Prop payloads: PayloadTransfer[] = [];
+  // 【MSG217 §2.3】直读 @Observed 控制器（@ObjectLink）：payloads/batches/history 的状态变更
+  // 必然驱动本组件刷新（此前用 @Prop 数组快照，实测 finished 后长时间停在 0/1·0%「接收中」）
+  @ObjectLink controller: PayloadController;
   cardMaterial: uiMaterial.Material | undefined = undefined;
   onSavePayload: (p: PayloadTransfer) => void = () => {
   };
@@ -31,12 +34,20 @@ export struct FilesTab {
   onExportPayload: (p: PayloadTransfer) => void = () => {
   };
   // S2 接收批次（契约 v0.2 §3）：按批折叠显示；批次内的行不再出现在下面按状态分的三组里
-  @Prop batches: PayloadBatch[] = [];
-  onToggleBatch: (batchId: number) => void = () => {
-  };
-  batchSummaryOf: (b: PayloadBatch) => string = (_b: PayloadBatch) => '';
-  batchStateOf: (b: PayloadBatch) => string = (_b: PayloadBatch) => '';
-  batchItemsOf: (b: PayloadBatch) => PayloadTransfer[] = (_b: PayloadBatch) => [];
+  // 数据源一律走 controller（见上），本组件不再持有快照副本。
+
+  private payloads(): PayloadTransfer[] {
+    return this.controller.payloads;
+  }
+
+  /** 「历史记录」分区数据源：只读持久化历史（运行时条目由上面三组/批次呈现） */
+  private historyItems(): PayloadTransfer[] {
+    return this.controller.history;
+  }
+
+  private batchItems(b: PayloadBatch): PayloadTransfer[] {
+    return this.controller.payloads.filter((p: PayloadTransfer) => b.transferIds.includes(p.transferId));
+  }
 
   private isActive(p: PayloadTransfer): boolean {
     return p.state === 'started' || p.state === 'progress';
@@ -47,7 +58,7 @@ export struct FilesTab {
   }
 
   private inBatch(p: PayloadTransfer): boolean {
-    for (const b of this.batches) {
+    for (const b of this.controller.batches) {
       if (b.transferIds.includes(p.transferId)) {
         return true;
       }
@@ -58,7 +69,7 @@ export struct FilesTab {
   /** 只显示有内容的接收批次（按 batchId 倒序 = 最新在前） */
   private visibleBatches(): PayloadBatch[] {
     const out: PayloadBatch[] = [];
-    for (const b of this.batches) {
+    for (const b of this.controller.batches) {
       if (b.direction === 'receive' && b.transferIds.length > 0) {
         out.push(b);
       }
@@ -159,14 +170,14 @@ export struct FilesTab {
                         .fontSize(14)
                         .fontColor([$r('app.color.text_secondary')])
                     }
-                    Text(this.batchSummaryOf(b))
+                    Text(this.controller.batchSummary(b))
                       .fontSize(12)
                       .fontColor($r('app.color.text_primary'))
                       .layoutWeight(1)
                       .maxLines(1)
                       .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    if (this.batchStateOf(b).length > 0) {
-                      Text(this.batchStateOf(b))
+                    if (this.controller.batchStateText(b).length > 0) {
+                      Text(this.controller.batchStateText(b))
                         .fontSize(10)
                         .fontColor($r('app.color.text_muted'))
                         .padding({ left: 6, right: 6, top: 1, bottom: 1 })
@@ -177,11 +188,11 @@ export struct FilesTab {
                   .width('100%')
                   .height(34)
                   .onClick(() => {
-                    this.onToggleBatch(b.batchId);
+                    this.controller.toggleBatch(b.batchId);
                   })
 
                   if (!b.collapsed) {
-                    this.payloadList(`batch_${b.batchId}`, this.batchItemsOf(b))
+                    this.payloadList(`batch_${b.batchId}`, this.batchItems(b))
                   }
                 }
                 .width('100%')
@@ -194,14 +205,14 @@ export struct FilesTab {
         }
 
         // 传输中
-        if (this.payloads.some((p: PayloadTransfer) => this.isActive(p) && !this.inBatch(p))) {
+        if (this.payloads().some((p: PayloadTransfer) => this.isActive(p) && !this.inBatch(p))) {
           GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
             Column({ space: 6 }) {
               Text($r('app.string.files_active'))
                 .fontSize(13)
                 .fontWeight(FontWeight.Medium)
                 .fontColor($r('app.color.text_primary'))
-              this.payloadList('active', this.payloads.filter((p: PayloadTransfer) => this.isActive(p) && !this.inBatch(p)))
+              this.payloadList('active', this.payloads().filter((p: PayloadTransfer) => this.isActive(p) && !this.inBatch(p)))
             }
             .width('100%')
             .alignItems(HorizontalAlign.Start)
@@ -209,22 +220,22 @@ export struct FilesTab {
         }
 
         // 待处置（接收完成，等 保存/丢弃）
-        if (this.payloads.some((p: PayloadTransfer) => this.isPendingSave(p) && !this.inBatch(p))) {
+        if (this.payloads().some((p: PayloadTransfer) => this.isPendingSave(p) && !this.inBatch(p))) {
           GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
             Column({ space: 6 }) {
               Text($r('app.string.files_received'))
                 .fontSize(13)
                 .fontWeight(FontWeight.Medium)
                 .fontColor($r('app.color.text_primary'))
-              this.payloadList('pending', this.payloads.filter((p: PayloadTransfer) => this.isPendingSave(p) && !this.inBatch(p)))
+              this.payloadList('pending', this.payloads().filter((p: PayloadTransfer) => this.isPendingSave(p) && !this.inBatch(p)))
             }
             .width('100%')
             .alignItems(HorizontalAlign.Start)
           }
         }
 
-        // 已处置/其它
-        if (this.payloads.some((p: PayloadTransfer) => !this.isActive(p) && !this.isPendingSave(p) && !this.inBatch(p))) {
+        // 历史记录（持久化条目；运行时条目由上面「接收批次 / 传输中 / 待处置」呈现）
+        if (this.historyItems().filter((p: PayloadTransfer) => !this.inBatch(p)).length > 0) {
           GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
             Column({ space: 6 }) {
               Text($r('app.string.files_history'))
@@ -232,8 +243,7 @@ export struct FilesTab {
                 .fontWeight(FontWeight.Medium)
                 .fontColor($r('app.color.text_primary'))
               this.payloadList('done',
-                this.payloads.filter((p: PayloadTransfer) =>
-                  !this.isActive(p) && !this.isPendingSave(p) && !this.inBatch(p)))
+                this.historyItems().filter((p: PayloadTransfer) => !this.inBatch(p)))
             }
             .width('100%')
             .alignItems(HorizontalAlign.Start)
@@ -241,7 +251,7 @@ export struct FilesTab {
         }
 
         // 空态说明
-        if (this.payloads.length === 0) {
+        if (this.payloads().length === 0 && this.historyItems().length === 0) {
           GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
             Column({ space: 8 }) {
               Text($r('app.string.tab_files'))

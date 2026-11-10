@@ -382,41 +382,37 @@ export class PayloadController {
     }
     const state: PayloadState = this.toState(event.payloadState ?? 'failed');
     const idx: number = this.payloads.findIndex((p: PayloadTransfer) => p.transferId === tid);
-    const settled: boolean = idx >= 0 ? this.payloads[idx].settled : false;
-    // B3：新条目文件名兜底（事件未带名 → 取本地旧条目名 → 历史名），避免 UI 出现裸 #id
+    const prev: PayloadTransfer | undefined = idx >= 0 ? this.payloads[idx] : undefined;
+    // 【MSG217 现象 A 的根因防御】native 的 payloadTransferId 在应用重启后会从头计数，而本进程
+    // `payloads` 里可能残留同 tid 的旧条目（旧实现还会把 history 播种进来）。
+    // 「started」语义上必然是**新传输** ⇒ 一律清空处置标记，绝不继承旧条目/历史的 settled/sandboxOnly。
+    const isNewTransfer: boolean = prev === undefined || state === 'started';
+    // B3：沿用旧条目名做兜底（仅非新传输；新传输用事件名，避免拿到撞号旧名）
     let resolvedName: string = event.payloadFileName ?? '';
-    if (resolvedName.length === 0) {
-      if (idx >= 0) {
-        resolvedName = this.payloads[idx].fileName;
-      } else {
-        for (const h of this.history) {
-          if (h.transferId === tid && h.fileName.length > 0) {
-            resolvedName = h.fileName;
-            break;
-          }
-        }
-      }
+    if (resolvedName.length === 0 && !isNewTransfer && prev !== undefined) {
+      resolvedName = prev.fileName;
     }
     const item: PayloadTransfer = {
       transferId: tid,
-      deviceId: event.deviceId ?? '',
-      direction: this.toDirection(event.payloadDirection ?? 'receive'),
+      deviceId: event.deviceId ?? (prev !== undefined && !isNewTransfer ? prev.deviceId : ''),
+      direction: this.toDirection(event.payloadDirection
+        ?? (prev !== undefined && !isNewTransfer ? prev.direction : 'receive')),
       state: state,
       fileName: resolvedName,
-      size: event.payloadSize ?? (idx >= 0 ? this.payloads[idx].size : 0),
+      size: event.payloadSize ?? (prev !== undefined && !isNewTransfer ? prev.size : 0),
       bytesDone: event.payloadBytesDone ?? 0,
-      filePath: event.payloadFilePath ?? (idx >= 0 ? this.payloads[idx].filePath : ''),
-      settled: settled,
-      // B2/B3：沿用既有条目的处置标记 —— 否则迟到的终态事件会把 sandboxOnly/timeMs 抹掉，
-      // 行会从「已保存到应用内」退回「已保存」（真机验收实测复现）
-      sandboxOnly: idx >= 0 ? this.payloads[idx].sandboxOnly === true : false,
-      timeMs: idx >= 0 ? this.payloads[idx].timeMs : undefined,
+      filePath: event.payloadFilePath ?? (prev !== undefined && !isNewTransfer ? prev.filePath : ''),
+      settled: isNewTransfer ? false : (prev !== undefined ? prev.settled : false),
+      // 非新传输沿用处置标记（迟到的终态事件不得把 sandboxOnly/timeMs 抹掉）
+      sandboxOnly: isNewTransfer ? false : (prev !== undefined ? prev.sandboxOnly === true : false),
+      timeMs: isNewTransfer ? undefined : (prev !== undefined ? prev.timeMs : undefined),
       errorCode: event.errorCode
     };
-    if (idx >= 0) {
-      this.payloads = this.payloads.map((p: PayloadTransfer) => p.transferId === tid ? item : p);
+    if (isNewTransfer) {
+      // 同 tid 的旧条目（上一会话残留）被本条顶替，避免 UI 里新旧混在同一条
+      this.payloads = [item].concat(this.payloads.filter((p: PayloadTransfer) => p.transferId !== tid));
     } else {
-      this.payloads = [item].concat(this.payloads);
+      this.payloads = this.payloads.map((p: PayloadTransfer) => p.transferId === tid ? item : p);
     }
     if (state !== 'progress') {
       console.info(`KDC diag payload ${state} ${item.direction} #${tid} ${item.fileName}`
@@ -803,7 +799,9 @@ export class PayloadController {
       dstFd = fileIo.openSync(destUri, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
       fileIo.copyFileSync(srcFd.fd, dstFd.fd);
       this.log(`save as -> ${destUri}`);
-      this.toast(`${this.resText($r('app.string.files_auto_saved').id)}: ${name}`);
+      // F1（MSG216）：手动「另存为」成功后必须标记 settled，否则条目一直留在「待处置」且行显示「已完成」
+      this.markPayloadSettled(p.transferId, false);
+      this.toast(`${this.resText($r('app.string.files_saved').id)}: ${name}`);
       this.detailOpen = false;
     } catch (e) {
       this.log('save as: copy failed: ' + (e instanceof Error ? e.message : 'unknown'));

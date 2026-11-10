@@ -218,28 +218,9 @@ struct Index {
       deviceId = String(await pref.get('deviceId', ''));
       // 已接收文件历史：跨重启保留（与应用设置同一个 Preferences 库）
       this.payloadController.history = await PayloadHistory.load(ctx);
-      // 回灌到 payloads：文件页的「历史记录」分区直接读 payloads，不回灌则重启后历史为空
-      // （2026-09-17 用户实测「历史文件只有一条」——发送记录既没入库也没回灌）。
-      // 注意：历史条目一律置 settled=true —— 它们是**已结束**的旧记录，spool 早被清理，
-      // 否则会被归到「收到的文件（待处置）」并诱使用户点「保存」而必然失败。
-      this.payloadController.payloads = this.payloadController.history.map((h: PayloadTransfer): PayloadTransfer => {
-        const settledHist: PayloadTransfer = {
-          transferId: h.transferId,
-          deviceId: h.deviceId,
-          direction: h.direction,
-          state: h.state,
-          fileName: h.fileName,
-          size: h.size,
-          bytesDone: h.bytesDone,
-          filePath: h.filePath,
-          settled: true,
-          // 沿用历史里的处置结果（B2：'已保存到应用内' 的标记必须跨重启保留，否则重启后文案退回“已保存”）
-          sandboxOnly: h.sandboxOnly === true,
-          timeMs: h.timeMs,
-          errorCode: h.errorCode
-        };
-        return settledHist;
-      });
+      // 【MSG217 现象 A】**不再**把 history 播种进 payloads：native 的 payloadTransferId 重启后从头计数，
+      // 播种会让新传输（tid=1/2…）撞上旧历史条目并继承其 settled=true ⇒ 自动保存被整段跳过。
+      // 历史只由「历史记录」分区直接读 controller.history（见 FilesTab）。
       certPem = String(await pref.get('certPem', ''));
       keyPem = String(await pref.get('keyPem', ''));
       // 设备名称：用户改过就用用户的；没改过 → 读**系统设备名称**（设置→关于本机→设备名称，回退市场名/型号）
@@ -1499,15 +1480,9 @@ struct Index {
     FilesTab({
       connectedCount: this.deviceController.connectedDevices.length,
       immersive: this.immersiveSupported,
-      payloads: this.payloadController.payloads,
-      batches: this.payloadController.batches,
-      onToggleBatch: (batchId: number): void => {
-        this.payloadController.toggleBatch(batchId);
-      },
-      batchSummaryOf: (b: PayloadBatch): string => this.payloadController.batchSummary(b),
-      batchStateOf: (b: PayloadBatch): string => this.payloadController.batchStateText(b),
-      batchItemsOf: (b: PayloadBatch): PayloadTransfer[] =>
-        this.payloadController.payloads.filter((p: PayloadTransfer) => b.transferIds.includes(p.transferId)),
+      // 【MSG217 §2.3】payloads/batches 直读 @Observed 控制器（@ObjectLink）⇒ 状态变更必然驱动刷新，
+      // 不再依赖 @Prop 数组快照（实测会出现 finished 后长时间停留在 0/1·0%「接收中」）
+      controller: this.payloadController,
       onSavePayload: (p: PayloadTransfer): void => {
         this.payloadController.savePayload(p);
       },
