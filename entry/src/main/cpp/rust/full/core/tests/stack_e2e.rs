@@ -172,16 +172,19 @@ fn two_stacks_connect_pair_and_transfer_payload() {
         src,
     );
     assert_ne!(id, 0, "sendPayload should return transfer id");
+    // 接收侧的 transferId 是**本端局部**编号（不进协议包、不要求对端一致，MSG218 §1.2）
+    // ⇒ 必须使用接收事件回填的 id（此前测试用发送侧 id 只是因为「两栈各自从 1 起」的巧合相等）。
     let finished = events
         .wait(Duration::from_secs(20), |e| {
             e.event_type == EventType::PayloadTransfer
                 && e.payload_state == "finished"
                 && !e.payload_direction_send
-                && e.payload_transfer_id == id
         })
         .expect("B should finish receiving payload");
     assert_eq!(finished.payload_bytes_done, data.len() as i64);
-    assert!(b.keep_payload(id as u64, dest), "keepPayload should succeed");
+    let recv_id = finished.payload_transfer_id;
+    assert_ne!(recv_id, 0, "接收侧 transferId 不得为 0");
+    assert!(b.keep_payload(recv_id, dest), "keepPayload should succeed");
     let saved = std::fs::read(dest).unwrap();
     assert_eq!(saved, data, "payload bytes must match");
     eprintln!("payload e2e took {:?}", start.elapsed());

@@ -217,6 +217,12 @@ cargo build --release --manifest-path entry/src/main/cpp/rust/full/napi/Cargo.to
   （码表 + `Disposition` 穷举分级 + `is_throw`，单测锁定）；`connection.rs`/`state.rs`/`stack.rs`/
   `napi` 的 `error` 事件全部改用该编号（证书→201、协议/限速/未配对→202、超长→203、身份非法→204、
   连接/探测失败→301、tx 队列满→403、未启动→102）；E2E 负路径断言改 `CERT_MISMATCH(201)`。
+- **帧切分游标（O(n²)→O(n)）**：新增 `kdc_core::packet::scan_frame_from` /
+  `kdc_native::packet::extract_frame_from`（旧签名不变），`read_loop` 每轮只扫新增字节；
+  单条 32 MiB 无换行帧的 CPU 从 ~100 s 降到秒级（D2 用例 99.65 s → 3.81 s）。
+- **`payloadTransferId` 跨重启单调**：`state.rs` 用 `<spool>/.transfer_seq` 持久化「下一个可用 id」，
+  构造时抬高进程内全局分配器、分配时逐次落盘；语义不变（本端局部编号，不进协议包）——
+  修复 ArkTS 持久化 history 与重启后新传输**撞号**（MSG217 缺陷 A / MSG218）。
 
 未采纳（属后置重构，见 `devdocs/PLAN_OH_KDECONNECT_MIGRATION.md`）：5 crate 拆分、
 `kcbridge.d.ts` v1 契约（kind/错误码/contractVersion）、EngineActor+tokio、引擎内配对状态机、

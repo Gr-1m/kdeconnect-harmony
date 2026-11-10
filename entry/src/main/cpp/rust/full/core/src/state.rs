@@ -8,18 +8,68 @@
 //! - 事件出口 [`Shared::emit_event`] 是唯一派发点（NAPI 层保证线程安全）。
 
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::connection::{ConnHandle, ConnState};
 use crate::events;
+use crate::limits::PAYLOAD_SPOOL_DIR_DEFAULT;
 use crate::payload::{self, PayloadJob};
 use crate::types::{
     ConnectionState, EventType, NetConfig, NetEvent, TlsRole, MAX_TX_QUEUE_BYTES,
     DISCOVERY_DEDUP_EVENT_MS,
 };
 use crate::tls::TlsContext;
+
+/// transferId 序列号落盘文件名（放在 spool 目录内，与 payload 历史无关）。
+///
+/// 目的：`payloadTransferId` 只用于本端 transfer 关联（事件回填、keep/discard/cancel 定位），
+/// **不进协议包**；但 ArkTS 侧会把它持久化进 payload history，若每次重启都从 1 开始计数，
+/// 新传输就会与历史条目**同号**并继承其 `settled=true`（MSG217 缺陷 A）。
+/// 故序列号跨进程重启必须单调（MSG218）。
+const TRANSFER_SEQ_FILE: &str = ".transfer_seq";
+
+/// 进程内 transferId 分配器（**唯一分配点**）：同进程内多个 `Shared`（共享甚至复用同一 spool 目录）
+/// 因此也不会重号；构造时按持久化文件抬高下界，分配时逐次落盘 ⇒ **跨重启单调**。
+static NEXT_TRANSFER_ID: AtomicU64 = AtomicU64::new(1);
+
+fn transfer_seq_path(spool_dir: &str) -> PathBuf {
+    let dir = if spool_dir.is_empty() {
+        PAYLOAD_SPOOL_DIR_DEFAULT
+    } else {
+        spool_dir
+    };
+    PathBuf::from(dir).join(TRANSFER_SEQ_FILE)
+}
+
+/// 读取文件里的「下一个可用 transferId」（缺失/损坏 ⇒ 1）。
+fn read_persisted_next(spool_dir: &str) -> u64 {
+    fs::read_to_string(transfer_seq_path(spool_dir))
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok())
+        .unwrap_or(1)
+        .max(1)
+}
+
+/// 启动时把进程内分配器抬高到「文件里的下一个可用值」（只抬高、不回退）。
+fn seed_transfer_id(spool_dir: &str) {
+    NEXT_TRANSFER_ID.fetch_max(read_persisted_next(spool_dir), Ordering::Relaxed);
+}
+
+/// 落盘「下一个可用 transferId」（分配后立即写：崩溃/杀进程后也不会复用已发出的 id）。
+/// 写入失败仅降级为「进程内单调」（不致命，记一条日志）。
+fn save_next_job_id(spool_dir: &str, next: u64) {
+    let path = transfer_seq_path(spool_dir);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Err(e) = fs::write(&path, next.to_string()) {
+        crate::logw!("transfer seq persist failed ({}): {e}", path.display());
+    }
+}
 
 pub struct Shared {
     pub config: NetConfig,
@@ -40,13 +90,14 @@ pub struct Shared {
     pub port_cache: Mutex<HashMap<String, u16>>,
     pub jobs: Mutex<HashMap<u64, Arc<PayloadJob>>>,
     pub next_conn_id: AtomicU64,
-    pub next_job_id: AtomicU64,
     pub shutdown: AtomicBool,
     pub force_broadcast: AtomicBool,
 }
 
 impl Shared {
     pub fn new(config: NetConfig, tls: TlsContext, bound_tcp_port: u16) -> Arc<Self> {
+        // 先按持久化文件抬高 transferId 分配器（需借 config.spool_dir，必须在 config 被移动前）。
+        seed_transfer_id(&config.spool_dir);
         Arc::new(Self {
             config,
             tls,
@@ -67,7 +118,6 @@ impl Shared {
             port_cache: Mutex::new(HashMap::new()),
             jobs: Mutex::new(HashMap::new()),
             next_conn_id: AtomicU64::new(1),
-            next_job_id: AtomicU64::new(1),
             shutdown: AtomicBool::new(false),
             force_broadcast: AtomicBool::new(false),
         })
@@ -77,8 +127,12 @@ impl Shared {
         self.next_conn_id.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// 分配 transferId：进程内全局自增（同进程多实例不重号），并落盘「下一个可用值」
+    /// ⇒ 跨进程重启单调（MSG218）。
     pub fn alloc_job_id(&self) -> u64 {
-        self.next_job_id.fetch_add(1, Ordering::Relaxed)
+        let id = NEXT_TRANSFER_ID.fetch_add(1, Ordering::Relaxed);
+        save_next_job_id(&self.config.spool_dir, id + 1);
+        id
     }
 
     /// 当前对外 identity（UDP 广播与 TLS 两条路径共用 caps 单一来源）。
@@ -468,5 +522,92 @@ pub fn role_for(is_incoming: bool) -> TlsRole {
         TlsRole::Client
     } else {
         TlsRole::Server
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cert_gen;
+    use crate::tls;
+
+    const DEVICE_ID: &str = "0123456789abcdef0123456789abcdef";
+
+    fn ctx() -> TlsContext {
+        let pair = cert_gen::generate_self_signed_ec(DEVICE_ID, 10).expect("cert");
+        tls::build_context(&pair.cert_pem, &pair.key_pem).expect("tls ctx")
+    }
+
+    fn config_with_spool(spool: &str) -> NetConfig {
+        NetConfig {
+            device_id: DEVICE_ID.to_owned(),
+            device_name: "seq-test".to_owned(),
+            device_type: "phone".to_owned(),
+            spool_dir: spool.to_owned(),
+            ..Default::default()
+        }
+    }
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("kdc-seq-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn transfer_seq_file_roundtrip_and_corrupt_fallback() {
+        let dir = tmp_dir("roundtrip");
+        let spool = dir.to_string_lossy().to_string();
+        assert_eq!(read_persisted_next(&spool), 1, "文件缺失应回退到 1");
+        save_next_job_id(&spool, 7);
+        assert_eq!(read_persisted_next(&spool), 7);
+        assert_eq!(read_persisted_next(&spool), 7, "重复读取必须一致");
+        // 损坏内容 ⇒ 安全回退（不 panic、不产生 0）
+        fs::write(transfer_seq_path(&spool), "garbage").unwrap();
+        assert_eq!(read_persisted_next(&spool), 1);
+        fs::write(transfer_seq_path(&spool), "0").unwrap();
+        assert_eq!(read_persisted_next(&spool), 1, "0 不是合法 transferId");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn job_ids_stay_monotonic_across_restarts() {
+        let dir = tmp_dir("restart");
+        let spool = dir.to_string_lossy().to_string();
+        let cfg = config_with_spool(&spool);
+
+        // 第一「次进程」：分配两个 id
+        let first = Shared::new(cfg.clone(), ctx(), 0);
+        let a1 = first.alloc_job_id();
+        let a2 = first.alloc_job_id();
+        assert!(a1 < a2);
+        drop(first);
+
+        // 把进程内分配器清零 ⇒ 只能靠持久化文件续号（否则本用例会假通过）
+        NEXT_TRANSFER_ID.store(1, Ordering::Relaxed);
+
+        // 第二「次进程」：新 id 必须大于上一会话最大值
+        let second = Shared::new(cfg, ctx(), 0);
+        let b1 = second.alloc_job_id();
+        assert!(
+            b1 > a2,
+            "重启后 transferId 必须 > 上次最大值（{b1} vs {a2}）"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn job_ids_never_repeat_in_process_even_sharing_spool() {
+        let dir = tmp_dir("shared");
+        let spool = dir.to_string_lossy().to_string();
+        let a = Shared::new(config_with_spool(&spool), ctx(), 0);
+        let b = Shared::new(config_with_spool(&spool), ctx(), 0);
+        let a1 = a.alloc_job_id();
+        let b1 = b.alloc_job_id();
+        let a2 = a.alloc_job_id();
+        assert_ne!(a1, b1, "同进程共享 spool 目录的两个 Shared 不得重号");
+        assert_ne!(b1, a2);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
