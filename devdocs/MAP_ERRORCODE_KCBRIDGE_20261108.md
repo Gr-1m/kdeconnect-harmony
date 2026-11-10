@@ -1,5 +1,10 @@
 # P0 交付：现有 errorCode → 契约 v0.2 / kcbridge 映射表（Omp-Native，2026-11-08）
 
+> **码空间边界裁决（2026-11-10，AtomCode）**：`contract/errors.v1.json`（kcbridge 101–503）与 payload 0–7
+> 是**两套独立码空间**，边界以本文档（§0）标注为准；**暂不修改 `errors.v1.json`**（避免契约抖动）。
+> 若将来需要机读（工具/测试消费），再走一次 CCR（只增不减的顶层键，如
+> `"codeSpaces": {"control":"101-503","payload":"0-7"}`），届时由 CodeArts 起草 CCR-3。
+
 > 依据：MSG196 §2 派单（错误码对齐 + 映射表先交 CodeArts 评审）、`devdocs/DESIGN_FILESHARE_20261110.md` §5（v0.2）、
 > `docs/kdeconnect-oh/08-interface-contract.md` §4（kcbridge 错误码）。
 > **2026-11-09 已对照参考实现**：`kdeconn1109/kdeconn-1108/contract/errors.v1.json` 与 docs/08 §4 **逐条一致**
@@ -11,6 +16,19 @@
 > 控制路径 E 码（§2）**已按 `contract/errors.v1.json` 落地**（MSG199 §1 裁决）：新增
 > `core/src/errors.rs`（101–503 + `Disposition` + `is_throw`，穷举分级 + 单测），所有 `error`
 > 事件改用该编号；E2E 负路径断言由 errno 13 → `CERT_MISMATCH(201)`。
+
+## 0. 两套码空间边界（勿合并）
+
+| 码空间 | 范围 | 事件字段 | 位置 |
+|---|---|---|---|
+| **kcbridge 控制路径码** | 101–503 | `Error.errorCode` | `core/src/errors.rs`（唯一事实源 `contract/errors.v1.json`） |
+| **payload 通道码（契约 v0.2）** | 0–7 | `PayloadTransfer.errorCode` | `core/src/payload.rs` 的 `pub mod code` |
+
+- 两套码**独立编号、独立语义**，数字重叠不代表同一含义（例：kcbridge `403 SEND_FAILED` 与 payload `3`）；
+- `contract/errors.v1.json` 里预留而**未被引用的码**（101/109/205/302/303/402/501/502/503）属**后续阶段预留**，
+  发布前不得因为「未使用」而删除；其中 payload 侧的取消/文件 IO 走 payload 码（6/4/5），**不要**改成 kcbridge 码；
+- 判定口径：一个错误若属「控制路径（链路/协议/证书/参数）」→ 用 kcbridge 码；若属「payload 传输自身状态」
+  → 用 payload 码（仲裁见 CodeArts 报告 `devdocs/REVIEW_ECODE_B596260_20261109.md` §6）。
 
 ## 1. payload 路径：现有 → 契约 v0.2（0–7）
 

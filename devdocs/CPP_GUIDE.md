@@ -261,13 +261,20 @@ protocolVersion=8；UDP 1716；TCP 1716–1764 顺序探测；payload 端口 ≥
 - 跨层改动（涉及 d.ts 或跨端常量）先走 §5.4 流程；跨机同步一律走 gitcode，不依赖共享目录。
 - 本文档由 native agent 维护；结构、命令、分工变化时同改动更新本文并通知各 agent。
 
-## 9. Windows 交叉编译前置（DevEco Win10 实测，2026-11-08）
+## 9. Windows 交叉编译前置（Win10 实测，2026-11-08 首测 / **2026-11-09 打通**）
 
+> **状态（2026-11-09）**：Win10 上 `hvigorw --no-daemon assembleHap` 已 **BUILD SUCCESSFUL**（HAP 23:19）、
+> `hdc install` 装真机 `63Q0226131002161` 成功、`aa start` 起服务且 hilog
+> `net stack started (full Rust): deviceId=db67beed… trusted=2`。本轮四层失败链与通用经验见
+> `devdocs/EXP_LESSONS_20261109_windows_cross_build.md`；CMake 侧实现见 `79bfe87`。
+>
 > 全 Rust 栈（`ring` 等含 C 代码的 crate）在 Windows 上构建时，`cc-rs` **必须**拿到目标三元的
 > C 编译器/归档器；否则在 `BuildNativeWithNinja` 阶段报
 > `error occurred in cc-rs: failed to find tool "cc": program not found`。
+> **注意：本工程由 CMake 显式注入 `CC_/AR_/CARGO_TARGET_*`（见 §9.3），因此下表的 6 个环境变量
+> 经 hvigor 构建时会被覆盖 —— 真正生效的开关是 `OHOS_LLVM_LINK`（§9.2）。**
 
-### 9.1 必须的 6 个环境变量（用户级，`setx` 持久化）
+### 9.1 环境变量（不经 CMake 直接跑 cargo 时使用；经 hvigor 构建见 §9.2/§9.3）
 | 变量 | 值 |
 |---|---|
 | `CC_x86_64_unknown_linux_ohos` | `<LLVM_BIN>\clang.exe` |
