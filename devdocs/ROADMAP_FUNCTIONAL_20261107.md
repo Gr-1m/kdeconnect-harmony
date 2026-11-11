@@ -106,3 +106,24 @@ S1 的 ② 由用户确认后执行，不与 CodeArts 在途编辑抢跑。
 
 
 
+
+## 8. 真机复验收尾与 backlog（2026-11-11，CodeArts MSG225 复核后裁决）
+
+### 8.1 已通过（真机 `63Q0226131002161` / MSG224 版本）
+
+| 项 | 证据 |
+|---|---|
+| 自动保存 **开态**：png → 相册 | `savePayload #12 isImage=true perm=needed granted=true` → `album=true` → `settle #12 sandboxOnly=false` |
+| 自动保存 **开态**：bin → 应用内 | `savePayload #13 perm=none granted=true` → `settle #13 sandboxOnly=true` → `-> in-app` |
+| 批次 UI | dump 无 `0/1·0%`、无「接收中」；两条批次 `1/1·100%`，行文案「已保存」/「已保存到应用内 + 导出」 |
+| 自动保存 **关态** | `autosave gate … autoSave=false`，文件留「待处置」（预期行为） |
+
+### 8.2 backlog（不阻塞当前收尾）
+
+| 项 | 裁决 | 来源 |
+|---|---|---|
+| 跨会话 `settled=false` 历史条目（spool 已不存在）仍显示保存/丢弃 | **采纳 CodeArts 方案 B**：`PayloadRow` 新增 `canDispose`，历史分区 `!settled` 不显示按钮、文案「已结束」；列入 **0.8.x 后续补丁** | CodeArts MSG225 §6 |
+| `failActiveTransfer`/`failInflightReceives` 重建 failed 未带 `sandboxOnly` | 低优先，随诊断剥离同批补 `sandboxOnly: p.sandboxOnly === true` | CodeArts MSG225 §1.1 |
+| `terminalIds` 无上限（长会话内存增长） | 低优先，加与 `DISCARD_KEEP` 同类上限 | CodeArts MSG225 §2.3 |
+| native `.transfer_seq` 崩溃窗口（fetch_add 与落盘之间被杀） | **接受现状**：窗口一行代码、概率极低，ArkTS `started` 强制重置已兜底；不追加复杂度 | CodeArts MSG225 §4.1 |
+| 诊断日志剥离 | **10 条**（9 ArkTS `KDC diag` + 1 native `[KDC-DIAG] payload emit`），负向分支验证后一次性剥离 | CodeArts MSG225 §5 |
