@@ -184,6 +184,17 @@ fn two_stacks_connect_pair_and_transfer_payload() {
     assert_eq!(finished.payload_bytes_done, data.len() as i64);
     let recv_id = finished.payload_transfer_id;
     assert_ne!(recv_id, 0, "接收侧 transferId 不得为 0");
+    // 契约：接收 finished 必须回填 spool 路径（ArkTS 自动保存分支依赖它，MSG220 §3：若为空则整段不执行）。
+    assert!(
+        finished.payload_file_path.starts_with(spool_b),
+        "receive finished 必须带非空 spool 路径，实际={:?}",
+        finished.payload_file_path
+    );
+    assert_eq!(
+        std::fs::metadata(&finished.payload_file_path).map(|m| m.len()).ok(),
+        Some(data.len() as u64),
+        "finished 时 spool 文件应已落盘且长度正确"
+    );
     assert!(b.keep_payload(recv_id, dest), "keepPayload should succeed");
     let saved = std::fs::read(dest).unwrap();
     assert_eq!(saved, data, "payload bytes must match");
