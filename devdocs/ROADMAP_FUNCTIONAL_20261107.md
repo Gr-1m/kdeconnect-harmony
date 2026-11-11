@@ -127,3 +127,11 @@ S1 的 ② 由用户确认后执行，不与 CodeArts 在途编辑抢跑。
 | `terminalIds` 无上限（长会话内存增长） | 低优先，加与 `DISCARD_KEEP` 同类上限 | CodeArts MSG225 §2.3 |
 | native `.transfer_seq` 崩溃窗口（fetch_add 与落盘之间被杀） | **接受现状**：窗口一行代码、概率极低，ArkTS `started` 强制重置已兜底；不追加复杂度 | CodeArts MSG225 §4.1 |
 | 诊断日志剥离 | **10 条**（9 ArkTS `KDC diag` + 1 native `[KDC-DIAG] payload emit`），负向分支验证后一次性剥离 | CodeArts MSG225 §5 |
+
+### 8.3 新增 backlog（2026-11-11 用户提出）
+
+| 项 | 说明 | 状态 |
+|---|---|---|
+| **「打开文件管理 / 打开所在位置」**（参考 iOS 端） | 文件保存后提供入口跳转到**系统文件管理**并定位到该文件（区别于 MSG243 的「打开文件」本身）。HarmonyOS 候选路径：① `startAbility` + `ohos.want.action.viewData`（打开文件，已用于 MSG243）；② 文件管理器 bundle（`com.huawei.hmos.filemanager`）非公开契约，普通应用**不能可靠唤起并定位**；③ `DocumentViewPicker` 只能选目录不能定位；④ 折中：保存时记录路径 + toast/详情里展示「位置：Downloads/…」，或引导用户到「文件」App 手动定位。**结论：需先评估 ② 的可行性（大概率不可行），否则以 ④ 交付** | backlog（0.8.x 评估） |
+
+> iOS 参考实现待查：本机参考库（`kdeconn1111/`）未包含 `kdeconnect-ios-master`，需在 Win10/旧工作区取 iOS 源码后对照（重点关注 `UIDocumentInteractionController`/`QLPreviewController`/`UIDocumentPicker` 的使用场景：是「打开文件」还是「在文件中显示」）。
