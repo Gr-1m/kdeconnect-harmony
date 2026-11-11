@@ -172,6 +172,20 @@ fn two_stacks_connect_pair_and_transfer_payload() {
         src,
     );
     assert_ne!(id, 0, "sendPayload should return transfer id");
+    // 进度事件：接收侧必须**至少发出一条**带非零字节的 progress（MSG229 §2：UI 进度恒 0 的 native 侧一半）。
+    let progress = events
+        .wait(Duration::from_secs(10), |e| {
+            e.event_type == EventType::PayloadTransfer
+                && e.payload_state == "progress"
+                && !e.payload_direction_send
+                && e.device_id == a_id
+        })
+        .expect("接收侧必须至少发一次 progress 事件");
+    assert!(
+        progress.payload_bytes_done > 0 && progress.payload_bytes_done <= data.len() as i64,
+        "progress 必须带递增的非零字节，实际={}",
+        progress.payload_bytes_done
+    );
     // 接收侧的 transferId 是**本端局部**编号（不进协议包、不要求对端一致，MSG218 §1.2）
     // ⇒ 必须使用接收事件回填的 id（此前测试用发送侧 id 只是因为「两栈各自从 1 起」的巧合相等）。
     let finished = events

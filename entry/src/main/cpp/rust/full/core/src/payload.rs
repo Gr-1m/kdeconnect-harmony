@@ -91,7 +91,13 @@ impl PayloadJob {
             socket: Mutex::new(None),
             deadline: Mutex::new(Some(now + Duration::from_millis(PAYLOAD_ACCEPT_TIMEOUT_MS))),
             last_progress: Mutex::new(now),
-            last_progress_event: Mutex::new(now),
+            // 首个分片必须发出一条 progress：否则传输较快时整段一个 progress 都不发
+            // （基线 = 创建时刻，而 data 常在 <100ms 内跑完）⇒ UI 行永远停在 `0% · 0 / 总大小`。
+            // 把节流基线放到「一个节流窗之前」，等价于「首片必发、其后 100ms 节流」。
+            last_progress_event: Mutex::new(
+                now.checked_sub(Duration::from_millis(PAYLOAD_PROGRESS_INTERVAL_MS))
+                    .unwrap_or(now),
+            ),
         }
     }
 
@@ -802,6 +808,16 @@ pub fn file_name_of(body_json: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_progress_event_is_emitted_immediately() {
+        // 小文件（如 75B png）通常**只有一个分片**：若首片恰落在 100ms 节流窗内就一个 progress 都不发，
+        // UI 行会一直停在 `0% · 0 / 总大小`（MSG229 §2 真机现象）。
+        // 约定：首个分片必发、其后按 PAYLOAD_PROGRESS_INTERVAL_MS 节流。
+        let job = PayloadJob::new(1, "d".repeat(32), "a.png".to_owned(), false, 75);
+        assert!(job.note_progress(), "首个分片必须立即出 progress");
+        assert!(!job.note_progress(), "紧随其后的分片应被节流拦住");
+    }
 
     #[test]
     fn filename_extraction() {
