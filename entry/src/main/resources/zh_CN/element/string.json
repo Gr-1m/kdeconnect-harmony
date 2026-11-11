@@ -835,6 +835,10 @@
     {
       "name": "files_action_export",
       "value": "导出"
+    },
+    {
+      "name": "files_album_need_permission",
+      "value": "保存到相册需要「图片和视频」权限，已先保存到应用内"
     }
   ]
 }

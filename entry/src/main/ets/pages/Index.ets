@@ -444,6 +444,8 @@ struct Index {
     this.payloadController.autoSaveEnabled = (): boolean => this.settingsController.autoSaveFiles;
     // B2：媒体库保存需要 Context
     this.payloadController.hostContext = (): Context | undefined => this.getUIContext().getHostContext();
+    // MSG223 A：自动保存走「只查不弹」——避免权限弹窗把自动流程挂死
+    this.payloadController.checkWritePermission = (fileName: string): boolean => this.quietWritePermission(fileName);
     this.payloadController.pickSaveTarget = (name: string): Promise<string> => this.pickSaveTarget(name);
     this.payloadController.pickDownloadTarget = (name: string): Promise<string> => this.pickDownloadTarget(name);
     this.payloadController.requestWritePermission = (fileName: string): Promise<boolean> => this.ensureWritePermission(fileName);
@@ -1047,6 +1049,30 @@ struct Index {
     } catch (e) {
       this.notify.log('export: save picker(DOWNLOAD) failed: ' + (e instanceof Error ? e.message : 'unknown'));
       return '';
+    }
+  }
+
+  /**
+   * 静默（不弹窗）查询写权限 —— 自动保存路径专用（MSG223 A）。
+   * 真机实测：`requestPermissionsFromUser` 在自动流程里会拉起弹窗并 await，无人点击时整条保存链挂住
+   * （png 分支零日志、批次不收敛）。自动流程只查状态；未授权则降级「应用内」并提示。
+   */
+  private quietWritePermission(fileName: string): boolean {
+    const permName: string = this.payloadController.writePermissionFor(fileName);
+    if (permName === '') {
+      return true;
+    }
+    try {
+      const atManager: abilityAccessCtrl.AtManager = abilityAccessCtrl.createAtManager();
+      const info: bundleManager.BundleInfo =
+        bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
+      const tokenId: number = info.appInfo.accessTokenId;
+      const status: abilityAccessCtrl.GrantStatus =
+        atManager.checkAccessTokenSync(tokenId, permName as Permissions);
+      return status === abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED;
+    } catch (e) {
+      this.notify.log('quiet permission check failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      return false;
     }
   }
 

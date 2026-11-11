@@ -70,9 +70,14 @@ export struct FilesTab {
   private visibleBatches(): PayloadBatch[] {
     const out: PayloadBatch[] = [];
     for (const b of this.controller.batches) {
-      if (b.direction === 'receive' && b.transferIds.length > 0) {
-        out.push(b);
+      if (b.direction !== 'receive' || b.transferIds.length === 0) {
+        continue;
       }
+      // 已完成/未完成但零产出的批不显示（防 "0/1 · 0%" 残留）
+      if (b.state !== 'active' && b.doneFiles === 0) {
+        continue;
+      }
+      out.push(b);
     }
     return out.sort((a: PayloadBatch, b: PayloadBatch) => b.batchId - a.batchId);
   }
@@ -105,7 +110,9 @@ export struct FilesTab {
           this.onOpenPayload(tid);
         }
       })
-    }, (p: PayloadTransfer) => `${prefix}_${p.transferId}`)
+      // MSG223 B：key 带上状态/处置位 —— 状态跃迁时强制重建该行，避免 V1 复用旧对象导致
+      // 「批内行仍显示 接收中/0%」而另一处已显示 已完成
+    }, (p: PayloadTransfer) => `${prefix}_${p.transferId}_${p.state}_${p.settled ? 'S' : 'A'}`)
   }
 
   build() {

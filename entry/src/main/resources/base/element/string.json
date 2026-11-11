@@ -855,6 +855,10 @@
     {
       "name": "files_action_export",
       "value": "Export"
+    },
+    {
+      "name": "files_album_need_permission",
+      "value": "Grant Photos permission to save into the album; saved in app for now"
     }
   ]
 }

@@ -30,6 +30,14 @@ const RECV_WATCHDOG_MS: number = 30000;
 // B3：已丢弃 transferId 的记忆上限（防止迟到事件重建条目）
 const DISCARD_KEEP: number = 200;
 
+// MSG223 B：晚到预告的暂存结构
+interface PayloadBatchHint {
+  deviceId: string;
+  expectedFiles: number;
+  totalBytes: number;
+  isUpdate: boolean;
+}
+
 // 多选发送的单个任务（文件已复制进沙箱，等队列轮到它）
 export interface SendJob {
   cachePath: string;
@@ -48,6 +56,9 @@ export class PayloadController {
   // S2 接收批次（契约 v0.2 §3）：按批归并显示；开批/计数/结算规则见 onBatchHint 与 attachToReceiveBatch
   batches: PayloadBatch[] = [];
   private batchSeq: number = 0;
+  // MSG223 B：晚到的 share.request 预告（此时无活跃批也无可认领的在传条目）⇒ 挂起，等下一个 started 认领，
+  // 否则会开出一个永远 0/1 的空批
+  private pendingHint: PayloadBatchHint | undefined = undefined;
   private batchTimers: Map<number, number> = new Map();
   // B1：接收 watchdog（tid → timer）
   private recvWatchdogs: Map<number, number> = new Map();
@@ -79,6 +90,9 @@ export class PayloadController {
   autoSaveEnabled: () => boolean = () => true;
   // B2：媒体库（photoAccessHelper）需要 Context
   hostContext: () => Context | undefined = () => undefined;
+  // MSG223 A：**自动流程专用**权限查询（只查不弹）。自动保存绝不能 await 权限弹窗
+  // —— 真机实测 png 分支因 requestPermissionsFromUser 挂住 ⇒ 后续日志全无、批次不收敛。
+  checkWritePermission: (fileName: string) => boolean = (_fileName: string) => false;
 
   // ========== 状态转换（原 L1710–L1728）==========
 
@@ -138,6 +152,9 @@ export class PayloadController {
     // S2：连接关闭 → 该设备的活跃批次结算为「未完成」
     this.settleBatchesForDevice(deviceId, 'incomplete',
       `device disconnected (${reason})`);
+    if (this.pendingHint !== undefined && this.pendingHint.deviceId === deviceId) {
+      this.pendingHint = undefined;
+    }
   }
 
   // ==================== S2 接收批次（契约 v0.2 §3）====================
@@ -149,6 +166,13 @@ export class PayloadController {
     }
     const idx: number = this.activeReceiveBatchIndex(deviceId);
     if (idx < 0) {
+      // MSG223 B：没有活跃批时，只有在**确有在传条目**的情况下才开批；
+      // 否则（预告晚于传输结束）挂起，等下一个 started 认领 —— 避免产生永远 0/1 的空批
+      if (!this.hasActiveReceive(deviceId)) {
+        this.pendingHint = { deviceId: deviceId, expectedFiles: numberOfFiles, totalBytes: totalPayloadSize, isUpdate: isUpdate };
+        console.info(`KDC diag batch hint deferred (no in-flight transfer) dev=${deviceId.substring(0, 8)} n=${numberOfFiles}`);
+        return;
+      }
       this.openBatch(deviceId, numberOfFiles, totalPayloadSize, isUpdate);
       this.log(`batch opened by ${isUpdate ? 'update' : 'request'}: ${numberOfFiles} files / ${totalPayloadSize} B`);
       return;
@@ -182,6 +206,16 @@ export class PayloadController {
       lastFileAtMs: b.lastFileAtMs
     };
     return next;
+  }
+
+  private hasActiveReceive(deviceId: string): boolean {
+    for (const p of this.payloads) {
+      if (p.direction === 'receive' && p.deviceId === deviceId
+        && (p.state === 'started' || p.state === 'progress')) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private activeReceiveBatchIndex(deviceId: string): number {
@@ -248,6 +282,12 @@ export class PayloadController {
       this.log(`batch #${batchId} settled ${state} (${why})`);
       // B1：批结算后不得残留「接收中」僵尸行
       this.failActiveTransfersOfBatch(batchId, why);
+      // MSG223 B：零产出批（doneFiles=0）直接从列表移除，杜绝 "0/1 · 0% · 接收中" 长期残留
+      const b: PayloadBatch | undefined = this.batchById(batchId);
+      if (b !== undefined && b.doneFiles === 0) {
+        console.info(`KDC diag batch #${batchId} dropped (zero done)`);
+        this.batches = this.batches.filter((x: PayloadBatch) => x.batchId !== batchId);
+      }
     }
   }
 
@@ -275,7 +315,13 @@ export class PayloadController {
       idx = -1;
     }
     if (idx < 0) {
-      this.openBatch(item.deviceId, 0, 0, false);
+      const hint: PayloadBatchHint | undefined = this.pendingHint;
+      if (hint !== undefined && hint.deviceId === item.deviceId) {
+        this.pendingHint = undefined;
+        this.openBatch(item.deviceId, hint.expectedFiles, hint.totalBytes, hint.isUpdate);
+      } else {
+        this.openBatch(item.deviceId, 0, 0, false);
+      }
       idx = 0;
     }
     const batchId: number = this.batches[idx].batchId;
@@ -507,6 +553,18 @@ export class PayloadController {
     });
     if (hit) {
       this.clearReceiveWatchdog(tid);
+      // 计入批计数：让批头显示 "1/1 · 0%" 且该行以「失败」保留（否则批恒 0 产出 → 整条被丢弃）
+      const owner: PayloadBatch | undefined = this.batchOfTransfer(tid);
+      if (owner !== undefined) {
+        this.batches = this.batches.map((b: PayloadBatch): PayloadBatch => {
+          if (b.batchId !== owner.batchId) {
+            return b;
+          }
+          const next: PayloadBatch = this.copyBatch(b);
+          next.doneFiles++;
+          return next;
+        });
+      }
       this.log(`payload #${tid} -> failed (${why})`);
     }
   }
@@ -846,12 +904,12 @@ export class PayloadController {
     }
     const name: string = this.sanitizeFileName(p.fileName, p.transferId);
     const dest: string = `${dir}/${name}`;
-    const granted: boolean = await this.requestWritePermission(name);
-    if (!granted) {
-      this.log(`save aborted: write permission denied for ${name}`);
-      this.toast(this.resText($r('app.string.files_need_permission').id));
-      return;
-    }
+    // MSG223 A：**不弹窗、不阻塞** —— 只查授权状态（自动流程里弹窗会把整条保存链挂住）
+    const permName: string = this.writePermissionFor(name);
+    const granted: boolean = permName.length === 0 || this.checkWritePermission(name);
+    console.info(`KDC diag savePayload #${p.transferId} name=${name} isImage=${this.isImageName(name)}`
+      + ` isVideo=${this.isVideoName(name)} perm=${permName.length > 0 ? 'needed' : 'none'}`
+      + ` granted=${granted} filePathLen=${p.filePath.length}`);
     let sandboxOk: boolean = false;
     try {
       sandboxOk = native.keepPayload(p.transferId, dest);
@@ -860,22 +918,30 @@ export class PayloadController {
       this.log('keepPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
     }
     if (!sandboxOk) {
+      console.info(`KDC diag savePayload #${p.transferId} keepPayload=false -> 保存失败`);
       this.toast(this.resText($r('app.string.files_save_failed').id));
       return;
     }
-    // ① 图片/视频：免交互入相册（用户可见）——成功才是真「已保存」
-    if (this.isImageName(name) || this.isVideoName(name)) {
+    // ① 图片/视频：免交互入相册（用户可见）——成功才是真「已保存」；**需已授权**（未授权不弹窗，直接降级）
+    if ((this.isImageName(name) || this.isVideoName(name)) && granted) {
       const inAlbum: boolean = await this.saveToAlbum(dest, name);
+      console.info(`KDC diag savePayload #${p.transferId} album=${inAlbum}`);
       if (inAlbum) {
         this.markPayloadSettled(p.transferId, false);
         this.toast(`${this.resText($r('app.string.files_saved').id)}: ${name}`);
         return;
       }
       this.log('album path unavailable -> fall back to in-app');
+    } else if (
+      (this.isImageName(name) || this.isVideoName(name)) && !granted) {
+      // 未授权：不弹窗打断自动流程；落应用内并提示（用户可在需要时手动授权后再导出）
+      this.log(`album skipped: ${permName} not granted -> in-app`);
+      this.toast(this.resText($r('app.string.files_album_need_permission').id));
     }
     // ② 其它文件：只落应用沙箱（普通应用无免交互公共目录 API）⇒ 【不得谎报「已保存」】
     //    文案「已保存到应用内」+ 行内「导出」入口（用户手势走 picker）
     this.markPayloadSettled(p.transferId, true);
+    console.info(`KDC diag savePayload #${p.transferId} -> in-app (sandboxOnly=true)`);
     this.toast(`${this.resText($r('app.string.files_saved_in_app').id)}: ${name}`);
   }
 
