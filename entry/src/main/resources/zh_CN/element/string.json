@@ -839,6 +839,14 @@
     {
       "name": "files_album_need_permission",
       "value": "保存到相册需要「图片和视频」权限，已先保存到应用内"
+    },
+    {
+      "name": "files_ended",
+      "value": "已结束（文件已不在）"
+    },
+    {
+      "name": "files_source_gone",
+      "value": "文件已不存在"
     }
   ]
 }

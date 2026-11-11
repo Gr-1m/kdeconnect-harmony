@@ -5,7 +5,8 @@ export type PayloadDirection = 'send' | 'receive';
 
 export type PayloadState = 'started' | 'progress' | 'finished' | 'failed' | 'cancelled';
 
-export interface PayloadTransfer {
+// 构造/更新用的入参形态（纯字段，便于对象字面量传参）
+export interface PayloadTransferInit {
   transferId: number;
   deviceId: string;
   direction: PayloadDirection;
@@ -24,6 +25,57 @@ export interface PayloadTransfer {
   errorCode?: number;
 }
 
+/**
+ * 传输条目（UI 数据源）。
+ * **@Observed + 原地写字段**：行组件用 `@ObjectLink transfer` 绑定 ⇒ 进度等字段变化即刻重渲染该行。
+ * （V1 里「稳定 ForEach key + 标量 @Prop」会让子组件冻结在首帧，是 MSG229 §2「进度不动/仍显示接收中」的根因，
+ * 见 devdocs/ARKTS_GUIDE.md §4.9。）
+ * `uid`：实例代号（不持久化）。控制器在同一 tid 上换新实例（如 started 顶替旧条目）时 key 变化 ⇒ 行重建，
+ * 避免 ForEach 复用旧子组件仍绑到旧实例。
+ */
+@Observed
+export class PayloadTransfer {
+  private static seq: number = 0;
+
+  uid: number = 0;
+  transferId: number = 0;
+  deviceId: string = '';
+  direction: PayloadDirection = 'receive';
+  state: PayloadState = 'failed';
+  fileName: string = '';
+  size: number = 0;
+  bytesDone: number = 0;
+  filePath: string = '';
+  settled: boolean = false;
+  sandboxOnly: boolean = false;
+  timeMs: number | undefined = undefined;
+  errorCode: number | undefined = undefined;
+
+  static of(init: PayloadTransferInit): PayloadTransfer {
+    const t: PayloadTransfer = new PayloadTransfer();
+    PayloadTransfer.seq++;
+    t.uid = PayloadTransfer.seq;
+    t.apply(init);
+    return t;
+  }
+
+  /** 原地写入全部业务字段（保持实例身份 ⇒ @ObjectLink 行感知变化） */
+  apply(init: PayloadTransferInit): void {
+    this.transferId = init.transferId;
+    this.deviceId = init.deviceId;
+    this.direction = init.direction;
+    this.state = init.state;
+    this.fileName = init.fileName;
+    this.size = init.size;
+    this.bytesDone = init.bytesDone;
+    this.filePath = init.filePath;
+    this.settled = init.settled;
+    this.sandboxOnly = init.sandboxOnly === true;
+    this.timeMs = init.timeMs;
+    this.errorCode = init.errorCode;
+  }
+}
+
 // 接收批次（S2 契约 v0.2 §3）：多文件传输按批归并显示（"3/5 文件 · 45% 总字节"）。
 // 归并规则：有 share.request.update → 按 numberOfFiles 计数、不设固定超时；
 //           无 update → 5s 退化窗口（超过即结算旧批）；任一情况：连接关闭或 30s 无新文件 → 结算「未完成」。
@@ -39,8 +91,6 @@ export interface PayloadBatch {
   totalBytes: number;
   transferIds: number[];
   /** 已进入终态的文件数 / 字节数（用于 "3/5 · 45%"） */
-  doneFiles: number;
-  doneBytes: number;
   state: PayloadBatchState;
   /** true = 由 share.request.update 开批（计数归并）；false = 5s 退化 */
   declaredByUpdate: boolean;

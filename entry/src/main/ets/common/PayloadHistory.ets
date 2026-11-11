@@ -39,7 +39,7 @@ export class PayloadHistory {
       const entries: HistoryEntry[] = JSON.parse(raw) as HistoryEntry[];
       const out: PayloadTransfer[] = [];
       for (const e of entries) {
-        out.push({
+        out.push(PayloadTransfer.of({
           transferId: e.transferId,
           deviceId: e.deviceId,
           direction: e.direction === 'send' ? 'send' : 'receive',
@@ -50,7 +50,7 @@ export class PayloadHistory {
           filePath: e.filePath,
           settled: e.settled,
           timeMs: e.timeMs ?? 0
-        });
+        }));
       }
       return out;
     } catch (err) {

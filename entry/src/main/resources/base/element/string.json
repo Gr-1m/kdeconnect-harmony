@@ -859,6 +859,14 @@
     {
       "name": "files_album_need_permission",
       "value": "Grant Photos permission to save into the album; saved in app for now"
+    },
+    {
+      "name": "files_ended",
+      "value": "Finished (no file left)"
+    },
+    {
+      "name": "files_source_gone",
+      "value": "File is no longer available"
     }
   ]
 }

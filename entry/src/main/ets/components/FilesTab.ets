@@ -73,8 +73,12 @@ export struct FilesTab {
       if (b.direction !== 'receive' || b.transferIds.length === 0) {
         continue;
       }
-      // 已完成/未完成但零产出的批不显示（防 "0/1 · 0%" 残留）
-      if (b.state !== 'active' && b.doneFiles === 0) {
+      // 成员行都已不在（丢弃/清历史）⇒ 不显示空批头
+      if (this.batchItems(b).length === 0) {
+        continue;
+      }
+      // 已完成/未完成但零产出的批不显示（防 "0/1 · 0%" 残留）——用**派生计数**（计数器曾漂移）
+      if (b.state !== 'active' && this.controller.batchCounts(b).done === 0) {
         continue;
       }
       out.push(b);
@@ -86,14 +90,10 @@ export struct FilesTab {
   payloadList(prefix: string, items: PayloadTransfer[]) {
     ForEach(items, (p: PayloadTransfer) => {
       PayloadRow({
-        transferId: p.transferId,
-        fileName: p.fileName,
-        payloadDirection: p.direction,
-        payloadState: p.state,
-        payloadSize: p.size,
-        bytesDone: p.bytesDone,
-        settled: p.settled,
-        sandboxOnly: p.sandboxOnly === true,
+        // MSG229 §2：整对象 + @ObjectLink 绑定（原地写字段即刷新该行）
+        transfer: p,
+        canDisposeFn: (item: PayloadTransfer): boolean => this.controller.canDispose(item),
+        timeTextFn: (item: PayloadTransfer): string => this.controller.timeTextOf(item),
         onExport: (item: PayloadTransfer): void => {
           this.onExportPayload(item);
         },
@@ -112,7 +112,9 @@ export struct FilesTab {
       })
       // MSG223 B：key 带上状态/处置位 —— 状态跃迁时强制重建该行，避免 V1 复用旧对象导致
       // 「批内行仍显示 接收中/0%」而另一处已显示 已完成
-    }, (p: PayloadTransfer) => `${prefix}_${p.transferId}_${p.state}_${p.settled ? 'S' : 'A'}`)
+    // key 只含 前缀+实例代号：字段原地变化时**不重建**（交给 @ObjectLink），
+    // 同 tid 换新实例（uid 变化）时才重建，避免复用旧子组件绑到旧对象
+    }, (p: PayloadTransfer) => `${prefix}_${p.transferId}_${p.uid}`)
   }
 
   build() {

@@ -19,7 +19,7 @@
 
 import native from 'libkdeconnect_napi.so';
 import { NetEvent } from 'libkdeconnect_napi.so';
-import { PayloadTransfer, PayloadDirection, PayloadState, PayloadBatch, PayloadBatchState } from '../model/PayloadModels';
+import { PayloadTransfer, PayloadTransferInit, PayloadDirection, PayloadState, PayloadBatch, PayloadBatchState } from '../model/PayloadModels';
 import { PayloadHistory } from '../common/PayloadHistory';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { Context, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
@@ -30,9 +30,14 @@ const RECV_WATCHDOG_MS: number = 30000;
 // B3：已丢弃 transferId 的记忆上限（防止迟到事件重建条目）
 const DISCARD_KEEP: number = 200;
 // 已计入批计数的 transferId 记忆上限（防长跑会话无限增长）
-const TERMINAL_KEEP: number = 500;
 
 // MSG223 B：晚到预告的暂存结构
+// 批头派生计数（从 payloads 现场算，见 batchCounts）
+export interface BatchCounts {
+  done: number;
+  bytes: number;
+}
+
 interface PayloadBatchHint {
   deviceId: string;
   expectedFiles: number;
@@ -66,8 +71,8 @@ export class PayloadController {
   private recvWatchdogs: Map<number, number> = new Map();
   // B3：已丢弃的 transferId —— handlePayloadTransfer/cancelPayload 见到即幂等返回，防「丢弃后复活」
   private discardedIds: number[] = [];
-  /** 已计入 doneFiles 的 transferId（防重复累加） */
-  private terminalIds: number[] = [];
+  // MSG229 §1.4：媒体权限弹窗「本次会话只申请一次」（避免每次收图都弹）
+  private mediaPermAsked: boolean = false;
 
   // 多选发送串行队列（原 private 字段）
   sendQueue: SendJob[] = [];
@@ -134,7 +139,7 @@ export class PayloadController {
         return p;
       }
       changed = true;
-      const failed: PayloadTransfer = {
+      const failed: PayloadTransfer = PayloadTransfer.of({
         transferId: p.transferId,
         deviceId: p.deviceId,
         direction: p.direction,
@@ -145,7 +150,7 @@ export class PayloadController {
         filePath: p.filePath,
         settled: p.settled,
         sandboxOnly: p.sandboxOnly === true
-      };
+      });
       return failed;
     });
     if (changed) {
@@ -200,8 +205,6 @@ export class PayloadController {
       expectedFiles: b.expectedFiles,
       totalBytes: b.totalBytes,
       transferIds: b.transferIds.slice(0),
-      doneFiles: b.doneFiles,
-      doneBytes: b.doneBytes,
       state: b.state,
       declaredByUpdate: b.declaredByUpdate,
       collapsed: b.collapsed,
@@ -239,8 +242,6 @@ export class PayloadController {
       expectedFiles: expected,
       totalBytes: total,
       transferIds: [],
-      doneFiles: 0,
-      doneBytes: 0,
       state: 'active',
       declaredByUpdate: declared,
       collapsed: false,
@@ -284,9 +285,9 @@ export class PayloadController {
       this.log(`batch #${batchId} settled ${state} (${why})`);
       // B1：批结算后不得残留「接收中」僵尸行
       this.failActiveTransfersOfBatch(batchId, why);
-      // MSG223 B：零产出批（doneFiles=0）直接从列表移除，杜绝 "0/1 · 0% · 接收中" 长期残留
+      // MSG223 B/229：零产出批直接从列表移除（判据改为派生计数），杜绝 "0/1 · 0% · 接收中" 长期残留
       const b: PayloadBatch | undefined = this.batchById(batchId);
-      if (b !== undefined && b.doneFiles === 0) {
+      if (b !== undefined && this.batchCounts(b).done === 0) {
         this.batches = this.batches.filter((x: PayloadBatch) => x.batchId !== batchId);
       }
     }
@@ -340,17 +341,7 @@ export class PayloadController {
         next.transferIds = next.transferIds.concat([item.transferId]);
       }
       next.lastFileAtMs = now;
-      const terminal: boolean = state === 'finished' || state === 'failed' || state === 'cancelled';
-      // 只在「本条首次进入终态」时计数：doneFiles 以 transferIds 中已终态数为准，避免重复累加
-      if (terminal && !this.terminalIds.includes(item.transferId)) {
-        this.terminalIds = this.terminalIds.concat([item.transferId]);
-        // 与 DISCARD_KEEP 同类上限：只保留最近 TERMINAL_KEEP 条（防长跑会话无限增长）
-        if (this.terminalIds.length > TERMINAL_KEEP) {
-          this.terminalIds = this.terminalIds.slice(this.terminalIds.length - TERMINAL_KEEP);
-        }
-        next.doneFiles++;
-        next.doneBytes += item.bytesDone > 0 ? item.bytesDone : item.size;
-      }
+      // 计数不再维护状态：批头/完成判定一律用 batchCounts(b) 从 payloads 现场派生
       return next;
     });
     const b2: PayloadBatch | undefined = this.batchById(batchId);
@@ -361,8 +352,9 @@ export class PayloadController {
       this.armBatchIdleTimer(batchId);
       // 完成判定：**所有声明文件都已终态**才算完成（先前用「已见文件数」会在最后一个文件刚 started 时就结算，
       // 于是它的 finished 事件找不到活跃批、另开一个批 —— 2026-11-08 实机复现）
-      if (b2.expectedFiles > 0 && b2.doneFiles >= b2.expectedFiles) {
-        this.settleBatch(batchId, 'done', `${b2.doneFiles}/${b2.expectedFiles} files terminal`);
+      const counts: BatchCounts = this.batchCounts(b2);
+      if (b2.expectedFiles > 0 && counts.done >= b2.expectedFiles) {
+        this.settleBatch(batchId, 'done', `${counts.done}/${b2.expectedFiles} files terminal`);
       }
     }
   }
@@ -396,16 +388,43 @@ export class PayloadController {
     });
   }
 
+  /** 该批的「已终态文件数 / 已收字节」——从 payloads 现场派生（计数器漂移会显示成 0/N，2026-11-11 实测） */
+  payloadOf(transferId: number): PayloadTransfer | undefined {
+    for (const p of this.payloads) {
+      if (p.transferId === transferId) {
+        return p;
+      }
+    }
+    return undefined;
+  }
+
+  batchCounts(b: PayloadBatch): BatchCounts {
+    let done: number = 0;
+    let bytes: number = 0;
+    for (const tid of b.transferIds) {
+      const p: PayloadTransfer | undefined = this.payloadOf(tid);
+      if (p === undefined) {
+        continue;
+      }
+      if (p.state === 'finished' || p.state === 'failed' || p.state === 'cancelled') {
+        done++;
+        bytes += p.bytesDone > 0 ? p.bytesDone : p.size;
+      }
+    }
+    return { done: done, bytes: bytes };
+  }
+
   /** 批头文案："3/5 文件 · 45% 占总字节"（分母未知时用已见文件数） */
   batchSummary(b: PayloadBatch): string {
     // 分母取「声明数」与「实见数」的较大者：对端可能把批量拆成多条单文件 share（每条声明 1），
     // 这时按实见数显示，避免出现 "2/1 文件" 这种自相矛盾的数字
     const seen: number = b.transferIds.length;
     const total: number = Math.max(b.expectedFiles, seen);
+    const counts: BatchCounts = this.batchCounts(b);
     const unit: string = this.resText($r('app.string.files_batch_unit').id);
-    let text: string = `${b.doneFiles}/${total} ${unit}`;
+    let text: string = `${counts.done}/${total} ${unit}`;
     if (b.totalBytes > 0) {
-      const pct: number = Math.min(100, Math.floor(b.doneBytes * 100 / b.totalBytes));
+      const pct: number = Math.min(100, Math.floor(counts.bytes * 100 / b.totalBytes));
       text = `${text} · ${pct}% ${this.resText($r('app.string.files_batch_of_total').id)}`;
     }
     return text;
@@ -443,7 +462,7 @@ export class PayloadController {
     if (resolvedName.length === 0 && !isNewTransfer && prev !== undefined) {
       resolvedName = prev.fileName;
     }
-    const item: PayloadTransfer = {
+    const init: PayloadTransferInit = {
       transferId: tid,
       deviceId: event.deviceId ?? (prev !== undefined && !isNewTransfer ? prev.deviceId : ''),
       direction: this.toDirection(event.payloadDirection
@@ -462,11 +481,16 @@ export class PayloadController {
       timeMs: isNewTransfer ? undefined : (prev !== undefined ? prev.timeMs : undefined),
       errorCode: event.errorCode
     };
-    if (isNewTransfer) {
+    // MSG229 §2：非新传输**原地写**同一个实例（数组引用不变）⇒ 行组件 @ObjectLink 自行重渲染，
+    // 进度不再被 ForEach 的稳定 key 吞掉；新传输才换实例（uid 变化 ⇒ key 变化 ⇒ 行重建）。
+    let item: PayloadTransfer;
+    if (isNewTransfer || prev === undefined) {
+      item = PayloadTransfer.of(init);
       // 同 tid 的旧条目（上一会话残留）被本条顶替，避免 UI 里新旧混在同一条
       this.payloads = [item].concat(this.payloads.filter((p: PayloadTransfer) => p.transferId !== tid));
     } else {
-      this.payloads = this.payloads.map((p: PayloadTransfer) => p.transferId === tid ? item : p);
+      prev.apply(init);
+      item = prev;
     }
     // B1：接收 watchdog —— started/progress 期间挂表，终态摘表
     if (item.direction === 'receive') {
@@ -484,6 +508,7 @@ export class PayloadController {
     // S2：接收方向挂到批次（新建批 / 计数 / 结算），发送方向不参与批次
     if (item.direction === 'receive' && item.deviceId.length > 0) {
       this.attachToReceiveBatch(item, idx < 0, state);
+      const b: PayloadBatch | undefined = this.batchOfTransfer(tid);
     }
     // MSG220 §2：**不再**把 filePath 非空作为前置条件 —— 自动保存走 keepPayload(tid, dest)（native 自己搬 spool），
     // 路径为空不代表拿不到文件；旧条件会让整段自动保存被静默跳过（真机 #5/#6 实证）
@@ -529,7 +554,7 @@ export class PayloadController {
         return p;
       }
       hit = true;
-      const failed: PayloadTransfer = {
+      const failed: PayloadTransfer = PayloadTransfer.of({
         transferId: p.transferId,
         deviceId: p.deviceId,
         direction: p.direction,
@@ -542,7 +567,7 @@ export class PayloadController {
         sandboxOnly: p.sandboxOnly === true,
         errorCode: code,
         timeMs: Date.now()
-      };
+      });
       return failed;
     });
     if (hit) {
@@ -555,7 +580,6 @@ export class PayloadController {
             return b;
           }
           const next: PayloadBatch = this.copyBatch(b);
-          next.doneFiles++;
           return next;
         });
       }
@@ -696,7 +720,6 @@ export class PayloadController {
       this.clearBatchTimer(b.batchId);
     }
     this.batches = [];
-    this.terminalIds = [];
     for (const t of this.discardedIds) {
       this.clearReceiveWatchdog(t);
     }
@@ -760,7 +783,7 @@ export class PayloadController {
       if (p.transferId !== transferId) {
         return p;
       }
-      const next: PayloadTransfer = {
+      const next: PayloadTransfer = PayloadTransfer.of({
         transferId: p.transferId,
         deviceId: p.deviceId,
         direction: p.direction,
@@ -773,7 +796,7 @@ export class PayloadController {
         sandboxOnly: sandboxOnly,
         timeMs: p.timeMs,
         errorCode: p.errorCode
-      };
+      });
       return next;
     });
     let touched: boolean = false;
@@ -782,7 +805,7 @@ export class PayloadController {
         return h;
       }
       touched = true;
-      const next: PayloadTransfer = {
+      const next: PayloadTransfer = PayloadTransfer.of({
         transferId: h.transferId,
         deviceId: h.deviceId,
         direction: h.direction,
@@ -795,7 +818,7 @@ export class PayloadController {
         sandboxOnly: sandboxOnly,
         timeMs: h.timeMs,
         errorCode: h.errorCode
-      };
+      });
       return next;
     });
     if (touched) {
@@ -817,13 +840,43 @@ export class PayloadController {
     }
   }
 
+  /**
+   * MSG229 §3.3 / MSG230：该条目是否还有可处置的文件（spool 或沙箱副本存在）。
+   * 用于「无 spool 不显示 保存/另存为/丢弃，文案改『已结束』」，杜绝点了必然失败的按钮。
+   */
+  canDispose(p: PayloadTransfer): boolean {
+    if (p.direction !== 'receive' || p.state !== 'finished' || p.settled) {
+      return false;
+    }
+    const name: string = this.sanitizeFileName(p.fileName, p.transferId);
+    const candidates: string[] = [`${this.hostFilesDir()}/${name}`];
+    if (p.filePath.length > 0) {
+      candidates.push(p.filePath);
+    }
+    for (const path of candidates) {
+      try {
+        if (fileIo.accessSync(path)) {
+          return true;
+        }
+      } catch (e) {
+      }
+    }
+    return false;
+  }
+
   payloadDetail(): PayloadTransfer {
+    // MSG230：历史条目只存在于 history（此前只查 payloads ⇒ 详情显示 #tid/大小 0、另存为拿空文件名必失败）
     for (const p of this.payloads) {
       if (p.transferId === this.detailId) {
         return p;
       }
     }
-    const placeholder: PayloadTransfer = {
+    for (const h of this.history) {
+      if (h.transferId === this.detailId) {
+        return h;
+      }
+    }
+    const placeholder: PayloadTransfer = PayloadTransfer.of({
       transferId: this.detailId,
       deviceId: '',
       direction: 'receive',
@@ -833,13 +886,18 @@ export class PayloadController {
       bytesDone: 0,
       filePath: '',
       settled: true
-    };
+    });
     return placeholder;
   }
 
   // ========== 另存为（原 L1998–L2050）==========
 
   async saveAsPayload(p: PayloadTransfer): Promise<void> {
+    if (p.fileName.length === 0) {
+      this.log(`save as aborted: empty file name (#${p.transferId})`);
+      this.toast(this.resText($r('app.string.files_source_gone').id));
+      return;
+    }
     const name: string = this.sanitizeFileName(p.fileName, p.transferId);
     let destUri: string = '';
     try {
@@ -855,6 +913,14 @@ export class PayloadController {
     let src: string = sandboxCopy;
     if (p.filePath.length > 0 && !fileIo.accessSync(sandboxCopy)) {
       src = p.filePath;
+    }
+    try {
+      if (!fileIo.accessSync(src)) {
+        this.log(`save as aborted: source missing -> ${src}`);
+        this.toast(this.resText($r('app.string.files_source_gone').id));
+        return;
+      }
+    } catch (e) {
     }
     let srcFd: fileIo.File | undefined = undefined;
     let dstFd: fileIo.File | undefined = undefined;
@@ -899,7 +965,15 @@ export class PayloadController {
     const dest: string = `${dir}/${name}`;
     // MSG223 A：**不弹窗、不阻塞** —— 只查授权状态（自动流程里弹窗会把整条保存链挂住）
     const permName: string = this.writePermissionFor(name);
-    const granted: boolean = permName.length === 0 || this.checkWritePermission(name);
+    let granted: boolean = permName.length === 0 || this.checkWritePermission(name);
+    const isMedia: boolean = this.isImageName(name) || this.isVideoName(name);
+    // MSG229 §1：媒体未授权时**主动申请一次**（弹窗）——用户允许后即可入相册；
+    // 本次会话只弹一次（mediaPermAsked），避免每次收图都打断；拒绝则降级「应用内」+ toast。
+    if (isMedia && !granted && !this.mediaPermAsked) {
+      this.mediaPermAsked = true;
+      granted = await this.requestWritePermission(name);
+      this.log(`media permission requested once: granted=${granted}`);
+    }
     let sandboxOk: boolean = false;
     try {
       sandboxOk = native.keepPayload(p.transferId, dest);
@@ -911,7 +985,8 @@ export class PayloadController {
       this.toast(this.resText($r('app.string.files_save_failed').id));
       return;
     }
-    // ① 图片/视频：免交互入相册（用户可见）——成功才是真「已保存」；**需已授权**（未授权不弹窗，直接降级）
+    // ① 图片/视频：免交互入相册（用户可见）——成功才是真「已保存」；**需已授权**
+    //（未授权时上面已按 MSG229 主动申请过一次；仍拒绝则走 ② 降级「应用内」）
     if ((this.isImageName(name) || this.isVideoName(name)) && granted) {
       const inAlbum: boolean = await this.saveToAlbum(dest, name);
       if (inAlbum) {

@@ -1,22 +1,19 @@
 // SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
-﻿import { PayloadTransfer } from '../model/PayloadModels';
+import { PayloadTransfer } from '../model/PayloadModels';
 
 // 单条 payload 传输行（文件页）。
-// 用子组件 + @Prop：进度/状态变化时必定重渲染（@Builder 值参数不变时会跳过重建，
-// ForEach 稳定 key 场景下会表现为「进度条不动」）。
-// 注意：成员名不要与通用属性同名（direction/size 会与 CustomComponent 基类冲突），故用 payloadXxx 前缀。
+// MSG229 §2 修：行用 **@ObjectLink 绑定 @Observed 的 PayloadTransfer**，控制器原地写字段即可让本行重渲染。
+// （此前用标量 @Prop + 稳定 ForEach key：ForEach 不重新执行子组件构建 ⇒ 进度/状态冻结在首帧，
+//  表现为「进度一直 0%」「完成后仍显示接收中」。见 devdocs/ARKTS_GUIDE.md §4.9。）
+// 注意：成员名不要与通用属性同名（direction/size 会与 CustomComponent 基类冲突），故对象字段用 transfer.xxx 访问。
 @Component
 export struct PayloadRow {
-  @Prop transferId: number = 0;
-  @Prop fileName: string = '';
-  @Prop payloadDirection: string = 'receive';
-  @Prop payloadState: string = 'started';
-  @Prop payloadSize: number = 0;
-  @Prop bytesDone: number = 0;
-  @Prop settled: boolean = false;
-  // B2：只落在应用沙箱（非媒体文件）⇒ 文案「已保存到应用内」+ 显示「导出」
-  @Prop sandboxOnly: boolean = false;
+  @ObjectLink transfer: PayloadTransfer;
+  // 是否还有可处置文件（spool/沙箱副本存在）——由控制器判定，随字段变化即时求值
+  canDisposeFn: (p: PayloadTransfer) => boolean = () => true;
+  // 完成时间文案（HH:MM 等）——用于区分同名多次接收
+  timeTextFn: (p: PayloadTransfer) => string = () => '';
   onSave: (p: PayloadTransfer) => void = () => {
   };
   onDiscard: (p: PayloadTransfer) => void = () => {
@@ -31,58 +28,46 @@ export struct PayloadRow {
   };
 
   private isActive(): boolean {
-    return this.payloadState === 'started' || this.payloadState === 'progress';
+    return this.transfer.state === 'started' || this.transfer.state === 'progress';
   }
 
   private isPendingSave(): boolean {
-    return this.payloadDirection === 'receive' && this.payloadState === 'finished' && !this.settled;
+    return this.transfer.direction === 'receive' && this.transfer.state === 'finished' && !this.transfer.settled;
   }
 
   private percent(): number {
-    if (this.payloadSize <= 0) {
+    if (this.transfer.size <= 0) {
       return 0;
     }
-    const pct: number = Math.floor(this.bytesDone * 100 / this.payloadSize);
+    const pct: number = Math.floor(this.transfer.bytesDone * 100 / this.transfer.size);
     return pct > 100 ? 100 : pct;
-  }
-
-  private snapshot(): PayloadTransfer {
-    const item: PayloadTransfer = {
-      transferId: this.transferId,
-      deviceId: '',
-      direction: this.payloadDirection === 'send' ? 'send' : 'receive',
-      state: this.payloadState === 'progress' ? 'progress' : (this.payloadState === 'started' ? 'started'
-        : (this.payloadState === 'finished' ? 'finished' : (this.payloadState === 'cancelled' ? 'cancelled' : 'failed'))),
-      fileName: this.fileName,
-      size: this.payloadSize,
-      bytesDone: this.bytesDone,
-      filePath: '',
-      settled: this.settled,
-      sandboxOnly: this.sandboxOnly
-    };
-    return item;
   }
 
   build() {
     Column({ space: 6 }) {
       Row({ space: 8 }) {
-        Text(this.fileName.length > 0 ? this.fileName : `#${this.transferId}`)
+        Text(this.transfer.fileName.length > 0 ? this.transfer.fileName : `#${this.transfer.transferId}`)
           .fontSize(13)
           .fontColor($r('app.color.text_primary'))
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .layoutWeight(1)
         if (this.isActive()) {
-          Text(this.payloadDirection === 'receive' ? $r('app.string.files_receiving') : $r('app.string.files_sending'))
+          Text(this.transfer.direction === 'receive' ? $r('app.string.files_receiving') : $r('app.string.files_sending'))
             .fontSize(10)
             .fontColor($r('app.color.accent_text'))
-        } else if (this.payloadState === 'finished') {
-          Text(this.settled
-            ? (this.sandboxOnly ? $r('app.string.files_saved_in_app') : $r('app.string.files_saved'))
-            : $r('app.string.files_finished'))
-            .fontSize(10)
-            .fontColor(this.settled ? $r('app.color.dot_connected') : $r('app.color.accent_text'))
-        } else if (this.payloadState === 'cancelled') {
+        } else if (this.transfer.state === 'finished') {
+          // MSG229 §3.3：无可处置文件 ⇒ 文案「已结束」，与按钮显隐同一判据（canDispose）
+          if (this.transfer.settled) {
+            Text(this.transfer.sandboxOnly ? $r('app.string.files_saved_in_app') : $r('app.string.files_saved'))
+              .fontSize(10)
+              .fontColor($r('app.color.dot_connected'))
+          } else {
+            Text(this.canDisposeFn(this.transfer) ? $r('app.string.files_finished') : $r('app.string.files_ended'))
+              .fontSize(10)
+              .fontColor($r('app.color.accent_text'))
+          }
+        } else if (this.transfer.state === 'cancelled') {
           Text($r('app.string.files_cancelled'))
             .fontSize(10)
             .fontColor($r('app.color.text_muted'))
@@ -94,19 +79,26 @@ export struct PayloadRow {
       }
       .width('100%')
 
+      if (this.transfer.settled && this.timeTextFn(this.transfer).length > 0 && this.timeTextFn(this.transfer) !== '—') {
+        Text(this.timeTextFn(this.transfer))
+          .fontSize(10)
+          .fontColor($r('app.color.text_muted'))
+          .width('100%')
+      }
+
       if (this.isActive()) {
         Progress({ value: this.percent(), total: 100, type: ProgressType.Linear })
           .width('100%')
           .color($r('app.color.accent'))
           .backgroundColor($r('app.color.input_bg'))
-        Text(`${this.percent()}% · ${this.bytesDone} / ${this.payloadSize > 0 ? this.payloadSize : '?'}`)
+        Text(`${this.percent()}% · ${this.transfer.bytesDone} / ${this.transfer.size > 0 ? this.transfer.size : '?'}`)
           .fontSize(10)
           .fontColor($r('app.color.text_muted'))
           .fontFamily('monospace')
           .width('100%')
       }
 
-      if (this.settled && this.sandboxOnly && this.payloadDirection === 'receive') {
+      if (this.transfer.settled && this.transfer.sandboxOnly && this.transfer.direction === 'receive') {
         Row({ space: 8 }) {
           Button($r('app.string.files_action_export'))
             .fontSize(12)
@@ -115,7 +107,7 @@ export struct PayloadRow {
             .fontColor($r('app.color.accent_text'))
             .borderRadius(8)
             .onClick(() => {
-              this.onExport(this.snapshot());
+              this.onExport(this.transfer);
             })
         }
         .width('100%')
@@ -124,14 +116,14 @@ export struct PayloadRow {
 
       if (this.isActive() || this.isPendingSave()) {
         Row({ space: 8 }) {
-          if (this.isPendingSave()) {
+          if (this.isPendingSave() && this.canDisposeFn(this.transfer)) {
             Button($r('app.string.files_action_save'))
               .fontSize(12)
               .height(32)
               .backgroundColor($r('app.color.accent'))
               .borderRadius(8)
               .onClick(() => {
-                this.onSave(this.snapshot());
+                this.onSave(this.transfer);
               })
             Button($r('app.string.files_action_discard'))
               .fontSize(12)
@@ -140,7 +132,7 @@ export struct PayloadRow {
               .fontColor($r('app.color.danger_text'))
               .borderRadius(8)
               .onClick(() => {
-                this.onDiscard(this.snapshot());
+                this.onDiscard(this.transfer);
               })
           }
           if (this.isActive()) {
@@ -151,7 +143,7 @@ export struct PayloadRow {
               .fontColor($r('app.color.text_secondary'))
               .borderRadius(8)
               .onClick(() => {
-                this.onCancel(this.snapshot());
+                this.onCancel(this.transfer);
               })
           }
         }
@@ -165,8 +157,7 @@ export struct PayloadRow {
     .alignItems(HorizontalAlign.Start)
     // 点击整行 → 打开「文件详情」弹窗（属性 + 另存为/丢弃/取消）
     .onClick(() => {
-      this.onOpen(this.transferId);
+      this.onOpen(this.transfer.transferId);
     })
   }
 }
-
