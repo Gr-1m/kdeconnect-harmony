@@ -1949,6 +1949,7 @@ struct Index {
           stateText: this.payloadController.payloadStateText(this.payloadController.payloadDetail()),
           dirText: this.notify.resText(this.payloadController.payloadDetail().direction === 'receive'
             ? $r('app.string.file_dir_receive').id : $r('app.string.file_dir_send').id),
+          canDispose: this.payloadController.canDispose(this.payloadController.payloadDetail()),
           onSaveAs: (): void => {
             this.payloadController.saveAsPayload(this.payloadController.payloadDetail());
           },

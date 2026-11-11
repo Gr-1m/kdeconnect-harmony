@@ -12,6 +12,8 @@ export struct PayloadDetailDialog {
   @Prop timeText: string = '';
   @Prop stateText: string = '';
   @Prop dirText: string = '';
+  // MSG230 §2.3 / MSG238：源已不存在（expired/无 spool）时不给「另存为/丢弃」，只留关闭
+  @Prop canDispose: boolean = true;
   onSaveAs: () => void = () => {
   };
   onDiscard: () => void = () => {
@@ -52,6 +54,7 @@ export struct PayloadDetailDialog {
         this.attrRow($r('app.string.file_attr_state'), this.stateText)
         this.attrRow($r('app.string.file_attr_dir'), this.dirText)
         Row({ space: 10 }) {
+          if (this.canDispose) {
           Button($r('app.string.file_action_save_as'))
             .layoutWeight(1)
             .height(42)
@@ -71,6 +74,7 @@ export struct PayloadDetailDialog {
             .onClick(() => {
               this.onDiscard();
             })
+          }
           Button($r('app.string.action_cancel'))
             .layoutWeight(1)
             .height(42)

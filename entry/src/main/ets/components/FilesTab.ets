@@ -314,13 +314,21 @@ export struct FilesTab {
                 Column({ space: 2 }) {
                   Row({ space: 6 }) {
                     if (g.count > 1) {
-                      SymbolGlyph(this.isGroupExpanded(g.key)
-                        ? $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_right'))
-                        .fontSize(14)
-                        .fontColor([$r('app.color.text_secondary')])
-                        .onClick(() => {
-                          this.toggleGroup(g.key);
-                        })
+                      // MSG238：箭头必须**独立热区**（真机箭头仅约 25px 宽，手指点不中 ⇒ 落到整行开详情）。
+                      // 用 44vp 容器 + hitTestBehavior(Block) 拦住冒泡，与行内 onClick（开详情）互不吞。
+                      Row() {
+                        SymbolGlyph(this.isGroupExpanded(g.key)
+                          ? $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_right'))
+                          .fontSize(14)
+                          .fontColor([$r('app.color.text_secondary')])
+                      }
+                      .width(44)
+                      .height(44)
+                      .justifyContent(FlexAlign.Center)
+                      .hitTestBehavior(HitTestMode.Block)
+                      .onClick(() => {
+                        this.toggleGroup(g.key);
+                      })
                     }
                     Text(g.fileName.length > 0 ? g.fileName : `#${g.latest.transferId}`)
                       .fontSize(13)
