@@ -29,6 +29,8 @@ import { photoAccessHelper } from '@kit.MediaLibraryKit';
 const RECV_WATCHDOG_MS: number = 30000;
 // B3：已丢弃 transferId 的记忆上限（防止迟到事件重建条目）
 const DISCARD_KEEP: number = 200;
+// 已计入批计数的 transferId 记忆上限（防长跑会话无限增长）
+const TERMINAL_KEEP: number = 500;
 
 // MSG223 B：晚到预告的暂存结构
 interface PayloadBatchHint {
@@ -141,7 +143,8 @@ export class PayloadController {
         size: p.size,
         bytesDone: p.bytesDone,
         filePath: p.filePath,
-        settled: p.settled
+        settled: p.settled,
+        sandboxOnly: p.sandboxOnly === true
       };
       return failed;
     });
@@ -170,7 +173,6 @@ export class PayloadController {
       // 否则（预告晚于传输结束）挂起，等下一个 started 认领 —— 避免产生永远 0/1 的空批
       if (!this.hasActiveReceive(deviceId)) {
         this.pendingHint = { deviceId: deviceId, expectedFiles: numberOfFiles, totalBytes: totalPayloadSize, isUpdate: isUpdate };
-        console.info(`KDC diag batch hint deferred (no in-flight transfer) dev=${deviceId.substring(0, 8)} n=${numberOfFiles}`);
         return;
       }
       this.openBatch(deviceId, numberOfFiles, totalPayloadSize, isUpdate);
@@ -285,7 +287,6 @@ export class PayloadController {
       // MSG223 B：零产出批（doneFiles=0）直接从列表移除，杜绝 "0/1 · 0% · 接收中" 长期残留
       const b: PayloadBatch | undefined = this.batchById(batchId);
       if (b !== undefined && b.doneFiles === 0) {
-        console.info(`KDC diag batch #${batchId} dropped (zero done)`);
         this.batches = this.batches.filter((x: PayloadBatch) => x.batchId !== batchId);
       }
     }
@@ -343,6 +344,10 @@ export class PayloadController {
       // 只在「本条首次进入终态」时计数：doneFiles 以 transferIds 中已终态数为准，避免重复累加
       if (terminal && !this.terminalIds.includes(item.transferId)) {
         this.terminalIds = this.terminalIds.concat([item.transferId]);
+        // 与 DISCARD_KEEP 同类上限：只保留最近 TERMINAL_KEEP 条（防长跑会话无限增长）
+        if (this.terminalIds.length > TERMINAL_KEEP) {
+          this.terminalIds = this.terminalIds.slice(this.terminalIds.length - TERMINAL_KEEP);
+        }
         next.doneFiles++;
         next.doneBytes += item.bytesDone > 0 ? item.bytesDone : item.size;
       }
@@ -463,10 +468,6 @@ export class PayloadController {
     } else {
       this.payloads = this.payloads.map((p: PayloadTransfer) => p.transferId === tid ? item : p);
     }
-    if (state !== 'progress') {
-      console.info(`KDC diag payload ${state} ${item.direction} #${tid} ${item.fileName}`
-        + ` settled=${item.settled} sandboxOnly=${item.sandboxOnly === true}`);
-    }
     // B1：接收 watchdog —— started/progress 期间挂表，终态摘表
     if (item.direction === 'receive') {
       if (state === 'started' || state === 'progress') {
@@ -483,14 +484,6 @@ export class PayloadController {
     // S2：接收方向挂到批次（新建批 / 计数 / 结算），发送方向不参与批次
     if (item.direction === 'receive' && item.deviceId.length > 0) {
       this.attachToReceiveBatch(item, idx < 0, state);
-    }
-    if (state === 'finished' && item.direction === 'receive') {
-      // MSG220 §3.1：无条件门控诊断（区分「settled 已置」「开关关」「进了分支」三种情形）
-      console.info(`KDC diag autosave gate #${tid} settled=${item.settled}`
-        + ` filePathLen=${item.filePath.length} size=${item.size} autoSave=${this.autoSaveEnabled()}`
-        // Omp-Native 定位请求：原始事件字段（区分「桥层丢字段」与「native 未回填」）
-        + ` raw=${event.payloadFilePath === undefined ? 'undefined' : `len=${event.payloadFilePath.length}`}`
-        + ` rawName=${event.payloadFileName === undefined ? 'undefined' : 'ok'}`);
     }
     // MSG220 §2：**不再**把 filePath 非空作为前置条件 —— 自动保存走 keepPayload(tid, dest)（native 自己搬 spool），
     // 路径为空不代表拿不到文件；旧条件会让整段自动保存被静默跳过（真机 #5/#6 实证）
@@ -546,6 +539,7 @@ export class PayloadController {
         bytesDone: p.bytesDone,
         filePath: p.filePath,
         settled: p.settled,
+        sandboxOnly: p.sandboxOnly === true,
         errorCode: code,
         timeMs: Date.now()
       };
@@ -761,7 +755,6 @@ export class PayloadController {
   // ========== 标记已处置（原 L1925–L1940）==========
 
   markPayloadSettled(transferId: number, sandboxOnly: boolean = false): void {
-    console.info(`KDC diag settle #${transferId} sandboxOnly=${sandboxOnly}`);
     // B2：保留 timeMs / errorCode（此前重建对象时被丢弃）
     this.payloads = this.payloads.map((p: PayloadTransfer): PayloadTransfer => {
       if (p.transferId !== transferId) {
@@ -907,9 +900,6 @@ export class PayloadController {
     // MSG223 A：**不弹窗、不阻塞** —— 只查授权状态（自动流程里弹窗会把整条保存链挂住）
     const permName: string = this.writePermissionFor(name);
     const granted: boolean = permName.length === 0 || this.checkWritePermission(name);
-    console.info(`KDC diag savePayload #${p.transferId} name=${name} isImage=${this.isImageName(name)}`
-      + ` isVideo=${this.isVideoName(name)} perm=${permName.length > 0 ? 'needed' : 'none'}`
-      + ` granted=${granted} filePathLen=${p.filePath.length}`);
     let sandboxOk: boolean = false;
     try {
       sandboxOk = native.keepPayload(p.transferId, dest);
@@ -918,14 +908,12 @@ export class PayloadController {
       this.log('keepPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
     }
     if (!sandboxOk) {
-      console.info(`KDC diag savePayload #${p.transferId} keepPayload=false -> 保存失败`);
       this.toast(this.resText($r('app.string.files_save_failed').id));
       return;
     }
     // ① 图片/视频：免交互入相册（用户可见）——成功才是真「已保存」；**需已授权**（未授权不弹窗，直接降级）
     if ((this.isImageName(name) || this.isVideoName(name)) && granted) {
       const inAlbum: boolean = await this.saveToAlbum(dest, name);
-      console.info(`KDC diag savePayload #${p.transferId} album=${inAlbum}`);
       if (inAlbum) {
         this.markPayloadSettled(p.transferId, false);
         this.toast(`${this.resText($r('app.string.files_saved').id)}: ${name}`);
@@ -941,7 +929,6 @@ export class PayloadController {
     // ② 其它文件：只落应用沙箱（普通应用无免交互公共目录 API）⇒ 【不得谎报「已保存」】
     //    文案「已保存到应用内」+ 行内「导出」入口（用户手势走 picker）
     this.markPayloadSettled(p.transferId, true);
-    console.info(`KDC diag savePayload #${p.transferId} -> in-app (sandboxOnly=true)`);
     this.toast(`${this.resText($r('app.string.files_saved_in_app').id)}: ${name}`);
   }
 
