@@ -29,6 +29,8 @@ import { photoAccessHelper } from '@kit.MediaLibraryKit';
 const RECV_WATCHDOG_MS: number = 30000;
 // B3：已丢弃 transferId 的记忆上限（防止迟到事件重建条目）
 const DISCARD_KEEP: number = 200;
+// 权限申请超时（MSG234 §4.1）：超时即视为未授权 → 降级「应用内」，避免整条保存链挂住
+const PERM_TIMEOUT_MS: number = 3500;
 // 已计入批计数的 transferId 记忆上限（防长跑会话无限增长）
 
 // MSG223 B：晚到预告的暂存结构
@@ -389,6 +391,26 @@ export class PayloadController {
   }
 
   /** 该批的「已终态文件数 / 已收字节」——从 payloads 现场派生（计数器漂移会显示成 0/N，2026-11-11 实测） */
+  historyOf(transferId: number): PayloadTransfer | undefined {
+    for (const h of this.history) {
+      if (h.transferId === transferId) {
+        return h;
+      }
+    }
+    return undefined;
+  }
+
+  /** 紧凑时间（HH:MM）——历史聚合行显示「最近 …」用 */
+  compactTimeTextOf(p: PayloadTransfer): string {
+    if (p.timeMs === undefined || p.timeMs <= 0) {
+      return '';
+    }
+    const d: Date = new Date(p.timeMs);
+    const hh: string = d.getHours() < 10 ? `0${d.getHours()}` : `${d.getHours()}`;
+    const mm: string = d.getMinutes() < 10 ? `0${d.getMinutes()}` : `${d.getMinutes()}`;
+    return `${hh}:${mm}`;
+  }
+
   payloadOf(transferId: number): PayloadTransfer | undefined {
     for (const p of this.payloads) {
       if (p.transferId === transferId) {
@@ -840,6 +862,29 @@ export class PayloadController {
     }
   }
 
+  /** 申请写权限（媒体自动保存用）：3.5s 超时或任何异常一律视为未授权，**绝不挂住**调用链 */
+  private async requestWritePermissionTimeout(name: string): Promise<boolean> {
+    let timer: number = -1;
+    const timeout: Promise<boolean> = new Promise<boolean>((resolve: (v: boolean) => void): void => {
+      timer = setTimeout((): void => {
+        console.info(`KDC perm timeout after ${PERM_TIMEOUT_MS}ms name=${name}`);
+        resolve(false);
+      }, PERM_TIMEOUT_MS);
+    });
+    try {
+      const r: boolean = await Promise.race([this.requestWritePermission(name), timeout]);
+      console.info(`KDC perm race settled granted=${r} name=${name}`);
+      return r;
+    } catch (e) {
+      console.info(`KDC perm race error name=${name} ${e instanceof Error ? e.message : 'unknown'}`);
+      return false;
+    } finally {
+      if (timer >= 0) {
+        clearTimeout(timer);
+      }
+    }
+  }
+
   /**
    * MSG229 §3.3 / MSG230：该条目是否还有可处置的文件（spool 或沙箱副本存在）。
    * 用于「无 spool 不显示 保存/另存为/丢弃，文案改『已结束』」，杜绝点了必然失败的按钮。
@@ -971,7 +1016,8 @@ export class PayloadController {
     // 本次会话只弹一次（mediaPermAsked），避免每次收图都打断；拒绝则降级「应用内」+ toast。
     if (isMedia && !granted && !this.mediaPermAsked) {
       this.mediaPermAsked = true;
-      granted = await this.requestWritePermission(name);
+      // MSG234 §4.1：申请**必须带超时**——弹窗被忽略/系统不弹时旧实现会永久 await，整条保存链挂住
+      granted = await this.requestWritePermissionTimeout(name);
       this.log(`media permission requested once: granted=${granted}`);
     }
     let sandboxOk: boolean = false;
@@ -1084,6 +1130,14 @@ export class PayloadController {
   // ========== 丢弃 / 取消（原 L2201–L2239）==========
 
   discardPayload(p: PayloadTransfer): void {
+    // MSG232 §2.2：旧行（已被移除/已被丢弃）的残留命中 ⇒ 明确 no-op 反馈，避免「点了没反应」
+    const gone: boolean = p.fileName.length === 0
+      || (this.payloadOf(p.transferId) === undefined && this.historyOf(p.transferId) === undefined);
+    if (gone) {
+      console.info(`KDC discard skipped #${p.transferId} (stale row, no longer in lists)`);
+      this.toast(this.resText($r('app.string.files_source_gone').id));
+      return;
+    }
     console.info(`KDC discard start #${p.transferId} name=${p.fileName} before=${this.payloads.length}/${this.history.length}`);
     // B3：先记入 discardedIds —— 之后 native 派发的迟到终态事件会被 handlePayloadTransfer 幂等忽略
     if (!this.discardedIds.includes(p.transferId)) {

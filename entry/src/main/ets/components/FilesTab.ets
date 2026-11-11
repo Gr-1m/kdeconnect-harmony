@@ -8,6 +8,15 @@ import { PayloadController } from '../state/PayloadController';
 
 // 文件 Tab：payload 收发（发送入口 + 进度/处置）。
 // 行渲染走子组件 PayloadRow（@Prop 驱动刷新），避免 @Builder 值参数/稳定 key 导致的"进度不刷新"。
+// 历史聚合组（同文件名 + 同设备折叠为一行；MSG232 §2.1）
+interface HistoryGroup {
+  key: string;
+  fileName: string;
+  count: number;
+  latest: PayloadTransfer;
+  items: PayloadTransfer[];
+}
+
 @Component
 export struct FilesTab {
   @Prop connectedCount: number = 0;
@@ -15,6 +24,8 @@ export struct FilesTab {
   // 【MSG217 §2.3】直读 @Observed 控制器（@ObjectLink）：payloads/batches/history 的状态变更
   // 必然驱动本组件刷新（此前用 @Prop 数组快照，实测 finished 后长时间停在 0/1·0%「接收中」）
   @ObjectLink controller: PayloadController;
+  // 历史聚合行的展开态（key = fileName|deviceId）
+  @State expandedGroups: string[] = [];
   cardMaterial: uiMaterial.Material | undefined = undefined;
   onSavePayload: (p: PayloadTransfer) => void = () => {
   };
@@ -43,6 +54,53 @@ export struct FilesTab {
   /** 「历史记录」分区数据源：只读持久化历史（运行时条目由上面三组/批次呈现） */
   private historyItems(): PayloadTransfer[] {
     return this.controller.history;
+  }
+
+  /** MSG232 §2.1：历史分区按 (fileName, deviceId) 聚合 —— 同名多次接收折叠成一行「共 N 次 · 最近 HH:MM」 */
+  private historyGroups(): HistoryGroup[] {
+    const out: HistoryGroup[] = [];
+    for (const p of this.historyItems()) {
+      if (this.inBatch(p)) {
+        continue;
+      }
+      const key: string = `${p.fileName}|${p.deviceId}`;
+      let g: HistoryGroup | undefined = undefined;
+      for (const o of out) {
+        if (o.key === key) {
+          g = o;
+          break;
+        }
+      }
+      if (g === undefined) {
+        out.push({ key: key, fileName: p.fileName, count: 1, latest: p, items: [p] });
+      } else {
+        g.count++;
+        g.items.push(p);
+      }
+    }
+    return out;
+  }
+
+  private isGroupExpanded(key: string): boolean {
+    return this.expandedGroups.includes(key);
+  }
+
+  private toggleGroup(key: string): void {
+    this.expandedGroups = this.isGroupExpanded(key)
+      ? this.expandedGroups.filter((k: string) => k !== key)
+      : this.expandedGroups.concat([key]);
+  }
+
+  /** 聚合行右侧文案：多条 →「共 N 次 · 最近 HH:MM」；单条 → HH:MM */
+  private groupMeta(g: HistoryGroup): string {
+    const t: string = this.controller.compactTimeTextOf(g.latest);
+    if (g.count <= 1) {
+      return t;
+    }
+    const countText: string = this.controller.resText($r('app.string.files_history_count').id)
+      .replace('%d', `${g.count}`);
+    const recent: string = this.controller.resText($r('app.string.files_history_recent').id);
+    return t.length > 0 ? `${countText} · ${recent} ${t}` : countText;
   }
 
   private batchItems(b: PayloadBatch): PayloadTransfer[] {
@@ -244,15 +302,66 @@ export struct FilesTab {
         }
 
         // 历史记录（持久化条目；运行时条目由上面「接收批次 / 传输中 / 待处置」呈现）
-        if (this.historyItems().filter((p: PayloadTransfer) => !this.inBatch(p)).length > 0) {
+        // MSG232 §2.1：同名聚合为一行（点行开详情，点左侧箭头展开各次时间）
+        if (this.historyGroups().length > 0) {
           GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
             Column({ space: 6 }) {
               Text($r('app.string.files_history'))
                 .fontSize(13)
                 .fontWeight(FontWeight.Medium)
                 .fontColor($r('app.color.text_primary'))
-              this.payloadList('done',
-                this.historyItems().filter((p: PayloadTransfer) => !this.inBatch(p)))
+              ForEach(this.historyGroups(), (g: HistoryGroup) => {
+                Column({ space: 2 }) {
+                  Row({ space: 6 }) {
+                    if (g.count > 1) {
+                      SymbolGlyph(this.isGroupExpanded(g.key)
+                        ? $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_right'))
+                        .fontSize(14)
+                        .fontColor([$r('app.color.text_secondary')])
+                        .onClick(() => {
+                          this.toggleGroup(g.key);
+                        })
+                    }
+                    Text(g.fileName.length > 0 ? g.fileName : `#${g.latest.transferId}`)
+                      .fontSize(13)
+                      .fontColor($r('app.color.text_primary'))
+                      .maxLines(1)
+                      .textOverflow({ overflow: TextOverflow.Ellipsis })
+                      .layoutWeight(1)
+                    Text(this.groupMeta(g))
+                      .fontSize(10)
+                      .fontColor($r('app.color.text_muted'))
+                  }
+                  .width('100%')
+                  .padding({ top: 12, bottom: 12 })
+                  .onClick(() => {
+                    this.onOpenPayload(g.latest.transferId);
+                  })
+
+                  if (this.isGroupExpanded(g.key)) {
+                    ForEach(g.items, (p: PayloadTransfer) => {
+                      Row({ space: 8 }) {
+                        Text(this.controller.compactTimeTextOf(p).length > 0
+                          ? this.controller.compactTimeTextOf(p) : '—')
+                          .fontSize(11)
+                          .fontColor($r('app.color.text_secondary'))
+                          .width(64)
+                        Text(this.controller.payloadStateText(p))
+                          .fontSize(11)
+                          .fontColor($r('app.color.text_muted'))
+                          .layoutWeight(1)
+                      }
+                      .width('100%')
+                      .padding({ left: 22, top: 4, bottom: 4 })
+                      .onClick(() => {
+                        this.onOpenPayload(p.transferId);
+                      })
+                    }, (p: PayloadTransfer) => `hx_${p.transferId}_${p.uid}`)
+                  }
+                }
+                .width('100%')
+                .alignItems(HorizontalAlign.Start)
+              }, (g: HistoryGroup) => `hg_${g.key}_${g.latest.uid}_${g.count}`)
             }
             .width('100%')
             .alignItems(HorizontalAlign.Start)

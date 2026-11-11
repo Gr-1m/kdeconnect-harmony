@@ -847,6 +847,14 @@
     {
       "name": "files_source_gone",
       "value": "文件已不存在"
+    },
+    {
+      "name": "files_history_count",
+      "value": "共 %d 次"
+    },
+    {
+      "name": "files_history_recent",
+      "value": "最近"
     }
   ]
 }

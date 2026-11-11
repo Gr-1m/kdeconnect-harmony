@@ -1098,23 +1098,37 @@ struct Index {
     if (permName === '') {
       return true;
     }
+    // MSG234：出错/无 context 一律视为**未授权**（旧实现 catch 返回 true = 假装已授权，链路上会去写相册再失败）
     try {
       const hostCtx: Context | undefined = this.getUIContext().getHostContext();
       if (hostCtx === undefined) {
-        return true;
+        console.info(`KDC perm no host context -> denied name=${permName}`);
+        return false;
       }
       const perms: Permissions[] = permName === 'ohos.permission.WRITE_IMAGEVIDEO'
         ? ['ohos.permission.WRITE_IMAGEVIDEO']
         : ['ohos.permission.WRITE_AUDIO'];
       const atManager: abilityAccessCtrl.AtManager = abilityAccessCtrl.createAtManager();
+      console.info(`KDC perm request start ${permName}`);
       const result = await atManager.requestPermissionsFromUser(hostCtx, perms);
       const codes: number[] = result.authResults;
       const granted: boolean = codes.length > 0 && codes[0] === 0;
+      console.info(`KDC perm request result granted=${granted} codes=${JSON.stringify(codes)}`);
       this.notify.log(`permission ${permName}: granted=${granted}`);
+      if (!granted) {
+        // 用户在系统设置里已 DENY 时系统不再弹框 ⇒ 按平台建议跳「权限设置页」引导一次（返回 false 让调用方降级）
+        console.info(`KDC perm not granted -> jump to settings ${permName}`);
+        try {
+          await atManager.requestPermissionOnSetting(hostCtx, perms);
+        } catch (e2) {
+          console.info('KDC perm open settings failed: ' + (e2 instanceof Error ? e2.message : 'unknown'));
+        }
+      }
       return granted;
     } catch (e) {
+      console.info('KDC perm request failed: ' + (e instanceof Error ? e.message : 'unknown'));
       this.notify.log('permission request failed: ' + (e instanceof Error ? e.message : 'unknown'));
-      return true;
+      return false;
     }
   }
 

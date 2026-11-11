@@ -867,6 +867,14 @@
     {
       "name": "files_source_gone",
       "value": "File is no longer available"
+    },
+    {
+      "name": "files_history_count",
+      "value": "%d times"
+    },
+    {
+      "name": "files_history_recent",
+      "value": "latest"
     }
   ]
 }
