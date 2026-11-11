@@ -859,6 +859,14 @@
     {
       "name": "files_history_clear_confirm",
       "value": "确认清除全部接收历史？此操作不可撤销。"
+    },
+    {
+      "name": "files_action_open",
+      "value": "打开"
+    },
+    {
+      "name": "files_open_failed",
+      "value": "无法打开该文件"
     }
   ]
 }

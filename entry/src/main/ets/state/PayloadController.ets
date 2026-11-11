@@ -21,8 +21,8 @@ import native from 'libkdeconnect_napi.so';
 import { NetEvent } from 'libkdeconnect_napi.so';
 import { PayloadTransfer, PayloadTransferInit, PayloadDirection, PayloadState, PayloadBatch, PayloadBatchState, DetailActionMode } from '../model/PayloadModels';
 import { PayloadHistory } from '../common/PayloadHistory';
-import { fileIo, picker } from '@kit.CoreFileKit';
-import { Context, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
+import { fileIo, picker, fileUri } from '@kit.CoreFileKit';
+import { Context, abilityAccessCtrl, Permissions, common, wantConstant, Want } from '@kit.AbilityKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 
 // B1：接收条目 watchdog（started 后 30s 无进展 ⇒ 落 failed，避免「接收中」僵尸常驻）
@@ -899,12 +899,96 @@ export class PayloadController {
     return !p.expired && p.direction === 'receive' && p.state === 'finished' && !p.settled;
   }
 
-  /** 详情弹窗按钮策略（MSG240 §4.2）：settled→saveAs；finished&&!settled→saveDiscard；expired/其它→none */
+  /** 详情弹窗按钮策略（MSG240 §4.2 + MSG243 四态） */
   detailActionMode(p: PayloadTransfer): DetailActionMode {
     if (p.direction !== 'receive' || p.state !== 'finished' || p.expired) {
       return 'none';
     }
-    return p.settled ? 'saveAs' : 'saveDiscard';
+    if (p.settled) {
+      // 已保存：给「打开 + 另存为」（**不给丢弃**，避免误删已存文件）；副本已不在则仅「关闭」
+      return this.fileExistsFor(p) ? 'openSaveAs' : 'none';
+    }
+    return 'saveDiscard';
+  }
+
+  /** MSG243：只读调起系统查看器打开条目文件（沙箱副本优先）。失败/无查看器 ⇒ toast，绝不修改/删除 */
+  async openPayload(p: PayloadTransfer): Promise<void> {
+    const name: string = this.sanitizeFileName(p.fileName, p.transferId);
+    const path: string = `${this.hostFilesDir()}/${name}`;
+    let exists: boolean = false;
+    try {
+      exists = fileIo.accessSync(path);
+    } catch (e) {
+      exists = false;
+    }
+    const ctx: Context | undefined = this.hostContext();
+    if (!exists || ctx === undefined) {
+      this.log(`open skipped: exists=${exists} ctxReady=${ctx !== undefined}`);
+      this.toast(this.resText($r('app.string.files_open_failed').id));
+      return;
+    }
+    try {
+      const uri: string = fileUri.getUriFromPath(path);
+      const want: Want = {
+        action: 'ohos.want.action.viewData',
+        uri: uri,
+        type: this.mimeOf(name),
+        flags: wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION
+      };
+      await (ctx as common.UIAbilityContext).startAbility(want);
+      this.log(`open -> ${uri}`);
+    } catch (e) {
+      this.log('open failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.toast(this.resText($r('app.string.files_open_failed').id));
+    }
+  }
+
+  /** 简易 MIME 推断（仅用于调起查看器） */
+  private mimeOf(name: string): string {
+    const lower: string = name.toLowerCase();
+    if (lower.endsWith('.png')) {
+      return 'image/png';
+    }
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+      return 'image/jpeg';
+    }
+    if (lower.endsWith('.gif')) {
+      return 'image/gif';
+    }
+    if (lower.endsWith('.webp')) {
+      return 'image/webp';
+    }
+    if (lower.endsWith('.bmp')) {
+      return 'image/bmp';
+    }
+    if (lower.endsWith('.heic')) {
+      return 'image/heif';
+    }
+    if (lower.endsWith('.mp4')) {
+      return 'video/mp4';
+    }
+    if (lower.endsWith('.mkv')) {
+      return 'video/x-matroska';
+    }
+    if (lower.endsWith('.webm')) {
+      return 'video/webm';
+    }
+    if (lower.endsWith('.mp3')) {
+      return 'audio/mpeg';
+    }
+    if (lower.endsWith('.wav')) {
+      return 'audio/x-wav';
+    }
+    if (lower.endsWith('.flac')) {
+      return 'audio/flac';
+    }
+    if (lower.endsWith('.pdf')) {
+      return 'application/pdf';
+    }
+    if (lower.endsWith('.txt')) {
+      return 'text/plain';
+    }
+    return 'application/octet-stream';
   }
 
   /** spool 或沙箱副本是否存在（canDispose / 启动校正共用） */

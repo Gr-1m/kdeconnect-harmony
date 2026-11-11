@@ -1951,6 +1951,10 @@ struct Index {
           dirText: this.notify.resText(this.payloadController.payloadDetail().direction === 'receive'
             ? $r('app.string.file_dir_receive').id : $r('app.string.file_dir_send').id),
           actionMode: this.payloadController.detailActionMode(this.payloadController.payloadDetail()),
+          onOpen: (): void => {
+            this.payloadController.openPayload(this.payloadController.payloadDetail());
+            this.payloadController.detailOpen = false;
+          },
           onSave: (): void => {
             this.payloadController.savePayload(this.payloadController.payloadDetail());
             this.payloadController.detailOpen = false;

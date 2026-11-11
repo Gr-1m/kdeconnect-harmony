@@ -5,8 +5,10 @@ export type PayloadDirection = 'send' | 'receive';
 
 export type PayloadState = 'started' | 'progress' | 'finished' | 'failed' | 'cancelled';
 
-// 文件详情弹窗的按钮策略（MSG240 §4.2）：已保存→仅「另存为」；待处置→「保存/丢弃」；expired→仅「关闭」
-export type DetailActionMode = 'saveAs' | 'saveDiscard' | 'none';
+// 文件详情弹窗的按钮策略（MSG240 §4.2 / MSG243）：
+//  settled 且文件在 → 'openSaveAs'（打开 + 另存为，**不给丢弃**）；settled 但文件不在 → 'none'；
+//  finished&&!settled → 'saveDiscard'（保存 + 丢弃）；expired / 非接收 → 'none'（仅关闭）
+export type DetailActionMode = 'openSaveAs' | 'saveDiscard' | 'none';
 
 // 构造/更新用的入参形态（纯字段，便于对象字面量传参）
 export interface PayloadTransferInit {

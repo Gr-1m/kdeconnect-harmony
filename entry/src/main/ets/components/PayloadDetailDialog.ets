@@ -16,6 +16,8 @@ export struct PayloadDetailDialog {
   @Prop actionMode: string = 'none';
   onSave: () => void = () => {
   };
+  onOpen: () => void = () => {
+  };
   onSaveAs: () => void = () => {
   };
   onDiscard: () => void = () => {
@@ -56,12 +58,23 @@ export struct PayloadDetailDialog {
         this.attrRow($r('app.string.file_attr_state'), this.stateText)
         this.attrRow($r('app.string.file_attr_dir'), this.dirText)
         Row({ space: 10 }) {
-          if (this.actionMode === 'saveAs') {
-            Button($r('app.string.file_action_save_as'))
+          if (this.actionMode === 'openSaveAs') {
+            // MSG243：已保存条目 = 打开 + 另存为（**无丢弃**，避免误删已存文件）
+            Button($r('app.string.files_action_open'))
               .layoutWeight(1)
               .height(42)
               .fontSize(14)
               .backgroundColor($r('app.color.accent'))
+              .borderRadius(12)
+              .onClick(() => {
+                this.onOpen();
+              })
+            Button($r('app.string.file_action_save_as'))
+              .layoutWeight(1)
+              .height(42)
+              .fontSize(14)
+              .backgroundColor($r('app.color.chip_bg'))
+              .fontColor($r('app.color.accent_text'))
               .borderRadius(12)
               .onClick(() => {
                 this.onSaveAs();
