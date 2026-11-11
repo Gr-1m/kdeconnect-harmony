@@ -7,6 +7,9 @@ export struct FilesDrawerContent {
   @StorageProp('statusBarHeightPx') statusBarHeightPx: number = 0;
   // S2 §3.5：接收文件自动保存开关（由页面写入 AppStorage，面板被 HdsSideBar 缓存也不会失联）
   @StorageLink('autoSaveFiles') autoSaveFiles: boolean = true;
+  // MSG236 ①：清除接收历史（由页面持有实现；本组件只做二次确认 + 回调）
+  onClearHistory: () => void = () => {
+  };
 
   build() {
     Column({ space: 10 }) {
@@ -46,6 +49,42 @@ export struct FilesDrawerContent {
             .onChange((isOn: boolean) => {
               // 写 AppStorage → 页面 @Watch 负责持久化与门控
               this.autoSaveFiles = isOn;
+            })
+        }
+        .width('100%')
+        .padding({ left: 12, right: 12, top: 12, bottom: 12 })
+        .borderRadius(14)
+        .backgroundColor($r('app.color.card_bg'))
+        .border({ width: 1, color: $r('app.color.card_border') })
+
+        Row({ space: 12 }) {
+          Text($r('app.string.files_history_clear'))
+            .fontSize(14)
+            .fontColor($r('app.color.text_secondary'))
+            .layoutWeight(1)
+          Button($r('app.string.files_history_clear'))
+            .fontSize(12)
+            .height(32)
+            .backgroundColor($r('app.color.danger_bg'))
+            .fontColor($r('app.color.danger_text'))
+            .borderRadius(8)
+            .onClick((): void => {
+              AlertDialog.show({
+                title: $r('app.string.files_history_clear'),
+                message: $r('app.string.files_history_clear_confirm'),
+                primaryButton: {
+                  value: $r('app.string.action_cancel'),
+                  action: (): void => {
+                  }
+                },
+                secondaryButton: {
+                  value: $r('app.string.files_history_clear'),
+                  fontColor: $r('app.color.danger_text'),
+                  action: (): void => {
+                    this.onClearHistory();
+                  }
+                }
+              });
             })
         }
         .width('100%')

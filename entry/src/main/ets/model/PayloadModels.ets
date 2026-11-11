@@ -18,6 +18,8 @@ export interface PayloadTransferInit {
   settled: boolean; // 已保存 / 已丢弃（UI 标记，避免重复操作）
   // B2（2026-11-09）：true = 只落在**应用沙箱**（非媒体文件无免交互公共目录 API）⇒ UI 显示「已保存到应用内」并给「导出」入口
   sandboxOnly?: boolean;
+  // MSG236 ②：启动校正后的「不可处置」历史（spool/沙箱副本已不存在）——UI 显示「已结束」且不给按钮
+  expired?: boolean;
   // 结束时间（ms，2026-09-17 加）：文件详情弹窗要展示"什么时间传过来的"；仅终态写入并持久化
   timeMs?: number;
   // 终态错误码（S2 契约 v0.2 §5）：0 成功 / 1 端口超时 / 2 TLS / 3 中断 / 4 本端读失败 /
@@ -48,6 +50,7 @@ export class PayloadTransfer {
   filePath: string = '';
   settled: boolean = false;
   sandboxOnly: boolean = false;
+  expired: boolean = false;
   timeMs: number | undefined = undefined;
   errorCode: number | undefined = undefined;
 
@@ -71,6 +74,7 @@ export class PayloadTransfer {
     this.filePath = init.filePath;
     this.settled = init.settled;
     this.sandboxOnly = init.sandboxOnly === true;
+    this.expired = init.expired === true;
     this.timeMs = init.timeMs;
     this.errorCode = init.errorCode;
   }

@@ -778,6 +778,10 @@ export class PayloadController {
       if (send) {
         return this.resText($r('app.string.files_sent').id);
       }
+      if (p.expired) {
+        // MSG236 ②：启动校正标记过 —— 文件已不在，显示「已结束」而不是「已完成」
+        return this.resText($r('app.string.files_ended').id);
+      }
       if (!p.settled) {
         return this.resText($r('app.string.files_finished').id);
       }
@@ -890,9 +894,14 @@ export class PayloadController {
    * 用于「无 spool 不显示 保存/另存为/丢弃，文案改『已结束』」，杜绝点了必然失败的按钮。
    */
   canDispose(p: PayloadTransfer): boolean {
-    if (p.direction !== 'receive' || p.state !== 'finished' || p.settled) {
+    if (p.expired || p.direction !== 'receive' || p.state !== 'finished' || p.settled) {
       return false;
     }
+    return this.fileExistsFor(p);
+  }
+
+  /** spool 或沙箱副本是否存在（canDispose / 启动校正共用） */
+  private fileExistsFor(p: PayloadTransfer): boolean {
     const name: string = this.sanitizeFileName(p.fileName, p.transferId);
     const candidates: string[] = [`${this.hostFilesDir()}/${name}`];
     if (p.filePath.length > 0) {
@@ -907,6 +916,26 @@ export class PayloadController {
       }
     }
     return false;
+  }
+
+  /**
+   * MSG236 ②：启动加载历史后做**一次性迁移** —— 把「已收完但未处置」而 spool/沙箱副本都已不存在的条目
+   * 标记 `expired=true`（UI 显示「已结束（文件已不在）」且不给保存/丢弃/另存为）。
+   * 返回是否发生变化；变化由调用方 `persistHistory` 写回（升级后旧缓存自动被修正）。
+   */
+  refreshHistoryExpiry(): boolean {
+    let changed: boolean = false;
+    for (const h of this.history) {
+      if (h.direction !== 'receive' || h.state !== 'finished' || h.settled || h.expired) {
+        continue;
+      }
+      if (this.fileExistsFor(h)) {
+        continue;
+      }
+      h.expired = true;
+      changed = true;
+    }
+    return changed;
   }
 
   payloadDetail(): PayloadTransfer {

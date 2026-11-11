@@ -22,6 +22,7 @@ export struct SideBarPanelHost {
   @Prop settingsAppVersion: string = '';
   @Link drawerExpanded: boolean;
   onClose: () => void = () => {};
+  onClearHistory: () => void = () => {};
   onOpenDevice: (d: DeviceItem) => void = (_d: DeviceItem) => {};
   onPairRequest: (d: DeviceItem) => void = (_d: DeviceItem) => {};
   onPickSection: (index: number) => void = (_i: number) => {};
@@ -53,7 +54,11 @@ export struct SideBarPanelHost {
         }
       })
     } else if (this.sideCurrentTab === 1) {
-      FilesDrawerContent()
+      FilesDrawerContent({
+        onClearHistory: (): void => {
+          this.onClearHistory();
+        }
+      })
     } else if (this.sideCurrentTab === 2) {
       SettingsDrawerContent({
         settingsSection: this.sideSettingsSection,

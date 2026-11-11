@@ -855,6 +855,10 @@
     {
       "name": "files_history_recent",
       "value": "最近"
+    },
+    {
+      "name": "files_history_clear_confirm",
+      "value": "确认清除全部接收历史？此操作不可撤销。"
     }
   ]
 }

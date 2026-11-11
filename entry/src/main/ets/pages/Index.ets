@@ -218,6 +218,11 @@ struct Index {
       deviceId = String(await pref.get('deviceId', ''));
       // 已接收文件历史：跨重启保留（与应用设置同一个 Preferences 库）
       this.payloadController.history = await PayloadHistory.load(ctx);
+      // MSG236 ②：一次性迁移 —— 历史里「文件已不在」的待处置条目标记 expired 并写回（重启后保持一致）
+      if (this.payloadController.refreshHistoryExpiry()) {
+        console.info('KDC history expiry migration: legacy entries marked expired');
+        this.persistPayloadHistory(this.payloadController.history);
+      }
       // 【MSG217 现象 A】**不再**把 history 播种进 payloads：native 的 payloadTransferId 重启后从头计数，
       // 播种会让新传输（tid=1/2…）撞上旧历史条目并继承其 settled=true ⇒ 自动保存被整段跳过。
       // 历史只由「历史记录」分区直接读 controller.history（见 FilesTab）。
@@ -1631,6 +1636,11 @@ struct Index {
     // HdsSideBar 会缓存本 builder 构建出的子树，父级怎么重跑都不会重新求值，
     // 因此数据必须来自面板自身订阅的数据源（页面在 syncSideBarLists() 内写入 AppStorage）。
     SideBarPanelHost({
+      // MSG236 ①：文件页侧栏「清除历史」——只清历史分区（payloads/批次不动），二次确认后回调
+      onClearHistory: (): void => {
+        this.payloadController.clearReceivedHistory();
+        this.notify.toast(this.notify.resText($r('app.string.toast_history_cleared').id));
+      },
       settingsDeviceId: this.deviceId,
       settingsStatusText: this.status,
       settingsAppVersion: this.appVersion(),

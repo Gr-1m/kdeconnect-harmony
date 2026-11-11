@@ -23,6 +23,8 @@ interface HistoryEntry {
   bytesDone: number;
   filePath: string;
   settled: boolean;
+  // MSG236 ②：一次性迁移结果要落盘（重启后保持一致）
+  expired?: boolean;
   timeMs?: number;
 }
 
@@ -49,6 +51,7 @@ export class PayloadHistory {
           bytesDone: e.bytesDone,
           filePath: e.filePath,
           settled: e.settled,
+          expired: e.expired === true,
           timeMs: e.timeMs ?? 0
         }));
       }
@@ -91,6 +94,7 @@ export class PayloadHistory {
             bytesDone: p.bytesDone,
             filePath: p.filePath,
             settled: p.settled,
+            expired: p.expired === true,
             timeMs: p.timeMs ?? 0
           });
           if (entries.length >= MAX_ENTRIES) {
