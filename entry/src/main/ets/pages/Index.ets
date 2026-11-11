@@ -218,11 +218,6 @@ struct Index {
       deviceId = String(await pref.get('deviceId', ''));
       // 已接收文件历史：跨重启保留（与应用设置同一个 Preferences 库）
       this.payloadController.history = await PayloadHistory.load(ctx);
-      // MSG236 ②：一次性迁移 —— 历史里「文件已不在」的待处置条目标记 expired 并写回（重启后保持一致）
-      if (this.payloadController.refreshHistoryExpiry()) {
-        console.info('KDC history expiry migration: legacy entries marked expired');
-        this.persistPayloadHistory(this.payloadController.history);
-      }
       // 【MSG217 现象 A】**不再**把 history 播种进 payloads：native 的 payloadTransferId 重启后从头计数，
       // 播种会让新传输（tid=1/2…）撞上旧历史条目并继承其 settled=true ⇒ 自动保存被整段跳过。
       // 历史只由「历史记录」分区直接读 controller.history（见 FilesTab）。
@@ -667,6 +662,12 @@ struct Index {
     hilog.info(0x0001, 'KDEConnectUI', 'plugin routes registered: %{public}d', routeCount);
     this.startNative();
     this.netWatcher.register();
+    // MSG236 ② / MSG241：历史「文件已不在」一次性迁移 —— 必须在**控制器接线之后**跑：
+    // 接线前 `hostFilesDir` 还是默认 ''，会把这些条目全部误判为「已结束」（真机/模拟器实测根因）。
+    if (this.payloadController.refreshHistoryExpiry()) {
+      console.info('KDC history expiry migration: legacy entries marked expired');
+      this.persistPayloadHistory(this.payloadController.history);
+    }
   }
 
   // 页面显示后应用主题/语言（setColorMode/setLanguage 要求页面已加载完成）。
@@ -1949,7 +1950,11 @@ struct Index {
           stateText: this.payloadController.payloadStateText(this.payloadController.payloadDetail()),
           dirText: this.notify.resText(this.payloadController.payloadDetail().direction === 'receive'
             ? $r('app.string.file_dir_receive').id : $r('app.string.file_dir_send').id),
-          canDispose: this.payloadController.canDispose(this.payloadController.payloadDetail()),
+          actionMode: this.payloadController.detailActionMode(this.payloadController.payloadDetail()),
+          onSave: (): void => {
+            this.payloadController.savePayload(this.payloadController.payloadDetail());
+            this.payloadController.detailOpen = false;
+          },
           onSaveAs: (): void => {
             this.payloadController.saveAsPayload(this.payloadController.payloadDetail());
           },

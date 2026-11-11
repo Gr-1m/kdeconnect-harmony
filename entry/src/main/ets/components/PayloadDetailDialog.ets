@@ -12,8 +12,10 @@ export struct PayloadDetailDialog {
   @Prop timeText: string = '';
   @Prop stateText: string = '';
   @Prop dirText: string = '';
-  // MSG230 §2.3 / MSG238：源已不存在（expired/无 spool）时不给「另存为/丢弃」，只留关闭
-  @Prop canDispose: boolean = true;
+  // MSG240 §4.2：按状态给按钮 —— 'saveAs'（已保存：可另存副本）/ 'saveDiscard'（待处置）/ 'none'（已结束/发送）
+  @Prop actionMode: string = 'none';
+  onSave: () => void = () => {
+  };
   onSaveAs: () => void = () => {
   };
   onDiscard: () => void = () => {
@@ -54,17 +56,28 @@ export struct PayloadDetailDialog {
         this.attrRow($r('app.string.file_attr_state'), this.stateText)
         this.attrRow($r('app.string.file_attr_dir'), this.dirText)
         Row({ space: 10 }) {
-          if (this.canDispose) {
-          Button($r('app.string.file_action_save_as'))
-            .layoutWeight(1)
-            .height(42)
-            .fontSize(14)
-            .backgroundColor($r('app.color.accent'))
-            .borderRadius(12)
-            .onClick(() => {
-              this.onSaveAs();
-            })
-          Button($r('app.string.files_action_discard'))
+          if (this.actionMode === 'saveAs') {
+            Button($r('app.string.file_action_save_as'))
+              .layoutWeight(1)
+              .height(42)
+              .fontSize(14)
+              .backgroundColor($r('app.color.accent'))
+              .borderRadius(12)
+              .onClick(() => {
+                this.onSaveAs();
+              })
+          }
+          if (this.actionMode === 'saveDiscard') {
+            Button($r('app.string.files_action_save'))
+              .layoutWeight(1)
+              .height(42)
+              .fontSize(14)
+              .backgroundColor($r('app.color.accent'))
+              .borderRadius(12)
+              .onClick(() => {
+                this.onSave();
+              })
+            Button($r('app.string.files_action_discard'))
             .layoutWeight(1)
             .height(42)
             .fontSize(14)

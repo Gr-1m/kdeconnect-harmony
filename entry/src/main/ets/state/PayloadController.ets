@@ -19,7 +19,7 @@
 
 import native from 'libkdeconnect_napi.so';
 import { NetEvent } from 'libkdeconnect_napi.so';
-import { PayloadTransfer, PayloadTransferInit, PayloadDirection, PayloadState, PayloadBatch, PayloadBatchState } from '../model/PayloadModels';
+import { PayloadTransfer, PayloadTransferInit, PayloadDirection, PayloadState, PayloadBatch, PayloadBatchState, DetailActionMode } from '../model/PayloadModels';
 import { PayloadHistory } from '../common/PayloadHistory';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { Context, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
@@ -894,10 +894,17 @@ export class PayloadController {
    * 用于「无 spool 不显示 保存/另存为/丢弃，文案改『已结束』」，杜绝点了必然失败的按钮。
    */
   canDispose(p: PayloadTransfer): boolean {
-    if (p.expired || p.direction !== 'receive' || p.state !== 'finished' || p.settled) {
-      return false;
+    // MSG240 §4.3：**不再**用 ArkTS 路径判存活 —— spool 可能只在 native（filePath 为空）⇒ 会把待处置条目
+    // 误判成「已结束」而藏掉保存按钮（功能回退）。只否掉「已被启动迁移标记 expired / 已处置 / 非终态」。
+    return !p.expired && p.direction === 'receive' && p.state === 'finished' && !p.settled;
+  }
+
+  /** 详情弹窗按钮策略（MSG240 §4.2）：settled→saveAs；finished&&!settled→saveDiscard；expired/其它→none */
+  detailActionMode(p: PayloadTransfer): DetailActionMode {
+    if (p.direction !== 'receive' || p.state !== 'finished' || p.expired) {
+      return 'none';
     }
-    return this.fileExistsFor(p);
+    return p.settled ? 'saveAs' : 'saveDiscard';
   }
 
   /** spool 或沙箱副本是否存在（canDispose / 启动校正共用） */
@@ -924,16 +931,31 @@ export class PayloadController {
    * 返回是否发生变化；变化由调用方 `persistHistory` 写回（升级后旧缓存自动被修正）。
    */
   refreshHistoryExpiry(): boolean {
+    // MSG241 修正：接线前的 `hostFilesDir` 是默认 ''（可用性由页面注入）⇒ 任何 accessSync 都是假阴性。
+    // 必须先在页面装配完成后调用；未就绪时**宁可不标记**（不写回），避免把可保存的条目误判成「已结束」。
+    if (this.hostFilesDir().length === 0) {
+      console.info('KDC history expiry skipped: hostFilesDir not ready');
+      return false;
+    }
     let changed: boolean = false;
     for (const h of this.history) {
-      if (h.direction !== 'receive' || h.state !== 'finished' || h.settled || h.expired) {
+      if (h.direction !== 'receive' || h.state !== 'finished' || h.settled) {
         continue;
       }
-      if (this.fileExistsFor(h)) {
+      const exists: boolean = this.fileExistsFor(h);
+      if (h.expired) {
+        // 自愈：此前被误标（接线前 hostFilesDir='' 的假阴性）而文件实际还在 ⇒ 撤销标记，
+        // 让「另存为/丢弃」重新可用（真机已落盘的错误标记靠这里救回）。
+        if (exists) {
+          h.expired = false;
+          changed = true;
+        }
         continue;
       }
-      h.expired = true;
-      changed = true;
+      if (!exists) {
+        h.expired = true;
+        changed = true;
+      }
     }
     return changed;
   }
