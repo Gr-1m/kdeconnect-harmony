@@ -58,7 +58,6 @@ export class PayloadController {
   // ---------- 领域状态（原 Index 的 @State）----------
   payloads: PayloadTransfer[] = [];          // 进行中/本轮（进度行）
   history: PayloadTransfer[] = [];           // 原 @State receivedHistory（跨重启，经 PayloadHistory 持久化）
-  dialogOpen: boolean = false;               // 原 @State receivedDialogOpen
   detailOpen: boolean = false;               // 原 @State payloadDetailOpen
   detailId: number = 0;                      // 原 @State payloadDetailId
 

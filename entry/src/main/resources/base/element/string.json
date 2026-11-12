@@ -93,20 +93,12 @@
       "value": "Logs"
     },
     {
-      "name": "files_hint_no_device",
-      "value": "Connect a device to send and receive files"
-    },
-    {
       "name": "files_hint_pending",
       "value": "File transfer is under development (payload channel pending)"
     },
     {
       "name": "files_received",
       "value": "Received Files"
-    },
-    {
-      "name": "files_save_path",
-      "value": "Saved in the app private directory; use Save as to export"
     },
     {
       "name": "settings_app_name",
@@ -253,6 +245,10 @@
       "value": "History"
     },
     {
+      "name": "files_empty_records",
+      "value": "No records yet"
+    },
+    {
       "name": "files_action_save",
       "value": "Save"
     },
@@ -263,14 +259,6 @@
     {
       "name": "files_action_cancel",
       "value": "Cancel"
-    },
-    {
-      "name": "files_send_title",
-      "value": "Send a file"
-    },
-    {
-      "name": "files_action_send",
-      "value": "Choose file and send"
     },
     {
       "name": "connect_connecting",
@@ -651,18 +639,6 @@
     {
       "name": "settings_about_email_pending",
       "value": "Not public yet"
-    },
-    {
-      "name": "files_received_open",
-      "value": "Received files"
-    },
-    {
-      "name": "files_received_dialog_title",
-      "value": "Received files"
-    },
-    {
-      "name": "files_received_empty",
-      "value": "No files received yet"
     },
     {
       "name": "action_close",

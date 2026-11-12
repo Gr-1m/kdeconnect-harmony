@@ -40,7 +40,6 @@ import { PairConfirmDialog } from '../components/PairConfirmDialog';
 import { DeviceInfoDialog } from '../components/DeviceInfoDialog';
 import { RunCommandDialog } from '../components/RunCommandDialog';
 import { MprisDialog } from '../components/MprisDialog';
-import { ReceivedFilesDialog } from '../components/ReceivedFilesDialog';
 import { RemoteInputDialog } from '../components/RemoteInputDialog';
 import { NotificationList } from '../components/NotificationList';
 import { NotificationHelper } from '../common/NotificationHelper';
@@ -1524,19 +1523,12 @@ struct Index {
   @Builder
   filesTabView() {
     FilesTab({
-      connectedCount: this.deviceController.connectedDevices.length,
       immersive: this.immersiveSupported,
       // 【MSG217 §2.3】payloads/batches 直读 @Observed 控制器（@ObjectLink）⇒ 状态变更必然驱动刷新，
       // 不再依赖 @Prop 数组快照（实测会出现 finished 后长时间停留在 0/1·0%「接收中」）
       controller: this.payloadController,
       onCancelPayload: (p: PayloadTransfer): void => {
         this.payloadController.cancelPayload(p);
-      },
-      onSendFile: (): void => {
-        this.actionController.pickAndSendFile();
-      },
-      onOpenReceivedFiles: (): void => {
-        this.payloadController.dialogOpen = true;
       },
       onOpenPayload: (tid: number): void => {
         this.payloadController.detailId = tid;
@@ -1868,12 +1860,6 @@ struct Index {
           onClose: (): void => {
             this.runCommandDialogOpen = false;
           }
-        })
-      }
-
-      if (this.payloadController.dialogOpen) {
-        ReceivedFilesDialog({
-          payload: this.payloadController
         })
       }
 

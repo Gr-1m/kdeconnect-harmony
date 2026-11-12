@@ -81,20 +81,12 @@
       "value": "日志"
     },
     {
-      "name": "files_hint_no_device",
-      "value": "连接设备后即可收发文件"
-    },
-    {
       "name": "files_hint_pending",
       "value": "文件传输功能开发中（等待 payload 通道）"
     },
     {
       "name": "files_received",
       "value": "收到的文件"
-    },
-    {
-      "name": "files_save_path",
-      "value": "保存在 App 私有目录，可通过「另存为」导出"
     },
     {
       "name": "settings_app_name",
@@ -241,6 +233,10 @@
       "value": "历史记录"
     },
     {
+      "name": "files_empty_records",
+      "value": "暂无记录"
+    },
+    {
       "name": "files_action_save",
       "value": "保存"
     },
@@ -251,14 +247,6 @@
     {
       "name": "files_action_cancel",
       "value": "取消"
-    },
-    {
-      "name": "files_send_title",
-      "value": "发送文件"
-    },
-    {
-      "name": "files_action_send",
-      "value": "选择文件并发送"
     },
     {
       "name": "connect_connecting",
@@ -631,18 +619,6 @@
     {
       "name": "settings_about_email_pending",
       "value": "暂未公开"
-    },
-    {
-      "name": "files_received_open",
-      "value": "已接收"
-    },
-    {
-      "name": "files_received_dialog_title",
-      "value": "已接收的文件"
-    },
-    {
-      "name": "files_received_empty",
-      "value": "还没有接收过文件"
     },
     {
       "name": "action_close",

@@ -12,6 +12,7 @@ import { PayloadController } from '../state/PayloadController';
 interface HistoryGroup {
   key: string;
   fileName: string;
+  direction: string;
   count: number;
   latest: PayloadTransfer;
   items: PayloadTransfer[];
@@ -19,7 +20,6 @@ interface HistoryGroup {
 
 @Component
 export struct FilesTab {
-  @Prop connectedCount: number = 0;
   @Prop immersive: boolean = false;
   // 【MSG217 §2.3】直读 @Observed 控制器（@ObjectLink）：payloads/batches/history 的状态变更
   // 必然驱动本组件刷新（此前用 @Prop 数组快照，实测 finished 后长时间停在 0/1·0%「接收中」）
@@ -28,11 +28,6 @@ export struct FilesTab {
   @State expandedGroups: string[] = [];
   cardMaterial: uiMaterial.Material | undefined = undefined;
   onCancelPayload: (p: PayloadTransfer) => void = () => {
-  };
-  onSendFile: () => void = () => {
-  };
-  // 打开「已接收文件」弹窗（弹层由 Index 渲染，沿用项目现有弹层范式）
-  onOpenReceivedFiles: () => void = () => {
   };
   // 点击某一行 → 打开「文件详情」弹窗（属性 + 另存为/丢弃/取消），弹层同样由 Index 渲染
   onOpenPayload: (transferId: number) => void = () => {
@@ -59,7 +54,8 @@ export struct FilesTab {
       if (this.inBatch(p)) {
         continue;
       }
-      const key: string = `${p.fileName}|${p.deviceId}`;
+      // MSG247 §3.2：键加方向，避免同名收/发混组
+      const key: string = `${p.fileName}|${p.deviceId}|${p.direction}`;
       let g: HistoryGroup | undefined = undefined;
       for (const o of out) {
         if (o.key === key) {
@@ -68,7 +64,7 @@ export struct FilesTab {
         }
       }
       if (g === undefined) {
-        out.push({ key: key, fileName: p.fileName, count: 1, latest: p, items: [p] });
+        out.push({ key: key, fileName: p.fileName, direction: p.direction, count: 1, latest: p, items: [p] });
       } else {
         g.count++;
         g.items.push(p);
@@ -89,14 +85,17 @@ export struct FilesTab {
 
   /** 聚合行右侧文案：多条 →「共 N 次 · 最近 HH:MM」；单条 → HH:MM */
   private groupMeta(g: HistoryGroup): string {
+    // MSG247 §3.3：组行带方向前缀（接收 / 发送）
+    const dir: string = this.controller.resText(g.direction === 'send'
+      ? $r('app.string.file_dir_send').id : $r('app.string.file_dir_receive').id);
     const t: string = this.controller.compactTimeTextOf(g.latest);
     if (g.count <= 1) {
-      return t;
+      return t.length > 0 ? `${dir} · ${t}` : dir;
     }
     const countText: string = this.controller.resText($r('app.string.files_history_count').id)
       .replace('%d', `${g.count}`);
     const recent: string = this.controller.resText($r('app.string.files_history_recent').id);
-    return t.length > 0 ? `${countText} · ${recent} ${t}` : countText;
+    return t.length > 0 ? `${dir} · ${countText} · ${recent} ${t}` : `${dir} · ${countText}`;
   }
 
   private batchItems(b: PayloadBatch): PayloadTransfer[] {
@@ -164,46 +163,6 @@ export struct FilesTab {
 
   build() {
     Column({ space: 12 }) {
-        // 发送文件（M2：选文件 → native.sendPayload；需已连接设备）
-        GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
-          Column({ space: 8 }) {
-            Text($r('app.string.files_send_title'))
-              .fontSize(13)
-              .fontWeight(FontWeight.Medium)
-              .fontColor($r('app.color.text_primary'))
-            Row({ space: 8 }) {
-              Button($r('app.string.files_action_send'))
-                .layoutWeight(1)
-                .height(40)
-                .fontSize(13)
-                .backgroundColor($r('app.color.accent'))
-                .borderRadius(10)
-                .enabled(this.connectedCount > 0)
-                .onClick(() => {
-                  this.onSendFile();
-                })
-              Button($r('app.string.files_received_open'))
-                .layoutWeight(1)
-                .height(40)
-                .fontSize(13)
-                .backgroundColor($r('app.color.chip_bg'))
-                .fontColor($r('app.color.text_secondary'))
-                .borderRadius(10)
-                .onClick(() => {
-                  this.onOpenReceivedFiles();
-                })
-            }
-            .width('100%')
-            if (this.connectedCount === 0) {
-              Text($r('app.string.files_hint_no_device'))
-                .fontSize(11)
-                .fontColor($r('app.color.text_muted'))
-            }
-          }
-          .width('100%')
-          .alignItems(HorizontalAlign.Start)
-        }
-
         // 接收批次（S2）：多文件按批折叠 —— 批头 "3/5 文件 · 45% 总字节"（点批头折叠/展开）
         if (this.visibleBatches().length > 0) {
           GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
@@ -363,16 +322,12 @@ export struct FilesTab {
           }
         }
 
-        // 空态说明
-        if (this.payloads().length === 0 && this.historyItems().length === 0) {
+        // 空态说明（MSG247 §4）：无进行中传输且无历史 ⇒ 「暂无记录」
+        if (this.payloads().length === 0 && this.historyGroups().length === 0) {
           GlassCard({ immersive: this.immersive, cardMaterial: this.cardMaterial }) {
             Column({ space: 8 }) {
-              Text($r('app.string.tab_files'))
+              Text($r('app.string.files_empty_records'))
                 .fontSize(13)
-                .fontWeight(FontWeight.Medium)
-                .fontColor($r('app.color.text_primary'))
-              Text($r('app.string.files_save_path'))
-                .fontSize(11)
                 .fontColor($r('app.color.text_muted'))
             }
             .width('100%')
