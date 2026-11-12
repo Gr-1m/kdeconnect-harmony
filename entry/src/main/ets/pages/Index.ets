@@ -1529,12 +1529,6 @@ struct Index {
       // 【MSG217 §2.3】payloads/batches 直读 @Observed 控制器（@ObjectLink）⇒ 状态变更必然驱动刷新，
       // 不再依赖 @Prop 数组快照（实测会出现 finished 后长时间停留在 0/1·0%「接收中」）
       controller: this.payloadController,
-      onSavePayload: (p: PayloadTransfer): void => {
-        this.payloadController.savePayload(p);
-      },
-      onDiscardPayload: (p: PayloadTransfer): void => {
-        this.payloadController.discardPayload(p);
-      },
       onCancelPayload: (p: PayloadTransfer): void => {
         this.payloadController.cancelPayload(p);
       },

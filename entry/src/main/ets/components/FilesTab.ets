@@ -27,10 +27,6 @@ export struct FilesTab {
   // 历史聚合行的展开态（key = fileName|deviceId）
   @State expandedGroups: string[] = [];
   cardMaterial: uiMaterial.Material | undefined = undefined;
-  onSavePayload: (p: PayloadTransfer) => void = () => {
-  };
-  onDiscardPayload: (p: PayloadTransfer) => void = () => {
-  };
   onCancelPayload: (p: PayloadTransfer) => void = () => {
   };
   onSendFile: () => void = () => {
@@ -150,16 +146,9 @@ export struct FilesTab {
       PayloadRow({
         // MSG229 §2：整对象 + @ObjectLink 绑定（原地写字段即刷新该行）
         transfer: p,
-        canDisposeFn: (item: PayloadTransfer): boolean => this.controller.canDispose(item),
         timeTextFn: (item: PayloadTransfer): string => this.controller.timeTextOf(item),
         onExport: (item: PayloadTransfer): void => {
           this.onExportPayload(item);
-        },
-        onSave: (item: PayloadTransfer): void => {
-          this.onSavePayload(item);
-        },
-        onDiscard: (item: PayloadTransfer): void => {
-          this.onDiscardPayload(item);
         },
         onCancel: (item: PayloadTransfer): void => {
           this.onCancelPayload(item);
@@ -168,8 +157,6 @@ export struct FilesTab {
           this.onOpenPayload(tid);
         }
       })
-      // MSG223 B：key 带上状态/处置位 —— 状态跃迁时强制重建该行，避免 V1 复用旧对象导致
-      // 「批内行仍显示 接收中/0%」而另一处已显示 已完成
     // key 只含 前缀+实例代号：字段原地变化时**不重建**（交给 @ObjectLink），
     // 同 tid 换新实例（uid 变化）时才重建，避免复用旧子组件绑到旧对象
     }, (p: PayloadTransfer) => `${prefix}_${p.transferId}_${p.uid}`)
