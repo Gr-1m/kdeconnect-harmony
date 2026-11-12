@@ -135,3 +135,10 @@ S1 的 ② 由用户确认后执行，不与 CodeArts 在途编辑抢跑。
 | **「打开文件管理 / 打开所在位置」**（参考 iOS 端） | 文件保存后提供入口跳转到**系统文件管理**并定位到该文件（区别于 MSG243 的「打开文件」本身）。HarmonyOS 候选路径：① `startAbility` + `ohos.want.action.viewData`（打开文件，已用于 MSG243）；② 文件管理器 bundle（`com.huawei.hmos.filemanager`）非公开契约，普通应用**不能可靠唤起并定位**；③ `DocumentViewPicker` 只能选目录不能定位；④ 折中：保存时记录路径 + toast/详情里展示「位置：Downloads/…」，或引导用户到「文件」App 手动定位。**结论：需先评估 ② 的可行性（大概率不可行），否则以 ④ 交付** | backlog（0.8.x 评估） |
 
 > iOS 参考实现待查：本机参考库（`kdeconn1111/`）未包含 `kdeconnect-ios-master`，需在 Win10/旧工作区取 iOS 源码后对照（重点关注 `UIDocumentInteractionController`/`QLPreviewController`/`UIDocumentPicker` 的使用场景：是「打开文件」还是「在文件中显示」）。
+
+## 9. 双车道统一排期（2026-11-12）
+
+> 唯一口径见 **`devdocs/PLAN_CONSOLIDATED_20261112.md`**（合并 CodeArts MSG252 参考文档借鉴 + Omp-Native 规划 + 总指挥裁决）。
+> 摘要：P0 = scenarios 契约测试、run.sh 补 fmt/clippy、导出命中复验、文档同步；P1 = KcBridge/KcApi（CCR-3）、
+> d.ts↔napi 门禁、defaultEnabled UI 开关、fuzz 审计、单例/事件有序、REUSE.toml/AI 红线；P2 = 端口回退、Go 对端、
+> SFTP、SRP 常量、V2 V3/V4。不做：多 crate 拆分、vendor 双状态机、NAPI 会话化、scenes/identities 命名规约。
