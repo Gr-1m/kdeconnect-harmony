@@ -26,6 +26,67 @@ pub const ENGINE_PANIC: i32 = 501;
 pub const IDENTITY_INVALID_ON_START: i32 = 502;
 pub const INIT_FAILED: i32 = 503;
 
+/// 契约内全部错误码（`contract/errors.v1.json` v1 的 `codes[].code`，**集合**语义、顺序无关）。
+///
+/// 由 `tests/contract_errors.rs` 与契约工件逐条比对：任何一侧新增/删除/改名/改分级 → 测试变红。
+pub const ALL_CODES: &[i32] = &[
+    NOT_READY,
+    NOT_STARTED,
+    ALREADY_STARTED,
+    BAD_JSON,
+    BAD_PARAM,
+    CONTRACT_MISMATCH,
+    CERT_MISMATCH,
+    PROTOCOL_VIOLATION,
+    LINE_TOO_LONG,
+    IDENTITY_INVALID,
+    CLOCK_SKEW,
+    PEER_NOT_CONNECTED,
+    OFFER_TIMEOUT,
+    TRANSFER_CANCELLED,
+    PAYLOAD_TIMEOUT,
+    FILE_IO,
+    SEND_FAILED,
+    ENGINE_PANIC,
+    IDENTITY_INVALID_ON_START,
+    INIT_FAILED,
+];
+
+/// 契约 `name` 字段（供 error 事件/日志复用，避免再手写字符串；未知码 → `UNKNOWN`）。
+pub fn name(code: i32) -> &'static str {
+    match code {
+        NOT_READY => "NOT_READY",
+        NOT_STARTED => "NOT_STARTED",
+        ALREADY_STARTED => "ALREADY_STARTED",
+        BAD_JSON => "BAD_JSON",
+        BAD_PARAM => "BAD_PARAM",
+        CONTRACT_MISMATCH => "CONTRACT_MISMATCH",
+        CERT_MISMATCH => "CERT_MISMATCH",
+        PROTOCOL_VIOLATION => "PROTOCOL_VIOLATION",
+        LINE_TOO_LONG => "LINE_TOO_LONG",
+        IDENTITY_INVALID => "IDENTITY_INVALID",
+        CLOCK_SKEW => "CLOCK_SKEW",
+        PEER_NOT_CONNECTED => "PEER_NOT_CONNECTED",
+        OFFER_TIMEOUT => "OFFER_TIMEOUT",
+        TRANSFER_CANCELLED => "TRANSFER_CANCELLED",
+        PAYLOAD_TIMEOUT => "PAYLOAD_TIMEOUT",
+        FILE_IO => "FILE_IO",
+        SEND_FAILED => "SEND_FAILED",
+        ENGINE_PANIC => "ENGINE_PANIC",
+        IDENTITY_INVALID_ON_START => "IDENTITY_INVALID_ON_START",
+        INIT_FAILED => "INIT_FAILED",
+        _ => "UNKNOWN",
+    }
+}
+
+/// 是否为契约内已知码。
+///
+/// `disposition()` 对未知码回退 `Infra`（防御式）；本函数让「显式登记」与「兜底回退」可区分，
+/// 也用于契约测试断言「契约内每个码都走了显式分支」。
+pub fn is_known(code: i32) -> bool {
+    ALL_CODES.contains(&code)
+}
+
 /// 错误处置分级（与 `contract/errors.v1.json` 的 `disposition` 逐条一致）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Disposition {
@@ -59,6 +120,49 @@ pub fn is_throw(code: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_codes_covers_every_constant_without_duplicates() {
+        for code in [
+            NOT_READY,
+            NOT_STARTED,
+            ALREADY_STARTED,
+            BAD_JSON,
+            BAD_PARAM,
+            CONTRACT_MISMATCH,
+            CERT_MISMATCH,
+            PROTOCOL_VIOLATION,
+            LINE_TOO_LONG,
+            IDENTITY_INVALID,
+            CLOCK_SKEW,
+            PEER_NOT_CONNECTED,
+            OFFER_TIMEOUT,
+            TRANSFER_CANCELLED,
+            PAYLOAD_TIMEOUT,
+            FILE_IO,
+            SEND_FAILED,
+            ENGINE_PANIC,
+            IDENTITY_INVALID_ON_START,
+            INIT_FAILED,
+        ] {
+            assert!(ALL_CODES.contains(&code), "{code} 未登记进 ALL_CODES");
+            assert!(is_known(code), "{code} 应被 is_known 认作已知码");
+            assert_ne!(name(code), "UNKNOWN", "{code} 缺少 name 映射");
+        }
+        let mut sorted = ALL_CODES.to_vec();
+        sorted.sort_unstable();
+        let total = sorted.len();
+        sorted.dedup();
+        assert_eq!(sorted.len(), total, "ALL_CODES 存在重复项");
+    }
+
+    #[test]
+    fn unknown_code_falls_back_but_is_not_known() {
+        assert!(!is_known(999_999));
+        assert_eq!(disposition(999_999), Disposition::Infra);
+        assert_eq!(name(999_999), "UNKNOWN");
+        assert!(!is_throw(999_999));
+    }
 
     #[test]
     fn dispositions_match_contract() {
