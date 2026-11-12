@@ -3,6 +3,7 @@
 import { preferences } from '@kit.ArkData';
 import { Context } from '@kit.AbilityKit';
 import { PayloadTransfer, PayloadState } from '../model/PayloadModels';
+import { sanitizeFileName } from '../model/PayloadLogic';
 
 // 已接收文件历史（跨重启保留）
 // - 只记录「已结束」的接收记录（finished/failed/cancelled），进行中的不入库；
@@ -116,20 +117,8 @@ export class PayloadHistory {
   // 空名兜底 `transfer_<id>`；长度上限 128。
   // 说明：控制字符不过滤会带来两类问题 —— ①文件名显示错乱/终端转义注入；②部分文件系统直接拒绝写入。
   static safeFileName(raw: string, transferId: number): string {
-    let name: string = raw;
-    name = name.replace(new RegExp('/', 'g'), '_');
-    name = name.replace(new RegExp('\\\\', 'g'), '_');
-    name = name.replace(new RegExp('[\\u0000-\\u001F\\u007F]', 'g'), '_');
-    while (name.startsWith('.')) {
-      name = name.substring(1);
-    }
-    if (name.length === 0) {
-      name = `transfer_${transferId}`;
-    }
-    if (name.length > 128) {
-      name = name.substring(0, 128);
-    }
-    return name;
+    // P0-A2：实现下沉到 model/PayloadLogic（纯函数、宿主可回归）；本方法保留为兼容入口
+    return sanitizeFileName(raw, transferId);
   }
 
   static async clear(ctx: Context): Promise<void> {

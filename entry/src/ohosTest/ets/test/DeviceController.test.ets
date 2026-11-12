@@ -341,6 +341,9 @@ export default function deviceControllerTest(): void {
         trusted(PEER_C, 'no-cert-peer', '', false)
       ];
       c.rehydrateTrust(loaded);
+      // 2026-11-08 真机取证后拆分：`rehydrateTrust` 只重建状态，钉扎由 `applyTrustPins()` 在
+      // 「页面注入 setTrustedCertificate 之后」执行（早于注入会 pin 不到 native ⇒ 入向 payload 被拒）。
+      c.applyTrustPins();
 
       expect(c.trustedDevices.length).assertEqual(3);
       expect(c.trustLoaded).assertTrue();

@@ -48,17 +48,28 @@ function controller(rec: Rec): PayloadController {
 }
 
 function transfer(tid: number, deviceId: string, direction: PayloadDirection, state: PayloadState): PayloadTransfer {
-  const t: PayloadTransfer = {
+  // P0-A2 修复：`PayloadTransfer` 已由 interface 改为 `@Observed class`（MSG229 进度刷新重构）⇒
+  // 必须经 `of()` 构造（对象字面量不再满足类型）。此问题此前一直让 ohosTest 编译不过（宿主通道不覆盖本套件）。
+  const t: PayloadTransfer = PayloadTransfer.of({
     transferId: tid, deviceId: deviceId, direction: direction,
     state: state, fileName: `f${tid}.bin`, size: 100, bytesDone: 0, filePath: '', settled: false
-  };
+  });
   return t;
+}
+
+function progressEvent(tid: number, size: number, bytesDone: number): NetEvent {
+  const e: NetEvent = {
+    type: 'payloadTransfer', deviceId: DEV, payloadTransferId: tid, payloadSize: size,
+    payloadDirection: 'receive', payloadState: 'progress' as PayloadState, payloadBytesDone: bytesDone,
+    payloadFileName: `f${tid}.bin`
+  };
+  return e;
 }
 
 function transferEvent(tid: number, size: number, state: PayloadState): NetEvent {
   const e: NetEvent = {
     type: 'payloadTransfer', deviceId: DEV, payloadTransferId: tid, payloadSize: size,
-    payloadDirection: 'receive', payloadState: state
+    payloadDirection: 'receive', payloadState: state, payloadFileName: `f${tid}.bin`
   };
   return e;
 }
@@ -236,4 +247,83 @@ export default function payloadControllerTest(): void {
       expect(out.includes('5')).assertTrue();
     });
   });
+    // ---- P0-A3 排序/竞态保护（事件回调 async 不 await ⇒ 迟到事件不得改终态） ----
+
+    it('TestPayloadController_lateProgressAfterFinished_keepsTerminalState', 0, () => {
+      const rec: Rec = new Rec();
+      const c: PayloadController = controller(rec);
+      c.handlePayloadTransfer(transferEvent(11, 100, 'started'));
+      c.handlePayloadTransfer(transferEvent(11, 100, 'finished'));
+      c.handlePayloadTransfer(transferEvent(11, 40, 'progress'));   // 迟到：进度落后于终态
+      const p: PayloadTransfer | undefined = c.payloads.find((x: PayloadTransfer): boolean => x.transferId === 11);
+      expect(p !== undefined).assertTrue();
+      expect(p!.state).assertEqual('finished');
+      expect(rec.hasLog('late event ignored')).assertTrue();
+    });
+
+    it('TestPayloadController_lateCancelledAfterFinished_keepsFirstTerminal', 0, () => {
+      const rec: Rec = new Rec();
+      const c: PayloadController = controller(rec);
+      c.handlePayloadTransfer(transferEvent(12, 100, 'started'));
+      c.handlePayloadTransfer(transferEvent(12, 100, 'finished'));
+      c.handlePayloadTransfer(transferEvent(12, 100, 'cancelled'));
+      const p: PayloadTransfer | undefined = c.payloads.find((x: PayloadTransfer): boolean => x.transferId === 12);
+      expect(p!.state).assertEqual('finished');
+    });
+
+    it('TestPayloadController_bytesDoneIsMonotonic', 0, () => {
+      const rec: Rec = new Rec();
+      const c: PayloadController = controller(rec);
+      c.handlePayloadTransfer(transferEvent(13, 100, 'started'));
+      c.handlePayloadTransfer(progressEvent(13, 100, 80));
+      c.handlePayloadTransfer(progressEvent(13, 100, 30));   // 迟到的小进度
+      const p: PayloadTransfer | undefined = c.payloads.find((x: PayloadTransfer): boolean => x.transferId === 13);
+      expect(p!.bytesDone).assertEqual(80);
+    });
+
+    it('TestPayloadController_duplicateFinished_settlesOnce', 0, () => {
+      const rec: Rec = new Rec();
+      const c: PayloadController = controller(rec);
+      c.handlePayloadTransfer(transferEvent(14, 100, 'started'));
+      c.handlePayloadTransfer(transferEvent(14, 100, 'finished'));
+      c.handlePayloadTransfer(transferEvent(14, 100, 'finished'));
+      const inHistory: number = c.history.filter((h: PayloadTransfer): boolean => h.transferId === 14).length;
+      expect(inHistory).assertEqual(1);
+    });
+
+    // MSG234 负向分支的**可自动化**部分：权限申请永不返回 ⇒ 必须超时（3.5s）降级，绝不让保存链挂住。
+    // 真机侧仍缺「系统弹框/撤销权限」那一步（需人工在设置里撤销「图片和视频」后收一张图）。
+    it('TestPayloadController_permRequestNeverResolves_degradesAfterTimeout', 0, async () => {
+      const rec: Rec = new Rec();
+      const c: PayloadController = controller(rec);
+      c.hostFilesDir = (): string => '/tmp/kdc';
+      // 未授权 + 申请永不 resolve（模拟「弹框被忽略/系统不弹」）
+      c.checkWritePermission = (_name: string): boolean => false;
+      c.requestWritePermission = (_name: string): Promise<boolean> => new Promise<boolean>((_res) => {
+      });
+      let returned: boolean = false;
+      const t: PayloadTransfer = transfer(20, DEV, 'receive', 'finished');
+      t.fileName = 'f20.png';        // 媒体名才会走「申请一次权限」分支（.bin 属非媒体，直接降级）
+      await c.savePayload(t).then((): void => {
+        returned = true;
+      }).catch((): void => {
+        returned = true;
+      });
+      expect(returned).assertTrue();                                   // 绝不允许挂住
+      expect(rec.hasLog('media permission requested once: granted=false')).assertTrue();
+    });
+
+    it('TestPayloadController_saveAfterDiscard_isNoop', 0, () => {
+      const rec: Rec = new Rec();
+      const c: PayloadController = controller(rec);
+      c.handlePayloadTransfer(transferEvent(15, 100, 'started'));
+      c.handlePayloadTransfer(transferEvent(15, 100, 'finished'));
+      const p: PayloadTransfer | undefined = c.payloads.find((x: PayloadTransfer): boolean => x.transferId === 15);
+      expect(p !== undefined).assertTrue();
+      c.discardPayload(p!);
+      expect(c.payloads.filter((x: PayloadTransfer): boolean => x.transferId === 15).length).assertEqual(0);
+      c.savePayload(p!);
+      expect(rec.hasLog('already discarded')).assertTrue();
+    });
+
 }

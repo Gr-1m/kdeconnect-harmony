@@ -62,6 +62,8 @@ $copies = @(
   @{ from = "$modelDir\SystemVolumeModels.ets";   to = 'SystemVolumeModels.ts' },
   @{ from = "$modelDir\NotificationModels.ets";   to = 'NotificationModels.ts' },
   @{ from = "$modelDir\TrustModels.ets";          to = 'TrustModels.ts' },
+  @{ from = "$modelDir\PayloadModels.ets";        to = 'PayloadModels.ts' },
+  @{ from = "$modelDir\PayloadLogic.ets";         to = 'PayloadLogic.ts' },
   @{ from = "$commonDir\NotificationStore.ets";   to = 'NotificationStore.ts' },
   @{ from = "$commonDir\TrustCodec.ets";        to = 'TrustCodec.ts' },
   @{ from = "$testDir\MousepadThrottle.test.ets";   to = 'MousepadThrottle.test.ts' },
@@ -69,7 +71,8 @@ $copies = @(
   @{ from = "$testDir\RemoteInputKeymap.test.ets";  to = 'RemoteInputKeymap.test.ts' },
   @{ from = "$testDir\RemoteInputPlugin.test.ets";  to = 'RemoteInputPlugin.test.ts' },
   @{ from = "$testDir\Notification.test.ets";       to = 'Notification.test.ts' },
-  @{ from = "$testDir\TrustCodec.test.ets";       to = 'TrustCodec.test.ts' }
+  @{ from = "$testDir\TrustCodec.test.ets";       to = 'TrustCodec.test.ts' },
+  @{ from = "$testDir\PayloadLogic.test.ets";      to = 'PayloadLogic.test.ts' }
 )
 
 foreach ($c in $copies) {

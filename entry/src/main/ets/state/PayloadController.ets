@@ -20,6 +20,11 @@
 import native from 'libkdeconnect_napi.so';
 import { NetEvent } from 'libkdeconnect_napi.so';
 import { PayloadTransfer, PayloadTransferInit, PayloadDirection, PayloadState, PayloadBatch, PayloadBatchState, DetailActionMode } from '../model/PayloadModels';
+// P0-A2：纯决策下沉到 model/PayloadLogic（零 Kit/native 依赖 ⇒ 宿主 bun 秒级回归；判定点即近期三次真机回归处）
+import {
+  BatchCounts, sanitizeFileName as pureSanitizeFileName, compactTimeText as pureCompactTimeText,
+  detailActionModeOf, canDisposeOf, batchCountsOf, expiryActionFor
+} from '../model/PayloadLogic';
 import { PayloadHistory } from '../common/PayloadHistory';
 import { fileIo, picker, fileUri } from '@kit.CoreFileKit';
 import { Context, abilityAccessCtrl, Permissions, common, wantConstant, Want } from '@kit.AbilityKit';
@@ -34,12 +39,6 @@ const PERM_TIMEOUT_MS: number = 3500;
 // 已计入批计数的 transferId 记忆上限（防长跑会话无限增长）
 
 // MSG223 B：晚到预告的暂存结构
-// 批头派生计数（从 payloads 现场算，见 batchCounts）
-export interface BatchCounts {
-  done: number;
-  bytes: number;
-}
-
 interface PayloadBatchHint {
   deviceId: string;
   expectedFiles: number;
@@ -401,13 +400,7 @@ export class PayloadController {
 
   /** 紧凑时间（HH:MM）——历史聚合行显示「最近 …」用 */
   compactTimeTextOf(p: PayloadTransfer): string {
-    if (p.timeMs === undefined || p.timeMs <= 0) {
-      return '';
-    }
-    const d: Date = new Date(p.timeMs);
-    const hh: string = d.getHours() < 10 ? `0${d.getHours()}` : `${d.getHours()}`;
-    const mm: string = d.getMinutes() < 10 ? `0${d.getMinutes()}` : `${d.getMinutes()}`;
-    return `${hh}:${mm}`;
+    return pureCompactTimeText(p.timeMs);
   }
 
   payloadOf(transferId: number): PayloadTransfer | undefined {
@@ -420,19 +413,7 @@ export class PayloadController {
   }
 
   batchCounts(b: PayloadBatch): BatchCounts {
-    let done: number = 0;
-    let bytes: number = 0;
-    for (const tid of b.transferIds) {
-      const p: PayloadTransfer | undefined = this.payloadOf(tid);
-      if (p === undefined) {
-        continue;
-      }
-      if (p.state === 'finished' || p.state === 'failed' || p.state === 'cancelled') {
-        done++;
-        bytes += p.bytesDone > 0 ? p.bytesDone : p.size;
-      }
-    }
-    return { done: done, bytes: bytes };
+    return batchCountsOf(b, (tid: number): PayloadTransfer | undefined => this.payloadOf(tid));
   }
 
   /** 批头文案："3/5 文件 · 45% 占总字节"（分母未知时用已见文件数） */
@@ -467,7 +448,7 @@ export class PayloadController {
     }
     if (tid <= 0) {
       if (size > 0) {
-        console.info(`KDC payload declared but not started: size=${size} dev=${(event.deviceId ?? '').substring(0, 8)} (no entry created)`);
+        this.log(`payload declared but not started: size=${size} dev=${(event.deviceId ?? '').substring(0, 8)} (no entry created)`);
       }
       return;
     }
@@ -504,6 +485,19 @@ export class PayloadController {
     };
     // MSG229 §2：非新传输**原地写**同一个实例（数组引用不变）⇒ 行组件 @ObjectLink 自行重渲染，
     // 进度不再被 ForEach 的稳定 key 吞掉；新传输才换实例（uid 变化 ⇒ key 变化 ⇒ 行重建）。
+    // P0-A3 排序保护：**终态是稳定的** —— 迟到/重复的非终态事件（progress）或另一个终态事件，
+    // 都不得把已决定的终态改回去（native 正常不会乱序，但事件回调是 async 且我们不 await；
+    // 参见参考库 docs1111/02 §12-6 R5「onEvent 分支内 await 会重排」）。bytesDone 取最大，避免进度回退。
+    if (prev !== undefined && !isNewTransfer) {
+      const prevTerminal: boolean = prev.state === 'finished' || prev.state === 'failed' || prev.state === 'cancelled';
+      if (prevTerminal && state !== prev.state) {
+        this.log(`late event ignored: #${tid} prev=${prev.state} incoming=${state}`);
+        init.state = prev.state;
+      }
+      if (init.bytesDone < prev.bytesDone) {
+        init.bytesDone = prev.bytesDone;
+      }
+    }
     let item: PayloadTransfer;
     if (isNewTransfer || prev === undefined) {
       item = PayloadTransfer.of(init);
@@ -702,7 +696,7 @@ export class PayloadController {
   // ========== 文件名清洗（原 L1845–L1847）==========
 
   sanitizeFileName(raw: string, transferId: number): string {
-    return PayloadHistory.safeFileName(raw, transferId);
+    return pureSanitizeFileName(raw, transferId);
   }
 
   // ========== 已接收文件列表（原 L1851–L1864）==========
@@ -893,21 +887,13 @@ export class PayloadController {
    * 用于「无 spool 不显示 保存/另存为/丢弃，文案改『已结束』」，杜绝点了必然失败的按钮。
    */
   canDispose(p: PayloadTransfer): boolean {
-    // MSG240 §4.3：**不再**用 ArkTS 路径判存活 —— spool 可能只在 native（filePath 为空）⇒ 会把待处置条目
-    // 误判成「已结束」而藏掉保存按钮（功能回退）。只否掉「已被启动迁移标记 expired / 已处置 / 非终态」。
-    return !p.expired && p.direction === 'receive' && p.state === 'finished' && !p.settled;
+    return canDisposeOf(p);
   }
 
   /** 详情弹窗按钮策略（MSG240 §4.2 + MSG243 四态） */
   detailActionMode(p: PayloadTransfer): DetailActionMode {
-    if (p.direction !== 'receive' || p.state !== 'finished' || p.expired) {
-      return 'none';
-    }
-    if (p.settled) {
-      // 已保存：给「打开 + 另存为」（**不给丢弃**，避免误删已存文件）；副本已不在则仅「关闭」
-      return this.fileExistsFor(p) ? 'openSaveAs' : 'none';
-    }
-    return 'saveDiscard';
+    // 判定在 model/PayloadLogic（纯函数）；本类只注入「沙箱副本是否存在」这一 IO 事实
+    return detailActionModeOf(p, this.fileExistsFor(p));
   }
 
   /** MSG243：只读调起系统查看器打开条目文件（沙箱副本优先）。失败/无查看器 ⇒ toast，绝不修改/删除 */
@@ -1022,21 +1008,14 @@ export class PayloadController {
     }
     let changed: boolean = false;
     for (const h of this.history) {
-      if (h.direction !== 'receive' || h.state !== 'finished' || h.settled) {
-        continue;
-      }
-      const exists: boolean = this.fileExistsFor(h);
-      if (h.expired) {
-        // 自愈：此前被误标（接线前 hostFilesDir='' 的假阴性）而文件实际还在 ⇒ 撤销标记，
-        // 让「另存为/丢弃」重新可用（真机已落盘的错误标记靠这里救回）。
-        if (exists) {
-          h.expired = false;
-          changed = true;
-        }
-        continue;
-      }
-      if (!exists) {
+      // 单条判定在 model/PayloadLogic.expiryActionFor（mark/clear/none）；本类只注入「文件是否存在」
+      const act: string = expiryActionFor(h, this.fileExistsFor(h));
+      if (act === 'mark') {
         h.expired = true;
+        changed = true;
+      } else if (act === 'clear') {
+        // 自愈：此前被误标（接线前 hostFilesDir='' 的假阴性）而文件实际还在 ⇒ 撤销标记
+        h.expired = false;
         changed = true;
       }
     }
@@ -1134,6 +1113,11 @@ export class PayloadController {
   // ========== 保存到沙箱 + 导出（原 L2052–L2090）==========
 
   async savePayload(p: PayloadTransfer): Promise<void> {
+    // P0-A3 竞态保护①（入口）：已被「丢弃」的条目不再保存（避免丢弃后又落盘/又 settle）
+    if (this.discardedIds.includes(p.transferId)) {
+      this.log(`save aborted: #${p.transferId} already discarded`);
+      return;
+    }
     const dir: string = this.hostFilesDir();
     if (dir === '') {
       this.log('save failed: no host context');
@@ -1163,6 +1147,17 @@ export class PayloadController {
     }
     if (!sandboxOk) {
       this.toast(this.resText($r('app.string.files_save_failed').id));
+      return;
+    }
+    // P0-A3 竞态保护②（await 之后）：权限弹窗/keepPayload 期间用户点了「丢弃」⇒ 丢弃语义优先：
+    // 删掉刚落下的沙箱副本、不改状态、不 toast「已保存」。
+    if (this.discardedIds.includes(p.transferId)) {
+      this.log(`save aborted: #${p.transferId} discarded during save -> cleanup ${dest}`);
+      try {
+        fileIo.unlinkSync(dest);
+      } catch (e) {
+        this.log('cleanup after discard failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      }
       return;
     }
     // ① 图片/视频：免交互入相册（用户可见）——成功才是真「已保存」；**需已授权**

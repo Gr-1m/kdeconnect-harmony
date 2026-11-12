@@ -13,6 +13,7 @@ import notificationTest from './Notification.test';
 import notificationPluginTest from './NotificationPlugin.test';
 import payloadControllerTest from './PayloadController.test';
 import trustCodecTest from './TrustCodec.test';
+import payloadLogicTest from './PayloadLogic.test';
 
 export default function testsuite(): void {
   packetRouterTest();
@@ -26,4 +27,5 @@ export default function testsuite(): void {
   notificationPluginTest();
   payloadControllerTest();
   trustCodecTest();
+  payloadLogicTest();
 }

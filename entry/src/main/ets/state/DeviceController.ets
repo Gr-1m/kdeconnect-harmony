@@ -72,6 +72,8 @@ export class DeviceController {
   // 本机 deviceId 注入（原 handleEvent 的「忽略自己」过滤：防自发现/自连，AGENTS 协议约束）
   getSelfDeviceId: () => string = () => '';
 
+  // 注意（P0-A3）：本方法必须**保持同步**（只更新状态 + 触发同步派发）。任何 await 都会让后续事件
+  // 越过未完成的状态更新（参考库 R5）；需要 IO 的动作请交给控制器用「发射后不管 + 幂等护栏」处理。
   handleEvent(event: NetEvent): void {
     const pktLen: number = event.packet === undefined || event.packet === null ? 0 : event.packet.length;
     console.info(`KDC event ${event.type ?? '?'} dev=${(event.deviceId ?? '').substring(0, 8)} pktLen=${pktLen}`);

@@ -265,6 +265,13 @@ struct Index {
 
     const self = this;
     try {
+      // 【事件顺序不变量（P0-A3）】native 的事件回调是 async 但**我们不 await**：派发路径
+      // `handleEvent → PayloadController.handlePayloadTransfer → 插件` **全程同步**，异步只出现在
+      // 「发射后不管」的 IO（自动保存/导出/相册/剪贴板），其结果由幂等护栏收口：
+      //   · 迟到事件不得改写终态（`late event ignored`，见 PayloadController）
+      //   · 丢弃优先于保存（`save aborted: … discarded`）
+      // ⇒ 因此**不引入串行队列**（参考库 docs1111/02 §12-6 自认其 R5 未解决，此处给出我们的结论与护栏）。
+      // 回归用例：`PayloadController.test.ets` 的 lateProgress/lateCancelled/bytesDone/duplicateFinished/saveAfterDiscard。
       native.init((event: NetEvent): void => {
         self.deviceController.handleEvent(event);
         // 侧栏数据是 AppStorage 快照；设备状态变化后必须主动刷新，
