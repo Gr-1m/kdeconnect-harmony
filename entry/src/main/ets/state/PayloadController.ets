@@ -864,16 +864,13 @@ export class PayloadController {
     let timer: number = -1;
     const timeout: Promise<boolean> = new Promise<boolean>((resolve: (v: boolean) => void): void => {
       timer = setTimeout((): void => {
-        console.info(`KDC perm timeout after ${PERM_TIMEOUT_MS}ms name=${name}`);
         resolve(false);
       }, PERM_TIMEOUT_MS);
     });
     try {
       const r: boolean = await Promise.race([this.requestWritePermission(name), timeout]);
-      console.info(`KDC perm race settled granted=${r} name=${name}`);
       return r;
     } catch (e) {
-      console.info(`KDC perm race error name=${name} ${e instanceof Error ? e.message : 'unknown'}`);
       return false;
     } finally {
       if (timer >= 0) {
