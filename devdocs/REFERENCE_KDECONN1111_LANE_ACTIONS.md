@@ -45,3 +45,34 @@
 
 - **不在 0.9.0 前做**：全量 `store/adapters` 拆分（A2）、NAPI 会话化（B6）、SFTP 相关（他们强项，我们 backlog 的 S6）。
 - **不照搬**：他们的 `kc-*` 多 crate 目录结构（我们单 crate + napi 已稳定）；他们的 `docs/` 四套文档体系（我们保持现有 devdocs 结构）。
+
+## E. 参考库里的 ArkTS **V2** 与 **Rust native** 代码（2026-11-12 补充）
+
+### E1. ArkTS V2（`kdeconn-1108/app/entry/src/main/ets/`）
+
+- 参考实现是 **`@Entry + @ComponentV2`** 单页（`pages/Index.ets`，1387 行），状态全部用 **`@Local`**；
+  - 无 `@Param`/`@Event`/`@Monitor`/`@Computed`（单页无子组件），**全页只用 V2、不混 V1**；
+  - 规范口径见 `docs1111/03-coding-standards.md` §4.2：只使用 V2 装饰器、状态单实例维护、事件走 reducer、
+    `setInterval` 在 `aboutToDisappear` 清理；后续拆分目标 = `store/`（`@ObservedV2` + reducer）+ `adapters/`（每插件）+ `ui/`。
+- 与我们的差异：我们是「**V1 页面 + V2 叶子试点**」（`LogsTab`/`DeviceInfoDialog`，靠 `@ComponentV2` 做边界），
+  并已验证 V1 宿主持有 V2 组件无需 `enableV2Compatibility`。
+- 对 V3/V4 的启示：
+  1. **V4 逐页推广**按「整页一次迁、同页禁混用」执行，但仍保留我们的验收矩阵（`KDC builds` 计数不增 + 真机截图）；
+  2. 页内状态用 `@Local`；叶子组件用 `@Require @Param` + `@Event`（已验）；跨页共享状态用 `@ObservedV2` store（`LogStore` 已示范）；
+  3. 参考实现**没有** `@Monitor`/`@Computed` 用法可抄——我们若引入需自证（计数 + 行为一致）；
+  4. 他们「先补测试/黄金场景、再拆 store/adapters」的顺序与我们一致（见 §A2）。
+
+### E2. Rust native（`kdeconn-1108/engine/`，约 10.2k 行）
+
+- 结构：`crates/kc-core`（纯逻辑：`error/identity/limits/packet/pairing/routing/sas/io/device` + `contract_tests.rs`，无 IO/async）
+  + `crates/kc-engine`（运行时：发现/TLS/payload/SFTP/事件）+ `crates/kc-bridge`（NAPI 单文件薄适配）
+  + `vendor/kdeconnect-proto`（上游协议实现快照）——与我们 `core` + `napi` 两层结构**同构** ✅。
+- **可直接借鉴**：
+  1. **Rust 侧契约测试**（`kc-core/src/contract_tests.rs`）：用 `include_str!` 把
+     `contract/errors.v1.json`、`contract/scenarios/*.json`、`contract/kcbridge.d.ts` 嵌进测试，断言实现与契约一致。
+     我们**目前没有 Rust 契约测试**（只有 ArkTS injection 检查）→ 建议补：`errors.rs` 码表/分级 == `errors.v1.json`、
+     `kcbridge.d.ts` 的命令/事件名 == napi 导出，防契约漂移；
+  2. `error.rs` 的 `Disposition`（`FatalLink/DropPacket/Ignorable/Infra`）+ `thiserror` 错误枚举写法——与我们 `errors.rs` 一致，可对照命名；
+  3. `limits.rs` 集中常量（我们已有同款）。
+- **不要照搬**：`vendor/kdeconnect-proto` 与 `kc-core::pairing` 并存造成的**双状态机**（其 R1，Decision needed）——
+  我们已完成 C++ 清理、只有一套 Rust 实现，保持现状；任何「参考实现」文件须在文件头标注非生产。
