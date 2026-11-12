@@ -41,9 +41,10 @@ pub struct NetConfig {
 }
 
 /// TLS 角色约定（KDE 强制）：拨号方 = TLS server，被拨方 = TLS client。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TlsRole {
     Server,
+    #[default]
     Client,
 }
 
@@ -117,12 +118,6 @@ pub struct NetEvent {
     pub payload_file_path: String,
     pub payload_file_name: String,
     pub payload_bytes_done: i64,
-}
-
-impl Default for TlsRole {
-    fn default() -> Self {
-        TlsRole::Client
-    }
 }
 
 pub type EventCallback = Arc<dyn Fn(NetEvent) + Send + Sync + 'static>;

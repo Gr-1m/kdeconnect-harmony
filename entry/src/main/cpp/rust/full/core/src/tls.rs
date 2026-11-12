@@ -280,28 +280,6 @@ fn empty_root_store() -> RootCertStore {
     RootCertStore::empty()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn ctx() -> TlsContext {
-        let pair = crate::cert_gen::generate_self_signed_ec(
-            "0123456789abcdef0123456789abcdef",
-            10,
-        )
-        .unwrap();
-        build_context(&pair.cert_pem, &pair.key_pem).unwrap()
-    }
-
-    #[test]
-    fn builds_both_configs() {
-        let ctx = ctx();
-        assert!(own_cert_pem(&ctx).starts_with("-----BEGIN CERTIFICATE-----"));
-        assert!(server_connection(&ctx).is_ok());
-        assert!(client_connection(&ctx, "127.0.0.1").is_ok());
-    }
-}
-
 /// 统一 server/client 两种 rustls 连接，供控制链路与 payload 复用。
 pub enum TlsSession {
     Server(ServerConnection),
@@ -368,5 +346,24 @@ impl TlsSession {
     pub fn peer_cn(&self) -> Option<String> {
         self.peer_leaf()
             .and_then(|der| cert_ext::subject_cn_from_der(&der))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx() -> TlsContext {
+        let pair = crate::cert_gen::generate_self_signed_ec("0123456789abcdef0123456789abcdef", 10)
+            .unwrap();
+        build_context(&pair.cert_pem, &pair.key_pem).unwrap()
+    }
+
+    #[test]
+    fn builds_both_configs() {
+        let ctx = ctx();
+        assert!(own_cert_pem(&ctx).starts_with("-----BEGIN CERTIFICATE-----"));
+        assert!(server_connection(&ctx).is_ok());
+        assert!(client_connection(&ctx, "127.0.0.1").is_ok());
     }
 }

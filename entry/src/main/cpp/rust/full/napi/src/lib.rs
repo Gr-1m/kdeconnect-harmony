@@ -135,9 +135,11 @@ impl From<NetEvent> for NetEventJs {
 /// ArkTS 的 `(event) => ...` 就会拿到 null（实测崩溃：`Cannot read property packet of null`）。
 type EventTsfn = ThreadsafeFunction<NetEventJs, Unknown<'static>, NetEventJs, Status, false>;
 
+/// 启动前回灌的 capabilities（incoming, outgoing）。
+type PendingCaps = LazyLock<Mutex<Option<(Vec<String>, Vec<String>)>>>;
+
 static BRIDGE: LazyLock<Mutex<Option<EventTsfn>>> = LazyLock::new(|| Mutex::new(None));
-static PENDING_CAPS: LazyLock<Mutex<Option<(Vec<String>, Vec<String>)>>> =
-    LazyLock::new(|| Mutex::new(None));
+static PENDING_CAPS: PendingCaps = LazyLock::new(|| Mutex::new(None));
 static PENDING_TRUST: LazyLock<Mutex<HashMap<String, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -162,7 +164,10 @@ pub fn init(callback: Function<'static>) -> Result<()> {
     events::set_callback(Some(std::sync::Arc::new(|event: NetEvent| {
         if let Ok(bridge) = BRIDGE.lock() {
             if let Some(tsfn) = bridge.as_ref() {
-                let _ = tsfn.call(NetEventJs::from(event), ThreadsafeFunctionCallMode::NonBlocking);
+                let _ = tsfn.call(
+                    NetEventJs::from(event),
+                    ThreadsafeFunctionCallMode::NonBlocking,
+                );
             }
         }
     })));
@@ -182,10 +187,7 @@ pub fn shutdown() {
 pub fn start(config: NetConfigJs) -> bool {
     let cfg: NetConfig = config.into();
     // 启动前回灌的 TrustStore / capabilities 必须在监听线程启动前生效（开屏期无竞态）。
-    let trusted = PENDING_TRUST
-        .lock()
-        .map(|m| m.clone())
-        .unwrap_or_default();
+    let trusted = PENDING_TRUST.lock().map(|m| m.clone()).unwrap_or_default();
     let caps = PENDING_CAPS.lock().ok().and_then(|mut p| p.take());
     stack::start_global_with(cfg, trusted, caps)
 }

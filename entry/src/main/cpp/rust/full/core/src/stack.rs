@@ -22,7 +22,7 @@ use crate::payload;
 use crate::state::Shared;
 use crate::types::{
     EventType, NetConfig, NetEvent, DISCOVERY_BROADCAST_FAST_COUNT, DISCOVERY_BROADCAST_FAST_MS,
-    DISCOVERY_BROADCAST_WHILE_LINKED, DISCOVERY_TIMEOUT_MS, DISCOVERY_LONG_INTERVAL_MS,
+    DISCOVERY_BROADCAST_WHILE_LINKED, DISCOVERY_LONG_INTERVAL_MS, DISCOVERY_TIMEOUT_MS,
     LISTEN_BACKLOG, LOOP_TICK_MS, MAX_UNPAIRED_CONNECTIONS, TCP_PORT_MAX, TCP_PORT_MIN, UDP_PORT,
 };
 use crate::{loge, logi};
@@ -46,8 +46,8 @@ impl Stack {
             return Err("deviceId is empty".to_owned());
         }
         let tls = crate::tls::build_context(&config.cert_pem, &config.key_pem)?;
-        let listener = bind_listener(config.tcp_port)
-            .map_err(|e| format!("tcp listen failed: {e}"))?;
+        let listener =
+            bind_listener(config.tcp_port).map_err(|e| format!("tcp listen failed: {e}"))?;
         let bound_port = listener
             .local_addr()
             .map_err(|e| format!("tcp local_addr: {e}"))?
@@ -57,8 +57,7 @@ impl Stack {
         } else {
             config.udp_port
         };
-        let udp = discovery::bind_udp(udp_port)
-            .map_err(|e| format!("udp init failed: {e}"))?;
+        let udp = discovery::bind_udp(udp_port).map_err(|e| format!("udp init failed: {e}"))?;
         let shared = Shared::new(config, tls, bound_port);
         // 在启动任何线程之前应用启动前回灌的信任/能力，避免开屏期竞态。
         for (device_id, pem) in trusted {
@@ -80,14 +79,10 @@ impl Stack {
         // 首次广播（start() 成功即宣告在线）。
         let _ = discovery::broadcast(&udp, udp_port, &shared.identity_frame());
 
-        spawn_thread(
-            &stack,
-            format!("kdc-listener-{bound_port}"),
-            {
-                let shared = shared.clone();
-                move || listener_loop(shared, listener)
-            },
-        );
+        spawn_thread(&stack, format!("kdc-listener-{bound_port}"), {
+            let shared = shared.clone();
+            move || listener_loop(shared, listener)
+        });
         spawn_thread(&stack, "kdc-discovery".to_owned(), {
             let shared = shared.clone();
             let udp = udp.try_clone().ok();
@@ -103,11 +98,7 @@ impl Stack {
         });
 
         // MSG196 §2：start 后打印「已应用 pin 数」，便于设备侧确认 TrustStore 回灌生效。
-        let trusted_count = shared
-            .trusted
-            .lock()
-            .map(|map| map.len())
-            .unwrap_or(0);
+        let trusted_count = shared.trusted.lock().map(|map| map.len()).unwrap_or(0);
         logi!(
             "net stack started (full Rust): deviceId={} tcpPort={} udpPort={} trusted={}",
             shared.config.device_id,
@@ -277,13 +268,7 @@ fn bind_listener(preferred: u16) -> io::Result<TcpListener> {
     let mut last_err = io::Error::new(io::ErrorKind::AddrInUse, "no free tcp port");
     for port in start..=end {
         // SAFETY: socket(2) 返回 fd；失败路径均 close。
-        let fd = unsafe {
-            libc::socket(
-                libc::AF_INET,
-                libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
-                0,
-            )
-        };
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
         if fd < 0 {
             last_err = io::Error::last_os_error();
             continue;
@@ -462,20 +447,19 @@ fn probe_then_dial(shared: Arc<Shared>, host: String) {
     };
     let mut port = shared.cached_port(&host);
     if port != 0
-        && find_listening_tcp_port(&host, port, port, crate::types::PORT_PROBE_TIMEOUT_MS as i32)
-            == 0
+        && find_listening_tcp_port(
+            &host,
+            port,
+            port,
+            crate::types::PORT_PROBE_TIMEOUT_MS as i32,
+        ) == 0
     {
         logi!("port cache for {host} is stale ({port}), dropping");
         shared.forget_port(&host);
         port = 0;
     }
     if port == 0 {
-        port = find_listening_tcp_port(
-            &host,
-            min,
-            max,
-            crate::types::PORT_PROBE_TIMEOUT_MS as i32,
-        );
+        port = find_listening_tcp_port(&host, min, max, crate::types::PORT_PROBE_TIMEOUT_MS as i32);
     }
     if port == 0 {
         logi!("port probe: no listener on {host} in {min}-{max}");

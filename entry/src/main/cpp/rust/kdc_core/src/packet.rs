@@ -69,7 +69,9 @@ pub fn scan_frame_from(buf: &[u8], max_size: usize, from: usize) -> FrameScan {
     match buf[from..].iter().position(|&b| b == b'\n') {
         None => {
             if buf.len() > max_size {
-                FrameScan::DroppedOversize { consumed: buf.len() }
+                FrameScan::DroppedOversize {
+                    consumed: buf.len(),
+                }
             } else {
                 FrameScan::Half
             }
@@ -77,7 +79,9 @@ pub fn scan_frame_from(buf: &[u8], max_size: usize, from: usize) -> FrameScan {
         Some(rel) => {
             let frame_len = from + rel + 1;
             if frame_len > max_size {
-                FrameScan::DroppedOversize { consumed: frame_len }
+                FrameScan::DroppedOversize {
+                    consumed: frame_len,
+                }
             } else {
                 FrameScan::Frame { len: frame_len }
             }
@@ -372,7 +376,10 @@ mod tests {
         // 超限帧：按「非法行丢弃」（防 OOM，P2-1）；后续正常帧不受影响
         let mut buf = "123456\nok\n".to_string();
         assert_eq!(extract_frame(&mut buf, 4), FrameOutcome::DroppedOversize);
-        assert_eq!(extract_frame(&mut buf, 4), FrameOutcome::Frame("ok\n".to_string()));
+        assert_eq!(
+            extract_frame(&mut buf, 4),
+            FrameOutcome::Frame("ok\n".to_string())
+        );
     }
 
     #[test]
@@ -391,7 +398,8 @@ mod tests {
 
     #[test]
     fn parse_packet_payload_fields() {
-        let json = "{\"id\":0,\"type\":\"kdeconnect.share.request\",\"body\":{\"filename\":\"a.png\"},\
+        let json =
+            "{\"id\":0,\"type\":\"kdeconnect.share.request\",\"body\":{\"filename\":\"a.png\"},\
                     \"payloadSize\":882,\"payloadTransferInfo\":{\"port\":1739}}";
         let pkt = parse_packet(json).expect("应解析成功");
         assert_eq!(pkt.r#type, "kdeconnect.share.request");
@@ -428,14 +436,14 @@ mod tests {
     #[test]
     fn device_id_validation() {
         let rows: &[(&str, bool)] = &[
-            ("0123456789abcdef0123456789abcdef", true), // 32 hex
-            ("0123456789abcdef0123456789abcde-", true), // '-' 合法
-            ("0123456789abcdef0123456789abcde_", true), // '_' 合法
-            ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", true), // 大写
-            ("0123456789abcdef0123456789abcde", false), // 31 位
-            ("0123456789abcdef0123456789abcdef0", true), // 33 位（32..38 区间内）
+            ("0123456789abcdef0123456789abcdef", true),   // 32 hex
+            ("0123456789abcdef0123456789abcde-", true),   // '-' 合法
+            ("0123456789abcdef0123456789abcde_", true),   // '_' 合法
+            ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", true),   // 大写
+            ("0123456789abcdef0123456789abcde", false),   // 31 位
+            ("0123456789abcdef0123456789abcdef0", true),  // 33 位（32..38 区间内）
             ("0123456789abcdef0123456789abcdef01", true), // 34 位仍合法（≤38）
-            ("0123456789abcdef0123456789abcd.f", false), // 非法字符
+            ("0123456789abcdef0123456789abcd.f", false),  // 非法字符
             ("", false),
         ];
         for (id, ok) in rows {
@@ -504,10 +512,7 @@ mod tests {
         let wrong_type = ok.replace("kdeconnect.identity", "kdeconnect.ping");
         assert_eq!(parse_identity(&wrong_type), None);
         // 缺 body → 失败；非法 JSON → 失败
-        assert_eq!(
-            parse_identity("{\"type\":\"kdeconnect.identity\"}"),
-            None
-        );
+        assert_eq!(parse_identity("{\"type\":\"kdeconnect.identity\"}"), None);
         assert_eq!(parse_identity("{\"id\":0"), None);
     }
 
@@ -536,7 +541,10 @@ mod tests {
             "kdeconnect-meta/schemas/kdeconnect.identity.json",
             "../../../../../../KDE_connect_hap/kdeconnect-meta/schemas/kdeconnect.identity.json",
         ];
-        CANDS.iter().map(std::path::PathBuf::from).find(|p| p.exists())
+        CANDS
+            .iter()
+            .map(std::path::PathBuf::from)
+            .find(|p| p.exists())
     }
 
     #[test]
@@ -557,7 +565,10 @@ mod tests {
             let ok = match *t {
                 "string" => got.is_string(),
                 "number" => got.is_number(),
-                "array" => got.as_array().map(|a| a.iter().all(|x| x.is_string())).unwrap_or(false),
+                "array" => got
+                    .as_array()
+                    .map(|a| a.iter().all(|x| x.is_string()))
+                    .unwrap_or(false),
                 other => panic!("未知期望类型 {other}"),
             };
             assert!(ok, "字段 {k} 的类型不符合 schema（期望 {t}）");
@@ -574,10 +585,16 @@ mod tests {
                     assert!(v.get(key).is_some(), "活体 schema：缺顶层必需字段 {key}");
                 }
             }
-            if let Some(req) = sch["properties"]["body"].get("required").and_then(Value::as_array) {
+            if let Some(req) = sch["properties"]["body"]
+                .get("required")
+                .and_then(Value::as_array)
+            {
                 for k in req {
                     let key = k.as_str().expect("body.required 项应为字符串");
-                    assert!(body.get(key).is_some(), "活体 schema：body 缺必需字段 {key}");
+                    assert!(
+                        body.get(key).is_some(),
+                        "活体 schema：body 缺必需字段 {key}"
+                    );
                 }
             }
         }
@@ -588,16 +605,18 @@ mod tests {
         let caps_in = vec!["kdeconnect.ping".to_string()];
         let caps_out = vec!["kdeconnect.share.request".to_string()];
         let frame = build_identity(VALID_ID, "My Phone", "phone", 1716, 8, &caps_in, &caps_out);
-        assert!(frame.ends_with('\n'), "帧尾必须带换行（协议以 \\n 分隔 packet）");
-        let info = parse_identity(&frame).expect("自建 identity 帧必须能被解析（跨端互操作的最低要求）");
+        assert!(
+            frame.ends_with('\n'),
+            "帧尾必须带换行（协议以 \\n 分隔 packet）"
+        );
+        let info =
+            parse_identity(&frame).expect("自建 identity 帧必须能被解析（跨端互操作的最低要求）");
         assert_eq!(info.device_id, VALID_ID);
         assert_eq!(info.device_name, "My Phone");
         assert_eq!(info.device_type, "phone");
         assert_eq!(info.tcp_port, 1716);
         assert!(is_valid_device_id(&info.device_id));
     }
-
-
 
     /// `tcpPort`：schema **未声明**该字段（additionalProperties 未声明 ⇒ 默认允许），
     /// 但 KDE 与 Android 参考实现**都发**（Android `LanLinkProvider`：
@@ -620,7 +639,10 @@ mod tests {
              \"tcpPort\":\"1716\",\"protocolVersion\":8,\"incomingCapabilities\":[],\
              \"outgoingCapabilities\":[]}}}}"
         );
-        assert_eq!(parse_identity(&identity).expect("string tcpPort").tcp_port, 1716);
+        assert_eq!(
+            parse_identity(&identity).expect("string tcpPort").tcp_port,
+            1716
+        );
 
         let packet = "{\"id\":1,\"type\":\"kdeconnect.share.request\",\"body\":{},\
                       \"payloadSize\":\"42\",\"payloadTransferInfo\":{\"port\":\"1739\"}}";

@@ -43,12 +43,7 @@ pub fn is_private_ipv4(host: &str) -> bool {
 ///
 /// 并行非阻塞 connect + 单轮 poll（与 C++ 实现同语义）：返回命中的最小端口。
 /// 每条 sockaddr 只判定一次 `SO_ERROR`（读即清除），并排除自连接。
-pub fn find_listening_tcp_port(
-    host: &str,
-    min_port: u16,
-    max_port: u16,
-    timeout_ms: i32,
-) -> u16 {
+pub fn find_listening_tcp_port(host: &str, min_port: u16, max_port: u16, timeout_ms: i32) -> u16 {
     let Ok(addr) = host.parse::<Ipv4Addr>() else {
         return 0;
     };
@@ -190,9 +185,7 @@ pub fn peer_host_fd(fd: RawFd) -> Option<String> {
     let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
     // SAFETY: sa/len 均为有效可写内存。
-    let rc = unsafe {
-        libc::getpeername(fd, &mut sa as *mut _ as *mut libc::sockaddr, &mut len)
-    };
+    let rc = unsafe { libc::getpeername(fd, &mut sa as *mut _ as *mut libc::sockaddr, &mut len) };
     if rc != 0 {
         return None;
     }
@@ -253,10 +246,7 @@ mod tests {
     fn port_probe_finds_listener() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        assert_eq!(
-            find_listening_tcp_port("127.0.0.1", port, port, 500),
-            port
-        );
+        assert_eq!(find_listening_tcp_port("127.0.0.1", port, port, 500), port);
         drop(listener);
         assert_eq!(find_listening_tcp_port("127.0.0.1", port, port, 100), 0);
     }

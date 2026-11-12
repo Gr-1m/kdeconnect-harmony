@@ -53,6 +53,9 @@ pub fn emit_connect_error_os(host: &str, port: u16, code: i32, stage: &str, errn
         host,
         port,
         code,
-        &format!("{stage} ({host}:{port}): {}", crate::types::errno_text(errno)),
+        &format!(
+            "{stage} ({host}:{port}): {}",
+            crate::types::errno_text(errno)
+        ),
     );
 }

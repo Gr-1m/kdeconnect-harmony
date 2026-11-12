@@ -140,10 +140,7 @@ mod tests {
     #[test]
     fn oversize_line_is_dropped() {
         let mut buf = b"0123456789\n".to_vec();
-        assert!(matches!(
-            extract_frame(&mut buf, 4),
-            Some(Err(()))
-        ));
+        assert!(matches!(extract_frame(&mut buf, 4), Some(Err(()))));
         assert!(buf.is_empty());
     }
 

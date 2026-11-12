@@ -85,8 +85,14 @@ mod tests {
 
         // 闰日：minusYears/plusYears 落到 2/28（Java 语义）
         let leap = utc(2028, Month::February, 29);
-        assert_eq!(shift_calendar_years(leap, -1), utc(2027, Month::February, 28));
-        assert_eq!(shift_calendar_years(leap, 10), utc(2038, Month::February, 28));
+        assert_eq!(
+            shift_calendar_years(leap, -1),
+            utc(2027, Month::February, 28)
+        );
+        assert_eq!(
+            shift_calendar_years(leap, 10),
+            utc(2038, Month::February, 28)
+        );
     }
 
     #[test]

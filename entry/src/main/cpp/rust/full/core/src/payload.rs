@@ -122,8 +122,7 @@ impl PayloadJob {
             .last_progress_event
             .lock()
             .map(|mut last| {
-                if now.duration_since(*last).as_millis()
-                    >= u128::from(PAYLOAD_PROGRESS_INTERVAL_MS)
+                if now.duration_since(*last).as_millis() >= u128::from(PAYLOAD_PROGRESS_INTERVAL_MS)
                 {
                     *last = now;
                     true
@@ -136,7 +135,11 @@ impl PayloadJob {
     }
 
     fn emit(&self, shared: &Shared, state: &str, code: i32, message: &str) {
-        let spool = self.spool_path.lock().map(|p| p.clone()).unwrap_or_default();
+        let spool = self
+            .spool_path
+            .lock()
+            .map(|p| p.clone())
+            .unwrap_or_default();
         if let Ok(mut s) = self.state.lock() {
             s.name = state.to_owned();
             s.code = code;
@@ -209,13 +212,7 @@ fn valid_device_id(device_id: &str) -> bool {
 fn bind_payload_listener() -> io::Result<(TcpListener, u16)> {
     for port in PAYLOAD_PORT_MIN..=TCP_PORT_MAX {
         // SAFETY: socket(2) 返回 fd；失败/后续失败路径都会 close。
-        let fd = unsafe {
-            libc::socket(
-                libc::AF_INET,
-                libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
-                0,
-            )
-        };
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
         if fd < 0 {
             continue;
         }
@@ -354,20 +351,35 @@ fn send_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, listener: TcpListener,
     let deadline = Instant::now() + Duration::from_millis(PAYLOAD_ACCEPT_TIMEOUT_MS);
     let mut stream = loop {
         if job.shutdown.load(Ordering::SeqCst) {
-            job.finish(&shared, "cancelled", code::USER_CANCELLED, "cancelled by local user");
+            job.finish(
+                &shared,
+                "cancelled",
+                code::USER_CANCELLED,
+                "cancelled by local user",
+            );
             return;
         }
         match listener.accept() {
             Ok((stream, _)) => break stream,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 if Instant::now() > deadline {
-                    job.finish(&shared, "failed", code::PORT_TIMEOUT, "payload accept timeout");
+                    job.finish(
+                        &shared,
+                        "failed",
+                        code::PORT_TIMEOUT,
+                        "payload accept timeout",
+                    );
                     return;
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
             Err(_e) => {
-                job.finish(&shared, "failed", code::PORT_TIMEOUT, "payload accept failed");
+                job.finish(
+                    &shared,
+                    "failed",
+                    code::PORT_TIMEOUT,
+                    "payload accept failed",
+                );
                 return;
             }
         }
@@ -379,12 +391,22 @@ fn send_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, listener: TcpListener,
     let mut session = match tls::server_connection(&shared.tls) {
         Ok(c) => TlsSession::Server(c),
         Err(e) => {
-            job.finish(&shared, "failed", code::TLS_FAILED, &format!("payload tls init failed: {e}"));
+            job.finish(
+                &shared,
+                "failed",
+                code::TLS_FAILED,
+                &format!("payload tls init failed: {e}"),
+            );
             return;
         }
     };
     if let Err(e) = tls_handshake(&mut session, &mut stream, Duration::from_secs(30)) {
-        job.finish(&shared, "failed", code::TLS_FAILED, &format!("payload tls handshake failed: {e}"));
+        job.finish(
+            &shared,
+            "failed",
+            code::TLS_FAILED,
+            &format!("payload tls handshake failed: {e}"),
+        );
         return;
     }
     job.clear_deadline();
@@ -404,13 +426,23 @@ fn send_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, listener: TcpListener,
     let mut buf = vec![0u8; PAYLOAD_CHUNK];
     loop {
         if job.shutdown.load(Ordering::SeqCst) {
-            job.finish(&shared, "cancelled", code::USER_CANCELLED, "cancelled by local user");
+            job.finish(
+                &shared,
+                "cancelled",
+                code::USER_CANCELLED,
+                "cancelled by local user",
+            );
             return;
         }
         let n = match file.read(&mut buf) {
             Ok(0) => {
                 if job.total >= 0 && job.done.load(Ordering::Relaxed) < job.total {
-                    job.finish(&shared, "failed", code::READ_FAILED, "payload source shorter than payloadSize");
+                    job.finish(
+                        &shared,
+                        "failed",
+                        code::READ_FAILED,
+                        "payload source shorter than payloadSize",
+                    );
                 } else {
                     let _ = tls_flush(&mut session, &mut stream);
                     job.finish(&shared, "finished", 0, "");
@@ -420,12 +452,22 @@ fn send_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, listener: TcpListener,
             Ok(n) => n,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(_e) => {
-                job.finish(&shared, "failed", code::READ_FAILED, "payload source read failed");
+                job.finish(
+                    &shared,
+                    "failed",
+                    code::READ_FAILED,
+                    "payload source read failed",
+                );
                 return;
             }
         };
         if let Err(_e) = tls_write_all(&mut session, &mut stream, &buf[..n]) {
-            job.finish(&shared, "failed", code::INTERRUPTED, "payload tls write failed");
+            job.finish(
+                &shared,
+                "failed",
+                code::INTERRUPTED,
+                "payload tls write failed",
+            );
             return;
         }
         job.done.fetch_add(n as i64, Ordering::Relaxed);
@@ -498,7 +540,12 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
     ) {
         Ok(s) => s,
         Err(_e) => {
-            job.finish(&shared, "failed", code::PORT_TIMEOUT, "payload connect failed");
+            job.finish(
+                &shared,
+                "failed",
+                code::PORT_TIMEOUT,
+                "payload connect failed",
+            );
             return;
         }
     };
@@ -509,12 +556,22 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
     let mut session = match tls::client_connection(&shared.tls, &addr.ip().to_string()) {
         Ok(c) => TlsSession::Client(c),
         Err(e) => {
-            job.finish(&shared, "failed", code::TLS_FAILED, &format!("payload tls init failed: {e}"));
+            job.finish(
+                &shared,
+                "failed",
+                code::TLS_FAILED,
+                &format!("payload tls init failed: {e}"),
+            );
             return;
         }
     };
     if let Err(e) = tls_handshake(&mut session, &mut stream, Duration::from_secs(30)) {
-        job.finish(&shared, "failed", code::TLS_FAILED, &format!("payload tls handshake failed: {e}"));
+        job.finish(
+            &shared,
+            "failed",
+            code::TLS_FAILED,
+            &format!("payload tls handshake failed: {e}"),
+        );
         return;
     }
     job.clear_deadline();
@@ -535,7 +592,12 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
     let mut eof = false;
     while job.total < 0 || job.done.load(Ordering::Relaxed) < job.total {
         if job.shutdown.load(Ordering::SeqCst) {
-            job.finish(&shared, "cancelled", code::USER_CANCELLED, "cancelled by local user");
+            job.finish(
+                &shared,
+                "cancelled",
+                code::USER_CANCELLED,
+                "cancelled by local user",
+            );
             return;
         }
         match session.read_tls(&mut stream) {
@@ -544,15 +606,25 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
             }
             Ok(_) => {
                 if let Err(e) = session.process_new_packets() {
-                    job.finish(&shared, "failed", code::INTERRUPTED, &format!("payload tls read failed: {e}"));
+                    job.finish(
+                        &shared,
+                        "failed",
+                        code::INTERRUPTED,
+                        &format!("payload tls read failed: {e}"),
+                    );
                     return;
                 }
             }
             Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut => {}
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+            }
             Err(_e) => {
-                job.finish(&shared, "failed", code::INTERRUPTED, "payload tls read failed");
+                job.finish(
+                    &shared,
+                    "failed",
+                    code::INTERRUPTED,
+                    "payload tls read failed",
+                );
                 return;
             }
         }
@@ -564,7 +636,12 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
                 }
                 Ok(n) => {
                     if let Err(_e) = file.write_all(&buf[..n]) {
-                        job.finish(&shared, "failed", code::DISK_FAILED, "payload spool write failed");
+                        job.finish(
+                            &shared,
+                            "failed",
+                            code::DISK_FAILED,
+                            "payload spool write failed",
+                        );
                         return;
                     }
                     let done = job.done.fetch_add(n as i64, Ordering::Relaxed) + n as i64;
@@ -577,7 +654,12 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(_e) => {
-                    job.finish(&shared, "failed", code::INTERRUPTED, "payload tls read failed");
+                    job.finish(
+                        &shared,
+                        "failed",
+                        code::INTERRUPTED,
+                        "payload tls read failed",
+                    );
                     return;
                 }
             }
@@ -590,7 +672,12 @@ fn receive_thread(shared: Arc<Shared>, job: Arc<PayloadJob>, addr: SocketAddrV4,
             if job.total < 0 {
                 job.finish(&shared, "finished", 0, "");
             } else {
-                job.finish(&shared, "failed", code::INTERRUPTED, "payload peer closed early");
+                job.finish(
+                    &shared,
+                    "failed",
+                    code::INTERRUPTED,
+                    "payload peer closed early",
+                );
             }
             return;
         }
@@ -614,8 +701,8 @@ fn tls_handshake(
                 .process_new_packets()
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?,
             Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut => {}
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+            }
             Err(e) => return Err(e),
         }
         tls_flush(session, stream)?;
@@ -714,7 +801,12 @@ pub fn cancel(shared: &Shared, id: u64) {
         .and_then(|jobs| jobs.get(&id).cloned());
     if let Some(job) = job {
         if !job.finished.load(Ordering::SeqCst) {
-            job.finish(shared, "cancelled", code::USER_CANCELLED, "cancelled by local user");
+            job.finish(
+                shared,
+                "cancelled",
+                code::USER_CANCELLED,
+                "cancelled by local user",
+            );
         }
     }
 }
@@ -727,7 +819,12 @@ pub fn on_device_down(shared: &Shared, device_id: &str) {
         .unwrap_or_default();
     for job in jobs {
         if !job.finished.load(Ordering::SeqCst) && job.device_id == device_id {
-            job.finish(shared, "failed", code::INTERRUPTED, "control connection closed");
+            job.finish(
+                shared,
+                "failed",
+                code::INTERRUPTED,
+                "control connection closed",
+            );
         }
     }
 }
@@ -775,16 +872,28 @@ pub fn tick(shared: &Shared, now: Instant) {
         if expired {
             // deadline 覆盖「accept 等待」与「TLS 握手」两段；统一报 1（端口超时），
             // 具体阶段留在 errorMessage。
-            job.finish(shared, "failed", code::PORT_TIMEOUT, "payload handshake/accept timeout");
+            job.finish(
+                shared,
+                "failed",
+                code::PORT_TIMEOUT,
+                "payload handshake/accept timeout",
+            );
             continue;
         }
         let stalled = job
             .last_progress
             .lock()
-            .map(|last| now.duration_since(*last).as_millis() >= u128::from(PAYLOAD_STALL_TIMEOUT_MS))
+            .map(|last| {
+                now.duration_since(*last).as_millis() >= u128::from(PAYLOAD_STALL_TIMEOUT_MS)
+            })
             .unwrap_or(false);
         if stalled {
-            job.finish(shared, "failed", code::INTERRUPTED, "payload stalled (no progress)");
+            job.finish(
+                shared,
+                "failed",
+                code::INTERRUPTED,
+                "payload stalled (no progress)",
+            );
         }
     }
     if !reap.is_empty() {
@@ -821,10 +930,7 @@ mod tests {
 
     #[test]
     fn filename_extraction() {
-        assert_eq!(
-            body_file_name(r#"{"filename":"a.jpg","size":1}"#),
-            "a.jpg"
-        );
+        assert_eq!(body_file_name(r#"{"filename":"a.jpg","size":1}"#), "a.jpg");
         assert_eq!(body_file_name("{}"), "");
     }
 

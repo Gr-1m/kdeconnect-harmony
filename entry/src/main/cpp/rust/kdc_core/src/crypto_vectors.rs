@@ -26,7 +26,8 @@ mod tests {
         let a = hex2bytes(SAS_A_SPKI);
         let b = hex2bytes(SAS_B_SPKI);
         assert_eq!(compute_verification_code(&a, &b, 1_700_000_000), "A82E8F8A");
-        assert_eq!(compute_verification_code(&b, &a, 1_700_000_000), "A82E8F8A"); // 参数无序性
+        assert_eq!(compute_verification_code(&b, &a, 1_700_000_000), "A82E8F8A");
+        // 参数无序性
     }
 
     /// V2：SAS 错序哨兵（A||B）——断言 !=，钉扎拼接顺序防回归
@@ -47,7 +48,10 @@ mod tests {
     /// V3：R1 ts=1745000000（期望值取自真实 C++ 打印）
     #[test]
     fn sas_r1_vector_ts1745000000() {
-        assert_eq!(compute_verification_code(&c32(), &d48(), 1_745_000_000), "D0223B99");
+        assert_eq!(
+            compute_verification_code(&c32(), &d48(), 1_745_000_000),
+            "D0223B99"
+        );
     }
 
     /// V4：R1 ts=0
@@ -66,9 +70,9 @@ mod tests {
     #[test]
     fn ring_sha256_vector() {
         const EXPECT: &[u8; 32] = &[
-            0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde,
-            0x5d, 0xae, 0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
-            0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
+            0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+            0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
+            0xf2, 0x00, 0x15, 0xad,
         ];
         let ring_out = ring::digest::digest(&ring::digest::SHA256, b"abc");
         assert_eq!(ring_out.as_ref(), EXPECT);

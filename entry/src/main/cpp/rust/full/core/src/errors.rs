@@ -114,7 +114,10 @@ pub fn disposition(code: i32) -> Disposition {
 
 /// `errors.v1.json` 里 `kind: throw` 的码（跨桥时以异常形式抛出；阶段 1 的旧契约仍走事件）。
 pub fn is_throw(code: i32) -> bool {
-    matches!(code, NOT_READY | NOT_STARTED | ALREADY_STARTED | BAD_JSON | BAD_PARAM | CONTRACT_MISMATCH)
+    matches!(
+        code,
+        NOT_READY | NOT_STARTED | ALREADY_STARTED | BAD_JSON | BAD_PARAM | CONTRACT_MISMATCH
+    )
 }
 
 #[cfg(test)]
@@ -182,10 +185,23 @@ mod tests {
 
     #[test]
     fn throw_kinds_match_contract() {
-        for code in [NOT_READY, NOT_STARTED, ALREADY_STARTED, BAD_JSON, BAD_PARAM, CONTRACT_MISMATCH] {
+        for code in [
+            NOT_READY,
+            NOT_STARTED,
+            ALREADY_STARTED,
+            BAD_JSON,
+            BAD_PARAM,
+            CONTRACT_MISMATCH,
+        ] {
             assert!(is_throw(code), "{code} should be throw kind");
         }
-        for code in [CERT_MISMATCH, PROTOCOL_VIOLATION, PEER_NOT_CONNECTED, PAYLOAD_TIMEOUT, INIT_FAILED] {
+        for code in [
+            CERT_MISMATCH,
+            PROTOCOL_VIOLATION,
+            PEER_NOT_CONNECTED,
+            PAYLOAD_TIMEOUT,
+            INIT_FAILED,
+        ] {
             assert!(!is_throw(code), "{code} should be event kind");
         }
     }

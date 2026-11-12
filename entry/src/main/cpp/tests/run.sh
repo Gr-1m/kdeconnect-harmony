@@ -19,6 +19,18 @@ cargo test -p kdc_native --manifest-path "$MANIFEST"
 echo "== cargo check -p kdeconnect_napi =="
 cargo check -p kdeconnect_napi --manifest-path "$MANIFEST"
 
+# —— 格式/lint 门禁（MSG250 P0-3；对齐参考库 kc-* 的 check.sh 思路）——
+# 组件缺失即门禁失败（不得静默跳过）。
+if ! cargo fmt --version >/dev/null 2>&1; then
+    echo "rustfmt 未安装：rustup component add rustfmt"
+    exit 1
+fi
+echo "== cargo fmt --all -- --check =="
+cargo fmt --manifest-path "$MANIFEST" --all -- --check
+
+echo "== cargo clippy --workspace --all-targets -D warnings =="
+cargo clippy --manifest-path "$MANIFEST" --workspace --all-targets -- -D warnings
+
 # —— 装配契约完整性（CodeArts MSG129 F2；AtomChecker MSG119 建议2）——
 # 失败即门禁失败；脚本缺失同样失败（不得静默跳过——「假通过」已在本轮被证明是真风险）。
 INJ="$PWD/../../../../../tools/check-injection-contract.py"

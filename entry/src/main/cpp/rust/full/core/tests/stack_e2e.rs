@@ -205,7 +205,9 @@ fn two_stacks_connect_pair_and_transfer_payload() {
         finished.payload_file_path
     );
     assert_eq!(
-        std::fs::metadata(&finished.payload_file_path).map(|m| m.len()).ok(),
+        std::fs::metadata(&finished.payload_file_path)
+            .map(|m| m.len())
+            .ok(),
         Some(data.len() as u64),
         "finished 时 spool 文件应已落盘且长度正确"
     );
@@ -222,7 +224,7 @@ fn two_stacks_connect_pair_and_transfer_payload() {
         src,
     );
     assert_ne!(cancel_id, 0, "cancel scenario should get a transfer id");
-    a.cancel_payload(cancel_id as u64);
+    a.cancel_payload(cancel_id);
     let cancelled = events
         .wait(Duration::from_secs(5), |e| {
             e.event_type == EventType::PayloadTransfer
@@ -230,7 +232,10 @@ fn two_stacks_connect_pair_and_transfer_payload() {
                 && e.payload_transfer_id == cancel_id
         })
         .expect("cancelled event expected");
-    assert_eq!(cancelled.error_code, 6, "cancelled must use contract code 6");
+    assert_eq!(
+        cancelled.error_code, 6,
+        "cancelled must use contract code 6"
+    );
 
     // 断开与停止：A 主动断开应让 B 收到 disconnected。
     a.disconnect(&b_id);
@@ -254,8 +259,14 @@ fn two_stacks_connect_pair_and_transfer_payload() {
         "/tmp/kdc-rust-e2e-a2",
     ))
     .expect("start a2");
-    let b2 = Stack::start(config('d', "mismatch-b", 18083, 19174, "/tmp/kdc-rust-e2e-b2"))
-        .expect("start b2");
+    let b2 = Stack::start(config(
+        'd',
+        "mismatch-b",
+        18083,
+        19174,
+        "/tmp/kdc-rust-e2e-b2",
+    ))
+    .expect("start b2");
     assert!(a2.connect_to_peer("127.0.0.1".to_owned(), b2.bound_tcp_port()));
     let err = events
         .wait(Duration::from_secs(8), |e| {
@@ -282,10 +293,10 @@ fn two_stacks_connect_pair_and_transfer_payload() {
 
     // —— 负路径 2：信任证书钉扎不符 ⇒ fail-closed（不得派发 connected） ——
     let a3_id = device_id('f');
-    let a3 = Stack::start(config('f', "pin-a", 18084, 19175, "/tmp/kdc-rust-e2e-a3"))
-        .expect("start a3");
-    let b3 = Stack::start(config('g', "pin-b", 18085, 19176, "/tmp/kdc-rust-e2e-b3"))
-        .expect("start b3");
+    let a3 =
+        Stack::start(config('f', "pin-a", 18084, 19175, "/tmp/kdc-rust-e2e-a3")).expect("start a3");
+    let b3 =
+        Stack::start(config('g', "pin-b", 18085, 19176, "/tmp/kdc-rust-e2e-b3")).expect("start b3");
     let wrong = cert_gen::generate_self_signed_ec(&device_id('h'), 10).expect("wrong cert");
     b3.set_trusted_certificate(&a3_id, &wrong.cert_pem);
     assert!(a3.connect_to_peer("127.0.0.1".to_owned(), b3.bound_tcp_port()));
@@ -401,8 +412,7 @@ fn duplicate_start_reports_already_started() {
     );
     let err = events
         .wait(Duration::from_secs(2), |e| {
-            e.event_type == EventType::Error
-                && e.error_code == kdc_native::errors::ALREADY_STARTED
+            e.event_type == EventType::Error && e.error_code == kdc_native::errors::ALREADY_STARTED
         })
         .expect("duplicate start must report ALREADY_STARTED(103)");
     assert!(
@@ -421,10 +431,22 @@ fn untrusted_payload_request_closes_link() {
     let b_id = device_id('n');
     let _ = std::fs::remove_dir_all("/tmp/kdc-rust-e2e-ut-a");
     let _ = std::fs::remove_dir_all("/tmp/kdc-rust-e2e-ut-b");
-    let a = Stack::start(config('m', "untrusted-a", 18092, 19192, "/tmp/kdc-rust-e2e-ut-a"))
-        .expect("start a");
-    let b = Stack::start(config('n', "untrusted-b", 18093, 19193, "/tmp/kdc-rust-e2e-ut-b"))
-        .expect("start b");
+    let a = Stack::start(config(
+        'm',
+        "untrusted-a",
+        18092,
+        19192,
+        "/tmp/kdc-rust-e2e-ut-a",
+    ))
+    .expect("start a");
+    let b = Stack::start(config(
+        'n',
+        "untrusted-b",
+        18093,
+        19193,
+        "/tmp/kdc-rust-e2e-ut-b",
+    ))
+    .expect("start b");
     assert!(a.connect_to_peer("127.0.0.1".to_owned(), b.bound_tcp_port()));
     assert!(
         events

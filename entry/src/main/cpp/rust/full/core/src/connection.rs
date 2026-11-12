@@ -193,7 +193,12 @@ pub fn run_outgoing(shared: Arc<Shared>, handle: Arc<ConnHandle>, rx: Receiver<V
             return;
         }
     };
-    logi!("outgoing tcp connected to {}:{} (id={})", handle.host, handle.port, handle.id);
+    logi!(
+        "outgoing tcp connected to {}:{} (id={})",
+        handle.host,
+        handle.port,
+        handle.id
+    );
     handle.set_stream(&stream);
     let result = outgoing_inner(&shared, &handle, &mut stream, rx);
     if let Err(err) = result {
@@ -397,7 +402,11 @@ fn outgoing_inner(
 
     // 拨号方先发明文 identity，再起 TLS server 握手。
     stream.write_all(shared.identity_frame().as_bytes())?;
-    logi!("outgoing plain identity sent to {}:{}", handle.host, handle.port);
+    logi!(
+        "outgoing plain identity sent to {}:{}",
+        handle.host,
+        handle.port
+    );
     {
         let mut state = handle
             .state
@@ -511,8 +520,8 @@ fn handshake(
                     .map_err(|e| ConnError::Tls(e.to_string()))?;
             }
             Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut => {}
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+            }
             Err(e) => return Err(ConnError::Io(e)),
         }
         flush_tls(session, stream)?;
@@ -561,8 +570,8 @@ fn read_loop(
                 }
             }
             Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut => {}
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+            }
             Err(e) => return Err(ConnError::Io(e)),
         }
 
@@ -641,11 +650,7 @@ fn drain_out(
     Ok(())
 }
 
-fn handle_frame(
-    shared: &Arc<Shared>,
-    handle: &Arc<ConnHandle>,
-    frame: &[u8],
-) -> Result<(), ()> {
+fn handle_frame(shared: &Arc<Shared>, handle: &Arc<ConnHandle>, frame: &[u8]) -> Result<(), ()> {
     let text = match std::str::from_utf8(frame) {
         Ok(t) => t,
         Err(_) => {

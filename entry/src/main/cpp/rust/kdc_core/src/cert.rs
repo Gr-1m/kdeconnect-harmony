@@ -407,7 +407,11 @@ mod tests {
         // 缺 BEGIN
         assert!(pem_to_der("MAMBAgM=", "CERTIFICATE").is_empty());
         // 大小写/标签不同 → 不匹配
-        assert!(pem_to_der("-----BEGIN certificate-----\nMAMBAgM=\n-----END certificate-----", "CERTIFICATE").is_empty());
+        assert!(pem_to_der(
+            "-----BEGIN certificate-----\nMAMBAgM=\n-----END certificate-----",
+            "CERTIFICATE"
+        )
+        .is_empty());
     }
 
     // —————— extractSpkiDer：最小 ASN.1 行走 ——————
@@ -442,10 +446,7 @@ mod tests {
         let b2 = spki_b9();
         // 期望值由真实 C++ computeVerificationCode 打印（temp 程序链接 net/cert_util.cpp）：
         // sha256(a||b||十进制 ts) 前 4 字节 hex 大写，字节序大者在前。
-        assert_eq!(
-            compute_verification_code(&a2, &b2, 1700000000),
-            "2E10F4A0"
-        );
+        assert_eq!(compute_verification_code(&a2, &b2, 1700000000), "2E10F4A0");
         assert_eq!(
             compute_verification_code(&b2, &a2, 1700000000),
             "2E10F4A0" // 参数无序性
@@ -485,7 +486,7 @@ mod tests {
         let dn = extract_subject_dn_der(&CN_CERT_DER);
         assert_eq!(dn, CN_CERT_SUBJECT.to_vec());
         assert_eq!(dn[0], 0x30); // DN 是 SEQUENCE
-        // CN=deviceId 必须是 DN 的子串（DER 里 CN 以 UTF8String 出现）
+                                 // CN=deviceId 必须是 DN 的子串（DER 里 CN 以 UTF8String 出现）
         assert!(dn
             .windows(DEVICE_ID.len())
             .any(|w| w == DEVICE_ID.as_bytes()));
@@ -510,7 +511,10 @@ mod tests {
         let key_back = pem_to_der(&key_pem, "EC PRIVATE KEY");
         assert_eq!(key_back, key_der);
         // DER→PEM→DER 往返一致（base64 编解码共用同一实现）
-        assert_eq!(pem_to_der(&der_to_pem("CERTIFICATE", &cert_der), "CERTIFICATE"), cert_der);
+        assert_eq!(
+            pem_to_der(&der_to_pem("CERTIFICATE", &cert_der), "CERTIFICATE"),
+            cert_der
+        );
         // 标签不匹配时必须失败（防止误解析私钥/证书混用）
         assert!(pem_to_der(&cert_pem, "EC PRIVATE KEY").is_empty());
         assert!(pem_to_der(&key_pem, "CERTIFICATE").is_empty());
@@ -547,5 +551,4 @@ mod tests {
         // 顺序写反的哨兵：实现若丢掉「大者在前」的排序，会命中该值 ⇒ 必须不等
         assert_ne!(compute_verification_code(&a, &b, SAS_TS), "71A26CF5");
     }
-
 }

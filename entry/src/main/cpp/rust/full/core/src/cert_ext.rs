@@ -30,7 +30,7 @@ fn read_tlv(input: &[u8]) -> Option<(u8, &[u8], &[u8])> {
     Some((tag, &input[header..end], &input[end..]))
 }
 
-fn expect_tlv<'a>(input: &'a [u8], want_tag: u8) -> Option<(&'a [u8], &'a [u8])> {
+fn expect_tlv(input: &[u8], want_tag: u8) -> Option<(&[u8], &[u8])> {
     let (tag, value, rest) = read_tlv(input)?;
     if tag != want_tag {
         return None;

@@ -18,11 +18,11 @@ use crate::connection::{ConnHandle, ConnState};
 use crate::events;
 use crate::limits::PAYLOAD_SPOOL_DIR_DEFAULT;
 use crate::payload::{self, PayloadJob};
-use crate::types::{
-    ConnectionState, EventType, NetConfig, NetEvent, TlsRole, MAX_TX_QUEUE_BYTES,
-    DISCOVERY_DEDUP_EVENT_MS,
-};
 use crate::tls::TlsContext;
+use crate::types::{
+    ConnectionState, EventType, NetConfig, NetEvent, TlsRole, DISCOVERY_DEDUP_EVENT_MS,
+    MAX_TX_QUEUE_BYTES,
+};
 
 /// transferId 序列号落盘文件名（放在 spool 目录内，与 payload 历史无关）。
 ///
@@ -158,9 +158,7 @@ impl Shared {
                 Err(_) => return,
             };
             if let Some(last) = map.get(&event.device_id) {
-                if now.duration_since(*last).as_millis()
-                    < u128::from(DISCOVERY_DEDUP_EVENT_MS)
-                {
+                if now.duration_since(*last).as_millis() < u128::from(DISCOVERY_DEDUP_EVENT_MS) {
                     return;
                 }
             }
@@ -214,14 +212,7 @@ impl Shared {
         });
     }
 
-    pub fn emit_discovered(
-        &self,
-        device_id: &str,
-        name: &str,
-        dtype: &str,
-        host: &str,
-        port: u16,
-    ) {
+    pub fn emit_discovered(&self, device_id: &str, name: &str, dtype: &str, host: &str, port: u16) {
         self.emit_event(NetEvent {
             event_type: EventType::DeviceDiscovered,
             device_id: device_id.to_owned(),
@@ -462,7 +453,12 @@ impl Shared {
             .lock()
             .ok()
             .and_then(|m| m.get(device_id).cloned())
-            .or_else(|| self.trusted.lock().ok().and_then(|m| m.get(device_id).cloned()))
+            .or_else(|| {
+                self.trusted
+                    .lock()
+                    .ok()
+                    .and_then(|m| m.get(device_id).cloned())
+            })
             .unwrap_or_default()
     }
 
