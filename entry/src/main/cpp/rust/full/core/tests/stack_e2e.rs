@@ -331,6 +331,15 @@ fn two_stacks_connect_pair_and_transfer_payload() {
 /// 原始拨号方（KDE 约定：拨号方 = TLS **server**），线序与真实栈一致：
 /// 明文 identity → TLS 握手 → 加密 identity。用于注入协议级非法帧。
 fn raw_dialer(port: u16, ch: char) -> (std::net::TcpStream, kdc_native::tls::TlsSession) {
+    raw_dialer_with_second(port, ch, None)
+}
+
+/// 同上，但**加密通道内的二次 identity 可换成任意帧**（`None` = 与首次相同）。
+fn raw_dialer_with_second(
+    port: u16,
+    ch: char,
+    second_identity: Option<&str>,
+) -> (std::net::TcpStream, kdc_native::tls::TlsSession) {
     use std::io::Write;
 
     let id = device_id(ch);
@@ -370,8 +379,9 @@ fn raw_dialer(port: u16, ch: char) -> (std::net::TcpStream, kdc_native::tls::Tls
         !sess.is_handshaking(),
         "raw dialer TLS handshake must complete"
     );
-    // v8：加密通道内需二次 identity，否则对端按未认证链路处理。
-    assert!(raw_send(&mut stream, &mut sess, ident.as_bytes()));
+    // v8：加密通道内需二次 identity（默认与首次相同；用例可注入畸形/不一致的二次 identity）。
+    let second = second_identity.unwrap_or(ident.as_str());
+    assert!(raw_send(&mut stream, &mut sess, second.as_bytes()));
     (stream, sess)
 }
 
@@ -595,6 +605,90 @@ fn oversize_frame_reports_line_too_long() {
             })
             .is_some(),
         "FatalLink ⇒ 超长帧必须断链"
+    );
+    b.stop();
+}
+
+/// v8 一致性：加密通道内的**二次 identity 改 deviceId** ⇒ 204 IDENTITY_INVALID + 断链。
+#[test]
+fn second_identity_device_id_change_is_fatal() {
+    let events = Events::new();
+    let raw_id = device_id('v');
+    let other_id = device_id('w');
+    let b = Stack::start(config(
+        'u',
+        "raw-target-second-id",
+        18096,
+        19196,
+        "/tmp/kdc-rust-e2e-second-id",
+    ))
+    .expect("start b");
+
+    let second = kdc_native::packet::build_identity(&other_id, "evil", "phone", 1716, &[], &[]);
+    let (_stream, _sess) = raw_dialer_with_second(b.bound_tcp_port(), 'v', Some(&second));
+
+    let err = events
+        .wait(Duration::from_secs(10), |e| {
+            e.event_type == EventType::Error
+                && e.device_id == other_id
+                && e.error_code == kdc_native::errors::IDENTITY_INVALID
+        })
+        .expect("二次 identity 改 deviceId 必须报 IDENTITY_INVALID(204)");
+    assert!(
+        err.error_message.contains("deviceId"),
+        "错误消息应指向 deviceId：{}",
+        err.error_message
+    );
+    // 首次身份（raw_id）不得被替换成 other_id：链路必须断开且不得留下 connected(other_id)
+    assert!(
+        events
+            .wait(Duration::from_secs(5), |e| {
+                e.event_type == EventType::Disconnected && e.device_id == raw_id
+            })
+            .is_some(),
+        "身份变更必须断链（首次身份侧应收到 disconnected）"
+    );
+    b.stop();
+}
+
+/// v8 一致性：加密通道内的**二次 identity 改 protocolVersion** ⇒ 204 + 断链。
+#[test]
+fn second_identity_protocol_version_change_is_fatal() {
+    let events = Events::new();
+    let raw_id = device_id('x');
+    let b = Stack::start(config(
+        'y',
+        "raw-target-second-ver",
+        18097,
+        19197,
+        "/tmp/kdc-rust-e2e-second-ver",
+    ))
+    .expect("start b");
+
+    let second = format!(
+        "{{\"id\":2,\"type\":\"kdeconnect.identity\",\"body\":{{\"deviceId\":\"{raw_id}\",\"deviceName\":\"raw\",\"deviceType\":\"phone\",\"protocolVersion\":7,\"incoming\":[],\"outgoing\":[],\"tcpPort\":1716}}}}\n"
+    );
+    let (_stream, _sess) = raw_dialer_with_second(b.bound_tcp_port(), 'x', Some(&second));
+
+    let err = events
+        .wait(Duration::from_secs(10), |e| {
+            e.event_type == EventType::Error
+                && e.device_id == raw_id
+                && e.error_code == kdc_native::errors::IDENTITY_INVALID
+        })
+        .expect("二次 identity 改 protocolVersion 必须报 IDENTITY_INVALID(204)");
+    assert!(
+        err.error_message.contains("protocolVersion"),
+        "错误消息应指向 protocolVersion：{}",
+        err.error_message
+    );
+    assert!(
+        events
+            .wait(Duration::from_secs(5), |e| {
+                e.event_type == EventType::Disconnected && e.device_id == raw_id
+            })
+            .is_some(),
+        "版本变更必须断链"
     );
     b.stop();
 }

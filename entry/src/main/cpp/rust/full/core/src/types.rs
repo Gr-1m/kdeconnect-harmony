@@ -18,6 +18,8 @@ pub struct DeviceInfo {
     pub device_type: String,
     pub host: String,
     pub tcp_port: u16,
+    /// `protocolVersion`（缺失 → 0）；用于二次 identity 一致性校验。
+    pub protocol_version: i32,
 }
 
 /// `start(config)` 的输入（与 `Index.d.ts` 的 `NetConfig` 对齐）。

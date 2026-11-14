@@ -39,3 +39,12 @@ if [ ! -f "$INJ" ]; then
     exit 1
 fi
 python3 "$INJ"
+
+# —— native 契约门禁（MSG259 P1-2）：Index.d.ts ↔ napi 导出 / capabilities ↔ bootstrap caps ——
+# 失败即门禁失败；脚本缺失同样失败（同 injection 契约口径）。
+CTR="$PWD/../../../../../tools/check-native-contract.py"
+if [ ! -f "$CTR" ]; then
+    echo "native contract checker not found: tools/check-native-contract.py"
+    exit 1
+fi
+python3 "$CTR"

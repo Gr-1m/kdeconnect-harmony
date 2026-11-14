@@ -20,9 +20,9 @@ use crate::state::{role_for, Shared};
 use crate::tls::{self, TlsSession};
 use crate::types::{
     ConnectionState, EventType, NetEvent, TlsRole, CONN_RATE_LIMIT_MS, MAX_IDENTITY_PACKET_SIZE,
-    MAX_PACKET_SIZE, PLAIN_IDENTITY_TIMEOUT_MS,
+    MAX_PACKET_SIZE, PLAIN_IDENTITY_TIMEOUT_MS, PROTOCOL_VERSION,
 };
-use crate::{loge, logi};
+use crate::{loge, logi, logw};
 
 const READ_POLL_MS: u64 = 50;
 const PLAIN_READ_POLL_MS: u64 = 10;
@@ -40,6 +40,8 @@ pub struct ConnState {
     pub peer_cert_pem: String,
     pub peer_cn: String,
     pub role: TlsRole,
+    /// 首次 identity 声明的 `protocolVersion`（加密通道内二次 identity 必须一致）。
+    pub protocol_version: i32,
 }
 
 pub struct ConnHandle {
@@ -327,8 +329,19 @@ fn incoming_inner(
         state.device_id = info.device_id.clone();
         state.device_name = info.device_name.clone();
         state.device_type = info.device_type.clone();
+        // 明文 identity 即「首次身份」：这里记录 protocolVersion，
+        // 供加密通道内二次 identity 的一致性校验（handle_frame 的 else 分支）比对。
+        state.protocol_version = info.protocol_version;
     }
     shared.remember_port(&handle.host, info.tcp_port);
+    if info.protocol_version != PROTOCOL_VERSION {
+        // 不致命（保持互操作），但留痕：KDE 三端当前均为 8。
+        logw!(
+            "peer protocolVersion={} (ours={}) — continuing",
+            info.protocol_version,
+            PROTOCOL_VERSION
+        );
+    }
     shared.emit_discovered(
         &info.device_id,
         &info.device_name,
@@ -726,6 +739,7 @@ fn handle_frame(shared: &Arc<Shared>, handle: &Arc<ConnHandle>, frame: &[u8]) ->
                     state.device_id = info.device_id.clone();
                     state.device_name = info.device_name.clone();
                     state.device_type = info.device_type.clone();
+                    state.protocol_version = info.protocol_version;
                     state.cn_verified = true;
                     if !state.peer_cert_der.is_empty() {
                         state.peer_cert_pem =
@@ -746,7 +760,43 @@ fn handle_frame(shared: &Arc<Shared>, handle: &Arc<ConnHandle>, frame: &[u8]) ->
                 if !handle.is_incoming {
                     shared.remember_port(&handle.host, handle.port);
                 }
+                if info.protocol_version != PROTOCOL_VERSION {
+                    // 不致命（保持互操作），但必须留痕：KDE 三端当前均为 8。
+                    logw!(
+                        "peer protocolVersion={} (ours={}) — continuing",
+                        info.protocol_version,
+                        PROTOCOL_VERSION
+                    );
+                }
             } else {
+                // v8：加密通道内的**二次 identity 必须与首次一致**（deviceId / protocolVersion）——
+                // 防止「同一连接中途改身份」造成身份混淆（AGENTS.md 协议约束）。
+                let (known_id, known_version) = {
+                    let state = handle.state.lock().map_err(|_| ())?;
+                    (state.device_id.clone(), state.protocol_version)
+                };
+                if info.device_id != known_id {
+                    shared.emit_error(
+                        &info.device_id,
+                        crate::errors::IDENTITY_INVALID,
+                        "second identity deviceId changed",
+                        &handle.host,
+                        handle.port,
+                    );
+                    shared.close_conn(handle.id, "second identity deviceId mismatch");
+                    return Err(());
+                }
+                if info.protocol_version != 0 && info.protocol_version != known_version {
+                    shared.emit_error(
+                        &info.device_id,
+                        crate::errors::IDENTITY_INVALID,
+                        "second identity protocolVersion changed",
+                        &handle.host,
+                        handle.port,
+                    );
+                    shared.close_conn(handle.id, "second identity protocolVersion mismatch");
+                    return Err(());
+                }
                 if let Ok(mut state) = handle.state.lock() {
                     state.device_name = info.device_name.clone();
                     state.device_type = info.device_type.clone();

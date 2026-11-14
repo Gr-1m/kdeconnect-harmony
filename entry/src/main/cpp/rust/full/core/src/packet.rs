@@ -95,6 +95,7 @@ pub fn parse_identity(json: &str) -> Option<DeviceInfo> {
         device_type: info.device_type,
         host: String::new(),
         tcp_port: info.tcp_port,
+        protocol_version: info.protocol_version,
     })
 }
 

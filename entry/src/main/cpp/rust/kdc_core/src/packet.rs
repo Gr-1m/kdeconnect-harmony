@@ -18,6 +18,8 @@ pub struct DeviceInfo {
     pub device_name: String,
     pub device_type: String,
     pub tcp_port: u16,
+    /// `protocolVersion`（缺失/非数字 → 0）。用于「加密通道内二次 identity 必须与首次一致」的校验。
+    pub protocol_version: i32,
 }
 
 /// `PacketIO::extractFrame` 的返回值。
@@ -229,6 +231,10 @@ pub fn parse_identity(json: &str) -> Option<DeviceInfo> {
         .and_then(as_number)
         .map(|port| port as u16) // 合法域 0..=65535 内与 C++ static_cast<uint16_t> 等价
         .unwrap_or(0);
+    let protocol_version = field("protocolVersion")
+        .and_then(as_number)
+        .map(|version| version as i32)
+        .unwrap_or(0);
 
     // deviceId 必须存在且格式合法（REVIEW §4 P2-4：格式校验一处收口）
     if !is_valid_device_id(&device_id) {
@@ -240,6 +246,7 @@ pub fn parse_identity(json: &str) -> Option<DeviceInfo> {
         device_name,
         device_type,
         tcp_port,
+        protocol_version,
     })
 }
 
