@@ -144,6 +144,13 @@ export default function payloadLogicTest(): void {
       expect(sanitizeFileName('.hidden.bin', 5)).assertEqual('hidden.bin');
       expect(sanitizeFileName('a\u0000b.bin', 5)).assertEqual('a_b.bin');
     });
+    it('Test_sanitizeFileName_collapsesInnerDotDot', 0, () => {
+      // MSG259 采纳项②：中间 `..` 也必须折叠（不可穿越，但名字里不该保留 `..`）
+      const out: string = sanitizeFileName('a..b.bin', 5);
+      expect(out.includes('..')).assertFalse();
+      expect(out).assertEqual('a_b.bin');
+    });
+
     it('Test_sanitizeFileName_emptyFallsBackToTid', 0, () => {
       expect(sanitizeFileName('', 42)).assertEqual('transfer_42');
       expect(sanitizeFileName('...', 42)).assertEqual('transfer_42');

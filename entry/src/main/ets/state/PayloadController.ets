@@ -523,7 +523,6 @@ export class PayloadController {
     // S2：接收方向挂到批次（新建批 / 计数 / 结算），发送方向不参与批次
     if (item.direction === 'receive' && item.deviceId.length > 0) {
       this.attachToReceiveBatch(item, idx < 0, state);
-      const b: PayloadBatch | undefined = this.batchOfTransfer(tid);
     }
     // MSG220 §2：**不再**把 filePath 非空作为前置条件 —— 自动保存走 keepPayload(tid, dest)（native 自己搬 spool），
     // 路径为空不代表拿不到文件；旧条件会让整段自动保存被静默跳过（真机 #5/#6 实证）

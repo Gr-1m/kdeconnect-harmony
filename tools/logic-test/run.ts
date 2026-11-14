@@ -15,6 +15,7 @@ import remoteInputPluginTest from './RemoteInputPlugin.test';
 import notificationTest from './Notification.test';
 import trustCodecTest from './TrustCodec.test';
 import payloadLogicTest from './PayloadLogic.test';
+import pluginEventBusTest from './PluginEventBus.test';
 
 mousepadThrottleTest();
 mousepadInputTest();
@@ -23,5 +24,6 @@ remoteInputPluginTest();
 notificationTest();
 trustCodecTest();
 payloadLogicTest();
+pluginEventBusTest();
 
 runAll();

@@ -66,13 +66,15 @@ $copies = @(
   @{ from = "$modelDir\PayloadLogic.ets";         to = 'PayloadLogic.ts' },
   @{ from = "$commonDir\NotificationStore.ets";   to = 'NotificationStore.ts' },
   @{ from = "$commonDir\TrustCodec.ets";        to = 'TrustCodec.ts' },
+  @{ from = "$repo\entry\src\main\ets\state\PluginEventBus.ets"; to = 'PluginEventBus.ts' },
   @{ from = "$testDir\MousepadThrottle.test.ets";   to = 'MousepadThrottle.test.ts' },
   @{ from = "$testDir\MousepadInput.test.ets";      to = 'MousepadInput.test.ts' },
   @{ from = "$testDir\RemoteInputKeymap.test.ets";  to = 'RemoteInputKeymap.test.ts' },
   @{ from = "$testDir\RemoteInputPlugin.test.ets";  to = 'RemoteInputPlugin.test.ts' },
   @{ from = "$testDir\Notification.test.ets";       to = 'Notification.test.ts' },
   @{ from = "$testDir\TrustCodec.test.ets";       to = 'TrustCodec.test.ts' },
-  @{ from = "$testDir\PayloadLogic.test.ets";      to = 'PayloadLogic.test.ts' }
+  @{ from = "$testDir\PayloadLogic.test.ets";      to = 'PayloadLogic.test.ts' },
+  @{ from = "$testDir\PluginEventBus.test.ets";   to = 'PluginEventBus.test.ts' }
 )
 
 foreach ($c in $copies) {
@@ -85,6 +87,9 @@ foreach ($c in $copies) {
   $text = $text.Replace("from '@ohos/hypium'", "from './hypium'")
   # 重写 2：扁平化 main 侧 import（../model/X、../../../main/ets/plugins/X → ./X）
   $text = $text -replace "from '\.\./\.\./\.\./main/ets/plugins/", "from './"
+  $text = $text -replace "from '\.\./\.\./\.\./main/ets/state/", "from './"
+  $text = $text -replace "from '\.\./plugins/", "from './"
+  $text = $text -replace "from '\.\./state/", "from './"
   $text = $text -replace "from '\.\./\.\./\.\./main/ets/model/", "from './"
   $text = $text -replace "from '\.\./\.\./\.\./main/ets/common/", "from './"
   $text = $text -replace "from '\.\./model/", "from './"

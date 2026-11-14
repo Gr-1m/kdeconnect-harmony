@@ -30,6 +30,9 @@ copy() {
       -e "s|from '\.\./\.\./\.\./main/ets/plugins/|from './|" \
       -e "s|from '\.\./\.\./\.\./main/ets/model/|from './|" \
       -e "s|from '\.\./\.\./\.\./main/ets/common/|from './|" \
+      -e "s|from '\.\./\.\./\.\./main/ets/state/|from './|" \
+      -e "s|from '\.\./plugins/|from './|" \
+      -e "s|from '\.\./state/|from './|" \
       -e "s|from '\.\./model/|from './|" \
       -e "s|from '\.\./common/|from './|" \
       "$1" > "$SRC/$2"
@@ -49,6 +52,7 @@ copy "$M/PayloadModels.ets"      PayloadModels.ts
 copy "$M/PayloadLogic.ets"       PayloadLogic.ts
 copy "$C/NotificationStore.ets"  NotificationStore.ts
 copy "$C/TrustCodec.ets"         TrustCodec.ts
+copy "$REPO/entry/src/main/ets/state/PluginEventBus.ets" PluginEventBus.ts
 copy "$T/MousepadThrottle.test.ets"  MousepadThrottle.test.ts
 copy "$T/MousepadInput.test.ets"     MousepadInput.test.ts
 copy "$T/RemoteInputKeymap.test.ets" RemoteInputKeymap.test.ts
@@ -56,6 +60,7 @@ copy "$T/RemoteInputPlugin.test.ets" RemoteInputPlugin.test.ts
 copy "$T/Notification.test.ets"      Notification.test.ts
 copy "$T/TrustCodec.test.ets"        TrustCodec.test.ts
 copy "$T/PayloadLogic.test.ets"      PayloadLogic.test.ts
+copy "$T/PluginEventBus.test.ets"    PluginEventBus.test.ts
 
 cp "$REPO/tools/logic-test/hypium.ts"    "$SRC/hypium.ts"
 cp "$REPO/tools/logic-test/arkui-shim.ts" "$SRC/arkui-shim.ts"

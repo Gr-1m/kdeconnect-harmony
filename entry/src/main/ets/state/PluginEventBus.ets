@@ -15,6 +15,12 @@
 //   · 本类**只做分发**，不碰网络/持久化/UI 状态；处理器由页面注入；
 //   · 不持有 UI 状态 ⇒ 不需要 @Observed；它是"服务"而非"可观测 store"。
 //   · `on()` **返回退订函数**，调用方无需自己保存引用（避免"重复注册/忘记退订"这类状态泄漏）。
+//
+// 【事件顺序不变量（P0-A3 扩展审计）】`dispatch()` **全程同步**：直接调用处理器、不 await、不排队。
+//   ⇒ 事件按到达序进入处理器，**不需要串行队列**；处理器必须**同步**（返回 Promise 会被忽略 —— 需要 IO 的
+//     动作请在处理器内用「发射后不管 + 幂等护栏」）。
+//   ⇒ 处理器抛异常**不得冒泡**到事件派发链（否则后续事件/其它插件会被打断）：本类逐处理器 try/catch 并记日志。
+//   回归用例：`entry/src/ohosTest/ets/test/PluginEventBus.test.ets`（宿主 bun 与设备 hypium 双跑）。
 
 import { PluginEvent } from '../plugins/PluginEvent';
 
@@ -60,10 +66,19 @@ export class PluginEventBus {
   dispatch(deviceId: string, ev: PluginEvent): boolean {
     const h: PluginEventHandler | undefined = this.routes.get(ev.kind);
     if (h !== undefined) {
-      h(deviceId, ev);
+      // 逐个处理器隔离异常（P0-A3）：抛异常只记日志，绝不冒泡到事件派发链
+      try {
+        h(deviceId, ev);
+      } catch (e) {
+        this.log(`plugin event handler threw: ${ev.kind} (${e instanceof Error ? e.message : 'unknown'})`);
+      }
       return true;
     }
-    this.fallback(deviceId, ev);
+    try {
+      this.fallback(deviceId, ev);
+    } catch (e) {
+      this.log(`plugin event fallback threw: ${ev.kind} (${e instanceof Error ? e.message : 'unknown'})`);
+    }
     return false;
   }
 
