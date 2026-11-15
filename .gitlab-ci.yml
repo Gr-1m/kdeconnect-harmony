@@ -7,11 +7,13 @@ include:
       - /gitlab-templates/reuse-lint.yml
       - /gitlab-templates/json-validation.yml
       - /gitlab-templates/yaml-lint.yml
-      - /gitlab-templates/clang-format.yml
+      # C++ 原生栈已删除（0.8.4 全 Rust），不再 include clang-format
 
-protocol-core-test:
+rust-test:
   stage: validate
   image: rust:latest
   tags: [Linux]
   script:
-    - cargo test --manifest-path entry/src/main/cpp/rust/protocol-core/Cargo.toml
+    - cargo test --manifest-path entry/src/main/cpp/rust/full/Cargo.toml
+    - cargo fmt --manifest-path entry/src/main/cpp/rust/full/Cargo.toml --all -- --check
+    - cargo clippy --manifest-path entry/src/main/cpp/rust/full/Cargo.toml --workspace --all-targets -- -D warnings
