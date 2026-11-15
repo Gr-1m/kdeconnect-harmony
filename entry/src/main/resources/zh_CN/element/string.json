@@ -781,6 +781,18 @@
       "value": "高级设置"
     },
     {
+      "name": "settings_plugins",
+      "value": "插件开关"
+    },
+    {
+      "name": "settings_plugin_default_on",
+      "value": "默认"
+    },
+    {
+      "name": "settings_plugin_customized",
+      "value": "已自定义"
+    },
+    {
       "name": "files_batch_unit",
       "value": "文件"
     },

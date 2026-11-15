@@ -801,6 +801,18 @@
       "value": "Advanced Settings"
     },
     {
+      "name": "settings_plugins",
+      "value": "Plugin switches"
+    },
+    {
+      "name": "settings_plugin_default_on",
+      "value": "default"
+    },
+    {
+      "name": "settings_plugin_customized",
+      "value": "customized"
+    },
+    {
       "name": "files_batch_unit",
       "value": "files"
     },

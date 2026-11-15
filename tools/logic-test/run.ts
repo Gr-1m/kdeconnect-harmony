@@ -16,6 +16,7 @@ import notificationTest from './Notification.test';
 import trustCodecTest from './TrustCodec.test';
 import payloadLogicTest from './PayloadLogic.test';
 import pluginEventBusTest from './PluginEventBus.test';
+import pluginDefaultsTest from './PluginDefaults.test';
 
 mousepadThrottleTest();
 mousepadInputTest();
@@ -25,5 +26,6 @@ notificationTest();
 trustCodecTest();
 payloadLogicTest();
 pluginEventBusTest();
+pluginDefaultsTest();
 
 runAll();

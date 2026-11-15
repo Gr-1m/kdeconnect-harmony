@@ -47,7 +47,7 @@ import { colorModeOf, languageOf, LANG_SYSTEM, THEME_FOLLOW_SYSTEM, systemDevice
 import { DevicesTab } from '../components/DevicesTab';
 import { SideBarPanelHost } from '../components/SideBarPanelHost';
 import { FilesTab } from '../components/FilesTab';
-import { SettingsTab } from '../components/SettingsTab';
+import { SettingsTab, PluginSwitchRow } from '../components/SettingsTab';
 import { LogsTab } from '../components/LogsTab';
 import { PairSession } from '../state/PairSession';
 import { PluginEventBus } from '../state/PluginEventBus';
@@ -230,6 +230,8 @@ struct Index {
       this.settingsController.themeMode = parseInt(String(await pref.get('themeMode', '0')), 10) || THEME_FOLLOW_SYSTEM;
       this.settingsController.language = String(await pref.get('language', LANG_SYSTEM));
       this.autoSaveFiles = String(await pref.get('autoSaveFiles', '1')) === '1';
+      // P1-3：插件默认开关的用户覆盖（单键 JSON；坏数据由 parsePluginOverrides 忽略 ⇒ 回落契约默认）
+      this.settingsController.loadPluginOverrides(String(await pref.get('pluginEnabled', '')));
       this.settingsController.autoSaveFiles = this.autoSaveFiles;
       // AP-3：信任设备（含旧的 rememberedDevices 一次性迁移）—— 经 DeviceController.rehydrateTrust 统一处理
       const loaded: TrustedDevice[] = await TrustStore.load(ctx);
@@ -303,6 +305,8 @@ struct Index {
     this.pluginHost = new PluginHost(this.pluginRegistry, (m: string): void => {
       this.notify.log(m);
     });
+    // P1-3：插件默认开关接入「发出」门禁（契约键判定；不动能力广告）
+    this.pluginHost.setPacketEnabledFn((pkt: string): boolean => this.settingsController.isPacketEnabled(pkt));
     const callbacks: RouterCallbacks = {
       onPairRequest: (id: string, ts: number): void => {
         // 对端发起：交给状态机（内含"双方同时发起"race 检测）；验证码由页面算好写入（字段约定）。
@@ -1138,6 +1142,20 @@ struct Index {
     }
   }
 
+  /** P1-3：设置页「插件开关」行（契约顺序 + 注册表展示名 + 当前值 + 是否等于契约默认） */
+  private pluginSwitchRows(): PluginSwitchRow[] {
+    const rows: PluginSwitchRow[] = [];
+    for (const key of this.settingsController.pluginSwitchKeys()) {
+      rows.push({
+        key: key,
+        label: this.pluginRegistry.displayNameOf(key),
+        on: this.settingsController.isPluginEnabled(key),
+        isDefault: this.settingsController.pluginDefault(key) === this.settingsController.isPluginEnabled(key)
+      });
+    }
+    return rows;
+  }
+
   private async persistPayloadHistory(history: PayloadTransfer[]): Promise<void> {
     const hostCtx: Context | undefined = this.getUIContext().getHostContext();
     if (hostCtx !== undefined) {
@@ -1557,6 +1575,10 @@ struct Index {
       },
       onUseSystemName: (): void => {
         this.useSystemDeviceName();
+      },
+      pluginSwitchRows: this.pluginSwitchRows(),
+      onTogglePlugin: (key: string, on: boolean): void => {
+        this.settingsController.setPluginEnabled(key, on);
       },
       onThemeChange: (mode: number): void => {
         this.settingsController.applyTheme(mode, true);

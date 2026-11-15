@@ -9,6 +9,11 @@
 //   · `SettingEntry` interface 也随本模块迁出（Index 不再定义）。
 
 import { THEME_FOLLOW_SYSTEM, LANG_SYSTEM, colorModeOf, languageOf } from '../common/AppSettings';
+// P1-3：插件默认开关（契约 `defaultEnabled` 的镜像 + 用户覆盖）；纯逻辑在 common/PluginDefaults（宿主可回归）
+import {
+  pluginKeys, pluginDefaultEnabled, parsePluginOverrides, serializePluginOverrides, resolvePluginEnabled,
+  resolvePacketEnabled
+} from '../common/PluginDefaults';
 
 export interface SettingEntry {
   key: string;
@@ -24,12 +29,60 @@ export class SettingsController {
   autoSaveFiles: boolean = true;
   language: string = LANG_SYSTEM;
   deviceName: string = DEFAULT_DEVICE_NAME;
+  // P1-3：用户对插件默认开关的覆盖（空 = 全部用契约默认值）
+  pluginOverrides: Map<string, boolean> = new Map<string, boolean>();
 
   log: (m: string) => void = () => {};
   persistEntries: (entries: SettingEntry[]) => Promise<void> = () => Promise.resolve();
   applyColorMode: (mode: number) => void = () => {};
   applyLang: (lang: string) => void = () => {};
   restartNative: () => void = () => {};
+
+  // ==================== P1-3：插件默认开关（MSG264 §1 Q2 裁决）====================
+
+  /** 契约里的插件键（设置页按此顺序列开关） */
+  pluginSwitchKeys(): string[] {
+    return pluginKeys();
+  }
+
+  /** 最终判定：用户覆盖优先，否则契约 `defaultEnabled`（未知键 ⇒ true） */
+  isPluginEnabled(pluginKey: string): boolean {
+    return resolvePluginEnabled(pluginKey, this.pluginOverrides);
+  }
+
+  /** 发出门禁（按 packet type；多所有者键任一开即放行） */
+  isPacketEnabled(packetType: string): boolean {
+    return resolvePacketEnabled(packetType, this.pluginOverrides);
+  }
+
+  /** 契约默认值（设置页展示「默认」提示用） */
+  pluginDefault(pluginKey: string): boolean {
+    return pluginDefaultEnabled(pluginKey);
+  }
+
+  /** 用户改开关：写覆盖 + 持久化（单键 JSON；只存与契约默认不同的项） */
+  setPluginEnabled(pluginKey: string, on: boolean): void {
+    if (!pluginKeys().includes(pluginKey)) {
+      this.log(`plugin toggle ignored (unknown key): ${pluginKey}`);
+      return;
+    }
+    // V1 只观察字段赋值（Map 原地 set 不触发重渲染）⇒ 复制后整体赋值
+    const next: Map<string, boolean> = new Map<string, boolean>(this.pluginOverrides);
+    next.set(pluginKey, on);
+    this.pluginOverrides = next;
+    this.log(`plugin ${pluginKey}: ${on ? 'on' : 'off'}`);
+    const entries: SettingEntry[] = [{
+      key: 'pluginEnabled',
+      value: serializePluginOverrides(this.pluginOverrides)
+    }];
+    this.persistEntries(entries);
+  }
+
+  /** 启动加载（Preferences 单键 JSON）；坏数据一律忽略 ⇒ 回落到契约默认 */
+  loadPluginOverrides(raw: string): void {
+    this.pluginOverrides = parsePluginOverrides(raw);
+    this.log(`plugin overrides loaded: ${this.pluginOverrides.size}`);
+  }
 
   applyTheme(mode: number, persist: boolean): void {
     this.themeMode = mode;

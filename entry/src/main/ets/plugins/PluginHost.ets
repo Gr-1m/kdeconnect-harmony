@@ -19,6 +19,14 @@ export class PluginHost {
   // （用户实测「开屏卡顿、媒体控制卡顿」），重复重发 = 主线程被反复卡死。
   // 因此：能力签名没变就保留现有实例，不再重跑 onCreate；断链（unloadForDevice）时清除签名。
   private loadedSig: Map<string, string> = new Map();
+  // P1-3：插件默认开关（页面注入 `SettingsController.isPluginEnabled`）。关 ⇒ 该插件**发出**被跳过；
+  // **不改能力广告**（incoming/outgoing 能力集仍由 native 按 `contract/capabilities.v1.json` 生成）。
+  private packetEnabledFn: (packetType: string) => boolean = () => true;
+
+  /** 注入「该 packet 是否允许发出」判定（P1-3，按契约默认开关）；页面装配期调用一次 */
+  setPacketEnabledFn(fn: (packetType: string) => boolean): void {
+    this.packetEnabledFn = fn;
+  }
 
   constructor(registry: PluginRegistry, logFn: (msg: string) => void) {
     this.registry = registry;
@@ -42,6 +50,7 @@ export class PluginHost {
         continue;
       }
       inst.bind(deviceId, sendFn, this.logFn, uiFn);
+      inst.setPacketGate(this.packetEnabledFn);   // P1-3：发出门禁（单一入口，插件实现零改动）
       try {
         inst.onCreate();
       } catch (e) {

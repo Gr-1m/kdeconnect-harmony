@@ -8,6 +8,14 @@ import { OptionPill } from './OptionPill';
 import { THEME_FOLLOW_SYSTEM, THEME_LIGHT, THEME_DARK, LANG_SYSTEM, LANG_ZH, LANG_EN } from '../common/AppSettings';
 
 // 设置 Tab：本机身份与协议信息 + 可自定义设备名称 / 主题（跟随系统·亮·暗）/ 语言（默认跟随系统）。
+// P1-3 设置页「插件开关」行（契约 defaultEnabled 的 UI 默认开关；不改能力广告）
+export interface PluginSwitchRow {
+  key: string;
+  label: string;
+  on: boolean;
+  isDefault: boolean;
+}
+
 @Component
 export struct SettingsTab {
   @Prop deviceId: string = '';
@@ -20,7 +28,11 @@ export struct SettingsTab {
   @Prop language: string = LANG_SYSTEM;
   @Prop immersive: boolean = false;
   @Prop settingsSection: number = 0;
+  // P1-3：插件默认开关行（Index 依据 SettingsController + 契约默认生成；含 on 状态 ⇒ 变化即重建）
+  @Prop pluginSwitchRows: PluginSwitchRow[] = [];
   cardMaterial: uiMaterial.Material | undefined = undefined;
+  onTogglePlugin: (key: string, on: boolean) => void = (_key: string, _on: boolean) => {
+  };
   onRenameDevice: (name: string) => void = () => {
   };
   // 「使用系统名称」：把设备名回填为系统设备名称
@@ -275,6 +287,29 @@ export struct SettingsTab {
             this.infoRow($r('app.string.settings_protocol_version'), '8', false)
             this.infoRow($r('app.string.settings_ports'), 'UDP 1716 · TCP 1716-1764', false)
             this.infoRow($r('app.string.settings_status'), this.statusText, false)
+            // P1-3：插件默认开关（契约 defaultEnabled；关 ⇒ 该插件不发出，但不影响能力广告）
+            this.sectionTitle($r('app.string.settings_plugins'))
+            ForEach(this.pluginSwitchRows, (row: PluginSwitchRow) => {
+              Row({ space: 12 }) {
+                Column({ space: 2 }) {
+                  Text(row.label)
+                    .fontSize(13)
+                    .fontColor($r('app.color.text_primary'))
+                  Text(row.isDefault ? $r('app.string.settings_plugin_default_on')
+                    : $r('app.string.settings_plugin_customized'))
+                    .fontSize(10)
+                    .fontColor($r('app.color.text_muted'))
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+                Toggle({ type: ToggleType.Switch, isOn: row.on })
+                  .onChange((isOn: boolean) => {
+                    this.onTogglePlugin(row.key, isOn);
+                  })
+              }
+              .width('100%')
+              .padding({ top: 6, bottom: 6 })
+            }, (row: PluginSwitchRow) => `pl_${row.key}_${row.on ? '1' : '0'}`)
           }
           .width('100%')
           .alignItems(HorizontalAlign.Start)

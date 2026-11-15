@@ -66,6 +66,9 @@ $copies = @(
   @{ from = "$modelDir\PayloadLogic.ets";         to = 'PayloadLogic.ts' },
   @{ from = "$commonDir\NotificationStore.ets";   to = 'NotificationStore.ts' },
   @{ from = "$commonDir\TrustCodec.ets";        to = 'TrustCodec.ts' },
+  @{ from = "$commonDir\PluginDefaults.ets";    to = 'PluginDefaults.ts' },
+  @{ from = "$repo\entry\src\main\ets\plugins\PluginRegistry.ets"; to = 'PluginRegistry.ts' },
+  @{ from = "$repo\entry\src\main\ets\plugins\PluginHost.ets";     to = 'PluginHost.ts' },
   @{ from = "$repo\entry\src\main\ets\state\PluginEventBus.ets"; to = 'PluginEventBus.ts' },
   @{ from = "$testDir\MousepadThrottle.test.ets";   to = 'MousepadThrottle.test.ts' },
   @{ from = "$testDir\MousepadInput.test.ets";      to = 'MousepadInput.test.ts' },
@@ -74,7 +77,8 @@ $copies = @(
   @{ from = "$testDir\Notification.test.ets";       to = 'Notification.test.ts' },
   @{ from = "$testDir\TrustCodec.test.ets";       to = 'TrustCodec.test.ts' },
   @{ from = "$testDir\PayloadLogic.test.ets";      to = 'PayloadLogic.test.ts' },
-  @{ from = "$testDir\PluginEventBus.test.ets";   to = 'PluginEventBus.test.ts' }
+  @{ from = "$testDir\PluginEventBus.test.ets";   to = 'PluginEventBus.test.ts' },
+  @{ from = "$testDir\PluginDefaults.test.ets";   to = 'PluginDefaults.test.ts' }
 )
 
 foreach ($c in $copies) {

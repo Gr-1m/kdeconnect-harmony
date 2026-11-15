@@ -15,6 +15,7 @@ import payloadControllerTest from './PayloadController.test';
 import trustCodecTest from './TrustCodec.test';
 import payloadLogicTest from './PayloadLogic.test';
 import pluginEventBusTest from './PluginEventBus.test';
+import pluginDefaultsTest from './PluginDefaults.test';
 
 export default function testsuite(): void {
   packetRouterTest();
@@ -30,4 +31,5 @@ export default function testsuite(): void {
   trustCodecTest();
   payloadLogicTest();
   pluginEventBusTest();
+  pluginDefaultsTest();
 }

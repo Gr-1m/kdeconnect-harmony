@@ -11,6 +11,9 @@ import { PluginEvent, textEvent } from './PluginEvent';
 export type SendFrameFn = (deviceId: string, packetJson: string) => boolean;
 
 export abstract class PluginBase {
+  // 契约插件键（= `contract/capabilities.v1.json` 的 `key`；由 PluginRegistry 创建时写入）
+  // 用途：P1-3 默认开关按契约键判定（`SettingsController.isPluginEnabled`）
+  pluginKey: string = '';
   // 展示名 / 描述（后续设备详情页与设置项使用）
   displayName: string = '';
   description: string = '';
@@ -26,6 +29,9 @@ export abstract class PluginBase {
   // 插件 → UI 的事件出口（批1 根治：改传**类型化事件对象**，避免字符串 JSON 往返）
   private uiFn: (deviceId: string, ev: PluginEvent) => void = () => {
   };
+  // P1-3：按 **packet type** 的发出门禁（由 PluginHost 注入；关 ⇒ 跳过并记日志）。
+  // 用 packet 而非插件键：本工程插件实例与契约键不是一一对应（remoteinput 服务 mousepad+presenter）。
+  private packetGate: (packetType: string) => boolean = () => true;
 
   // 绑定宿主能力（每设备实例化后由 PluginHost 调用）
   bind(deviceId: string, sendFn: SendFrameFn, logFn: (msg: string) => void,
@@ -53,7 +59,16 @@ export abstract class PluginBase {
     this.logFn(`[${this.displayName}] ${msg}`);
   }
 
+  /** 注入发出门禁（P1-3）；PluginHost 在装载时调用 */
+  setPacketGate(fn: (packetType: string) => boolean): void {
+    this.packetGate = fn;
+  }
+
   protected send(packetType: string, body: Object): boolean {
+    if (!this.packetGate(packetType)) {
+      this.log('disabled by plugin switch: send skipped (' + packetType + ')');
+      return false;
+    }
     const frame: PluginFrame = { id: Date.now(), type: packetType, body: body };
     // 探针（MSG151）：native 的 [KDC-JS-ENTRY] 抓到 JsSendPacket 阻塞 0.6~6.1 秒，而这 9 次
     // 慢调用全走**插件侧**发送路径（PluginHost 的 sendFn 直调 native.sendPacket，不经 PacketRouter）。

@@ -13,8 +13,19 @@ cd "$(dirname "$0")"
 
 MANIFEST="../rust/full/Cargo.toml"
 
-echo "== cargo test -p kdc_native =="
-cargo test -p kdc_native --manifest-path "$MANIFEST"
+echo "== cargo test -p kdc_native（lib / 契约 / hostile）=="
+cargo test -p kdc_native --manifest-path "$MANIFEST" --lib
+cargo test -p kdc_native --manifest-path "$MANIFEST" \
+    --test contract_errors --test contract_scenarios --test hostile_inputs
+
+# 双栈 E2E：**允许一次重试**（MSG264 §3 裁决；曾观测到一次瞬时抖动，6 次复跑未复现）。
+# 注意：避免与模拟器冷启（tools/start-both.sh）并行执行——冷启时宿主 CPU/网络负载会放大时序抖动。
+# 若连续复现 ≥2 次，改用 `cargo test ... --test stack_e2e -- --nocapture` 抓明细定位。
+echo "== cargo test -p kdc_native --test stack_e2e（失败重试一次）=="
+if ! cargo test -p kdc_native --manifest-path "$MANIFEST" --test stack_e2e; then
+    echo "!! stack_e2e 第一轮失败 —— 重试一次（MSG264 §3）"
+    cargo test -p kdc_native --manifest-path "$MANIFEST" --test stack_e2e
+fi
 
 echo "== cargo check -p kdeconnect_napi =="
 cargo check -p kdeconnect_napi --manifest-path "$MANIFEST"
@@ -57,3 +68,11 @@ if [ ! -f "$NBI" ]; then
     exit 1
 fi
 python3 "$NBI"
+
+# —— ArkTS defaultEnabled 镜像 ↔ contract（P1-3；防契约改了开关默认值而 UI 失配）——
+PDF="$PWD/../../../../../tools/check-plugin-defaults.py"
+if [ ! -f "$PDF" ]; then
+    echo "plugin defaults checker not found: tools/check-plugin-defaults.py"
+    exit 1
+fi
+python3 "$PDF"

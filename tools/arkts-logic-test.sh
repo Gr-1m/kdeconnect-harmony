@@ -52,7 +52,10 @@ copy "$M/PayloadModels.ets"      PayloadModels.ts
 copy "$M/PayloadLogic.ets"       PayloadLogic.ts
 copy "$C/NotificationStore.ets"  NotificationStore.ts
 copy "$C/TrustCodec.ets"         TrustCodec.ts
+copy "$C/PluginDefaults.ets"     PluginDefaults.ts
 copy "$REPO/entry/src/main/ets/state/PluginEventBus.ets" PluginEventBus.ts
+copy "$REPO/entry/src/main/ets/plugins/PluginRegistry.ets" PluginRegistry.ts
+copy "$REPO/entry/src/main/ets/plugins/PluginHost.ets" PluginHost.ts
 copy "$T/MousepadThrottle.test.ets"  MousepadThrottle.test.ts
 copy "$T/MousepadInput.test.ets"     MousepadInput.test.ts
 copy "$T/RemoteInputKeymap.test.ets" RemoteInputKeymap.test.ts
@@ -61,6 +64,7 @@ copy "$T/Notification.test.ets"      Notification.test.ts
 copy "$T/TrustCodec.test.ets"        TrustCodec.test.ts
 copy "$T/PayloadLogic.test.ets"      PayloadLogic.test.ts
 copy "$T/PluginEventBus.test.ets"    PluginEventBus.test.ts
+copy "$T/PluginDefaults.test.ets"    PluginDefaults.test.ts
 
 cp "$REPO/tools/logic-test/hypium.ts"    "$SRC/hypium.ts"
 cp "$REPO/tools/logic-test/arkui-shim.ts" "$SRC/arkui-shim.ts"
