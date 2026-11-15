@@ -12,8 +12,8 @@
     { "key": "findremotedevice", "incoming": [], "outgoing": ["kdeconnect.findmyphone.request"], "defaultEnabled": true },
     { "key": "clipboard", "incoming": ["kdeconnect.clipboard", "kdeconnect.clipboard.connect"], "outgoing": ["kdeconnect.clipboard", "kdeconnect.clipboard.connect"], "defaultEnabled": true },
     { "key": "receivenotifications", "incoming": ["kdeconnect.notification"], "outgoing": ["kdeconnect.notification.request"], "defaultEnabled": true },
-    { "key": "battery", "incoming": ["kdeconnect.battery"], "outgoing": ["kdeconnect.battery"], "defaultEnabled": false },
-    { "key": "connectivityreport", "incoming": [], "outgoing": ["kdeconnect.connectivity_report"], "defaultEnabled": false },
+    { "key": "battery", "incoming": ["kdeconnect.battery"], "outgoing": ["kdeconnect.battery"], "defaultEnabled": true },
+    { "key": "connectivityreport", "incoming": [], "outgoing": ["kdeconnect.connectivity_report"], "defaultEnabled": true },
     { "key": "sftp", "incoming": ["kdeconnect.sftp.request"], "outgoing": ["kdeconnect.sftp"], "defaultEnabled": false }
   ]
 }
