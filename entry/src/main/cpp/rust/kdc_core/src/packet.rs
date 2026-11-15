@@ -178,6 +178,22 @@ pub fn build_identity(
 /// deviceId 格式校验：`^[a-zA-Z0-9_-]{32,38}$`（协议三端一致，且 = 证书 CN）。
 ///
 /// 长度按字节计，与 C++ `std::string::size()` 一致。
+/// 入向文本字段上限（字符数）：与出向 `sanitize_device_name` 的 32 上限对齐。
+pub const INCOMING_TEXT_MAX_CHARS: usize = 32;
+
+/// 入向文本清洗（`deviceName` / `deviceType`）：**剥掉控制字符**（含 `\n`/`\r`/`\t`/ESC/DEL）
+/// 并按字符数截断；保留 Unicode/emoji 与可见语义。
+///
+/// 与出向 `sanitize_device_name` 的区别：出向还会去掉 `"',;:.!?()[]<>` 等可见标点（那是「我方设备名」口径），
+/// 入向**不改可见语义**，只防控制字符注入 hilog/UI 与超长字段（MSG261 §3 裁决 (a)）。
+pub fn sanitize_incoming_text(value: &str, max_chars: usize) -> String {
+    value
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(max_chars)
+        .collect()
+}
+
 pub fn is_valid_device_id(id: &str) -> bool {
     if id.len() < 32 || id.len() > 38 {
         return false;
@@ -219,14 +235,18 @@ pub fn parse_identity(json: &str) -> Option<DeviceInfo> {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    let device_name = field("deviceName")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    let device_type = field("deviceType")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
+    let device_name = sanitize_incoming_text(
+        field("deviceName")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        INCOMING_TEXT_MAX_CHARS,
+    );
+    let device_type = sanitize_incoming_text(
+        field("deviceType")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        INCOMING_TEXT_MAX_CHARS,
+    );
     let tcp_port = field("tcpPort")
         .and_then(as_number)
         .map(|port| port as u16) // 合法域 0..=65535 内与 C++ static_cast<uint16_t> 等价
@@ -360,6 +380,27 @@ mod tests {
             FrameOutcome::Frame("{\"type\":\"kdeconnect.ping\"}\n".to_string())
         );
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn incoming_text_sanitizer_strips_control_keeps_visible() {
+        assert_eq!(sanitize_incoming_text("Phone\nX", 32), "PhoneX");
+        assert_eq!(
+            sanitize_incoming_text("a\r\nb\t c\u{1b}[31m", 32),
+            "ab c[31m"
+        );
+        assert_eq!(sanitize_incoming_text("\u{7f}del", 32), "del");
+        assert_eq!(sanitize_incoming_text("手机📱", 32), "手机📱");
+        assert_eq!(
+            sanitize_incoming_text(&"x".repeat(100), 32).chars().count(),
+            32
+        );
+        assert_eq!(
+            sanitize_incoming_text(&"📱".repeat(100), 32)
+                .chars()
+                .count(),
+            32
+        );
     }
 
     #[test]

@@ -28,6 +28,7 @@ pub mod limits;
 pub mod log;
 pub mod net_util;
 pub mod packet;
+pub mod panic_guard;
 pub mod payload;
 pub mod stack;
 pub mod state;

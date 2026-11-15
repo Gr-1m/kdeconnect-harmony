@@ -7,13 +7,18 @@ include:
       - /gitlab-templates/reuse-lint.yml
       - /gitlab-templates/json-validation.yml
       - /gitlab-templates/yaml-lint.yml
-      # C++ 原生栈已删除（0.8.4 全 Rust），不再 include clang-format
 
-rust-test:
+# native 侧回归门禁（全 Rust 原生栈）。C++/BearSSL 已删除 ⇒ 不再 include clang-format。
+# 本地产物等价：entry/src/main/cpp/tests/run.sh（含 fmt/clippy + 两道契约门禁 + e2e）。
+native-core-test:
   stage: validate
   image: rust:latest
   tags: [Linux]
   script:
-    - cargo test --manifest-path entry/src/main/cpp/rust/full/Cargo.toml
+    # kdc_core：纯逻辑 crate 的单测（含契约黄金用例）
+    - cargo test --manifest-path entry/src/main/cpp/rust/kdc_core/Cargo.toml
+    # kdc_native：核心 lib + 契约测试 + 双栈 E2E（含二次 identity / 未配对门禁 / panic 包裹）
+    - cargo test --manifest-path entry/src/main/cpp/rust/full/Cargo.toml -p kdc_native
+    # 格式与 lint（与 run.sh 同口径）
     - cargo fmt --manifest-path entry/src/main/cpp/rust/full/Cargo.toml --all -- --check
     - cargo clippy --manifest-path entry/src/main/cpp/rust/full/Cargo.toml --workspace --all-targets -- -D warnings

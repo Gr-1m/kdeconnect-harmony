@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use crate::events::{emit_connect_error, emit_connect_error_os};
 use crate::packet;
+use crate::panic_guard;
 use crate::payload;
 use crate::state::{role_for, Shared};
 use crate::tls::{self, TlsSession};
@@ -23,6 +24,15 @@ use crate::types::{
     MAX_PACKET_SIZE, PLAIN_IDENTITY_TIMEOUT_MS, PROTOCOL_VERSION,
 };
 use crate::{loge, logi, logw};
+
+/// 日志点二次防御（MSG261 §3）：即使上游漏洗，控制字符也不得进 hilog（换行会伪造日志行）。
+fn log_safe(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .take(64)
+        .collect()
+}
 
 const READ_POLL_MS: u64 = 50;
 const PLAIN_READ_POLL_MS: u64 = 10;
@@ -693,13 +703,16 @@ fn handle_frame(shared: &Arc<Shared>, handle: &Arc<ConnHandle>, frame: &[u8]) ->
 
     if parsed.r#type == "kdeconnect.identity" {
         if let Some(info) = packet::parse_identity(json) {
+            if crate::panic_guard::take_test_panic_for(&info.device_id) {
+                panic!("test-injected panic (panic_guard)");
+            }
             if info.device_id == shared.config.device_id {
                 return Err(());
             }
             logi!(
                 "peer identity over TLS: {} ({}) from {}:{}",
                 info.device_id,
-                info.device_name,
+                log_safe(&info.device_name),
                 handle.host,
                 handle.port
             );
@@ -821,6 +834,26 @@ fn handle_frame(shared: &Arc<Shared>, handle: &Arc<ConnHandle>, frame: &[u8]) ->
     // identity 帧也要继续走 packetReceived（ArkTS 的 caps 协商依赖它）。
     let mut transfer_id = 0u64;
     let device_id = handle.device_id().unwrap_or_default();
+
+    // P0-1（MSG262）：**未配对设备只放行 identity / pair**，其余包一律丢弃 + 断链，
+    // 绝不静默路由到插件（AGENTS.md：未配对设备只收 `kdeconnect.pair`，其余丢弃并 unpair）。
+    if !device_id.is_empty()
+        && shared.trusted_cert(&device_id).is_none()
+        && parsed.payload_size == 0 // 带 payload 的包由下方 payload 门禁按 202 处理（消息更具体）
+        && parsed.r#type != "kdeconnect.identity"
+        && parsed.r#type != "kdeconnect.pair"
+    {
+        shared.emit_error(
+            &device_id,
+            crate::errors::PROTOCOL_VIOLATION,
+            &format!("unpaired peer sent {}", log_safe(&parsed.r#type)),
+            &handle.host,
+            handle.port,
+        );
+        shared.close_conn(handle.id, "packet from unpaired peer");
+        return Err(());
+    }
+
     if parsed.payload_size != 0 && parsed.payload_port != 0 && !device_id.is_empty() {
         let trusted = shared.trusted_cert(&device_id).is_some();
         if trusted {
@@ -899,7 +932,16 @@ pub fn spawn_incoming(shared: &Arc<Shared>, stream: TcpStream) -> bool {
     let shared2 = shared.clone();
     std::thread::Builder::new()
         .name(format!("kdc-in-{id}"))
-        .spawn(move || run_incoming(shared2, handle, stream, rx))
+        .spawn(move || {
+            let guard_shared = shared2.clone();
+            let cleanup_shared = shared2.clone();
+            panic_guard::guard(
+                guard_shared,
+                "incoming",
+                move || cleanup_shared.finalize_conn(id, "thread panic"),
+                move || run_incoming(shared2, handle, stream, rx),
+            )
+        })
         .is_ok()
 }
 
@@ -927,6 +969,15 @@ pub fn spawn_outgoing(shared: &Arc<Shared>, host: String, port: u16) -> bool {
     let shared2 = shared.clone();
     std::thread::Builder::new()
         .name(format!("kdc-out-{id}"))
-        .spawn(move || run_outgoing(shared2, handle, rx))
+        .spawn(move || {
+            let guard_shared = shared2.clone();
+            let cleanup_shared = shared2.clone();
+            panic_guard::guard(
+                guard_shared,
+                "outgoing",
+                move || cleanup_shared.finalize_conn(id, "thread panic"),
+                move || run_outgoing(shared2, handle, rx),
+            )
+        })
         .is_ok()
 }

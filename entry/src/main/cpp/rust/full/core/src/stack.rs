@@ -152,7 +152,15 @@ impl Stack {
             let shared = self.shared.clone();
             std::thread::Builder::new()
                 .name(format!("kdc-probe-{host}"))
-                .spawn(move || probe_then_dial(shared, host))
+                .spawn(move || {
+                    let guard_shared = shared.clone();
+                    crate::panic_guard::guard(
+                        guard_shared,
+                        "port-probe",
+                        || {},
+                        move || probe_then_dial(shared, host),
+                    )
+                })
                 .ok();
             return true;
         }
@@ -243,7 +251,10 @@ impl Drop for Stack {
 }
 
 fn spawn_thread(stack: &Arc<Stack>, name: String, f: impl FnOnce() + Send + 'static) {
-    match std::thread::Builder::new().name(name).spawn(f) {
+    let shared = stack.shared.clone();
+    let thread_name = name.clone();
+    let body = move || crate::panic_guard::guard(shared, &thread_name, || {}, f);
+    match std::thread::Builder::new().name(name).spawn(body) {
         Ok(handle) => {
             if let Ok(mut threads) = stack.threads.lock() {
                 threads.push(handle);

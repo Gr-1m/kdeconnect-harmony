@@ -76,16 +76,28 @@ fn identity_leniency_and_port_bounds_are_explicit() {
         );
     }
 
-    // ④ `deviceName` 在**入向**不做裁剪（仅出向 `sanitize_device_name` 收口）——
-    //    这是一个已知观察项（对端可控的 name/type 会原样进日志与 UI），见交付消息 §4。
-    let long_name = "n".repeat(200);
+    // ④ 入向 `deviceName`/`deviceType` 已在**解析处**清洗（MSG261 §3 裁决 a）：
+    //    控制字符/换行剥离 + 32 字符上限（保留 Unicode/emoji），故对端无法注入 hilog 或塞超长字段。
     let json = format!(
-        r#"{{"type":"kdeconnect.identity","body":{{"deviceId":"{VALID_ID}","deviceName":"{long_name}"}}}}"#
+        r#"{{"type":"kdeconnect.identity","body":{{"deviceId":"{VALID_ID}","deviceName":"evil\n[KDC ] fake row\u001b[31m{}","deviceType":"phone\r\nX"}}}}"#,
+        "n".repeat(200)
+    );
+    let info = packet::parse_identity(&json).expect("应可解析");
+    assert!(
+        !info.device_name.contains('\n'),
+        "入向 deviceName 不得含换行: {:?}",
+        info.device_name
     );
     assert_eq!(
-        packet::parse_identity(&json).map(|i| i.device_name.chars().count()),
-        Some(200)
+        info.device_name.chars().count(),
+        32,
+        "入向 deviceName 应被截断到 32 字符"
     );
+    assert!(
+        !info.device_type.contains('\r'),
+        "入向 deviceType 不得含控制字符"
+    );
+    assert_eq!(info.device_type, "phoneX");
 }
 
 #[test]

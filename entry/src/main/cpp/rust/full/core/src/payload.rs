@@ -342,7 +342,24 @@ pub fn start_send(
     let listener = listener.expect("listener for non-empty payload");
     std::thread::Builder::new()
         .name(format!("kdc-payload-send-{id}"))
-        .spawn(move || send_thread(shared2, job2, listener, file))
+        .spawn(move || {
+            let guard_shared = shared2.clone();
+            let cleanup_shared = shared2.clone();
+            let cleanup_job = job2.clone();
+            crate::panic_guard::guard(
+                guard_shared,
+                "payload-send",
+                move || {
+                    cleanup_job.finish(
+                        &cleanup_shared,
+                        "failed",
+                        code::INTERRUPTED,
+                        "thread panicked",
+                    )
+                },
+                move || send_thread(shared2, job2, listener, file),
+            )
+        })
         .ok();
     id
 }
@@ -528,7 +545,24 @@ pub fn start_receive(
     let job2 = job.clone();
     std::thread::Builder::new()
         .name(format!("kdc-payload-recv-{id}"))
-        .spawn(move || receive_thread(shared2, job2, addr, file))
+        .spawn(move || {
+            let guard_shared = shared2.clone();
+            let cleanup_shared = shared2.clone();
+            let cleanup_job = job2.clone();
+            crate::panic_guard::guard(
+                guard_shared,
+                "payload-receive",
+                move || {
+                    cleanup_job.finish(
+                        &cleanup_shared,
+                        "failed",
+                        code::INTERRUPTED,
+                        "thread panicked",
+                    )
+                },
+                move || receive_thread(shared2, job2, addr, file),
+            )
+        })
         .ok();
     id
 }

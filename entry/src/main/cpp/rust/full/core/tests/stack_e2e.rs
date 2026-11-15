@@ -530,15 +530,16 @@ fn bad_json_is_dropped_without_closing_link() {
         .expect("invalid JSON must report BAD_JSON(104)");
     assert_eq!(err.device_id, raw_id);
 
-    // DropPacket ⇒ 链路继续：后续一个合法 ping 必须照常派发。
-    let ping = "{\"id\":2,\"type\":\"kdeconnect.ping\",\"body\":{}}\n";
-    assert!(raw_send(&mut stream, &mut sess, ping.as_bytes()));
+    // DropPacket ⇒ 链路继续：未配对对端可发的 `kdeconnect.pair` 必须照常派发
+    // （P0-1 之后 ping 等非 identity/pair 包会被拒并断链，见 unpaired_non_pair_packet_is_rejected）。
+    let pair = "{\"id\":2,\"type\":\"kdeconnect.pair\",\"body\":{\"pair\":false}}\n";
+    assert!(raw_send(&mut stream, &mut sess, pair.as_bytes()));
     assert!(
         events
             .wait(Duration::from_secs(5), |e| {
                 e.event_type == EventType::PacketReceived
                     && e.device_id == raw_id
-                    && e.packet == ping
+                    && e.packet == pair
             })
             .is_some(),
         "link must survive a bad JSON frame"
@@ -689,6 +690,104 @@ fn second_identity_protocol_version_change_is_fatal() {
             })
             .is_some(),
         "版本变更必须断链"
+    );
+    b.stop();
+}
+
+/// P0-1（MSG262）：**未配对设备发非 identity/pair 包** ⇒ 202 + 断链（不得静默路由到插件）。
+#[test]
+fn unpaired_non_pair_packet_is_rejected() {
+    let events = Events::new();
+    let raw_id = device_id('J');
+    let b = Stack::start(config(
+        'L',
+        "raw-target-unpaired",
+        18098,
+        19198,
+        "/tmp/kdc-rust-e2e-unpaired",
+    ))
+    .expect("start b");
+    let (mut stream, mut sess) = raw_dialer(b.bound_tcp_port(), 'J');
+    assert!(
+        events
+            .wait(Duration::from_secs(10), |e| {
+                e.event_type == EventType::PairingRequest && e.device_id == raw_id
+            })
+            .is_some(),
+        "raw dialer identity should reach the stack"
+    );
+
+    let ping = "{\"id\":9,\"type\":\"kdeconnect.ping\",\"body\":{}}\n";
+    assert!(raw_send(&mut stream, &mut sess, ping.as_bytes()));
+
+    let err = events
+        .wait(Duration::from_secs(10), |e| {
+            e.event_type == EventType::Error
+                && e.device_id == raw_id
+                && e.error_code == kdc_native::errors::PROTOCOL_VIOLATION
+        })
+        .expect("未配对发 ping 必须报 PROTOCOL_VIOLATION(202)");
+    assert!(
+        err.error_message.contains("unpaired"),
+        "错误消息应指明未配对：{}",
+        err.error_message
+    );
+    // 不得派发到插件（identity 帧本身仍会走 packetReceived，这里只看 mid ping）
+    assert!(
+        events
+            .wait(Duration::from_secs(1), |e| {
+                e.event_type == EventType::PacketReceived
+                    && e.device_id == raw_id
+                    && e.packet.contains("kdeconnect.ping")
+            })
+            .is_none(),
+        "未配对包不得静默路由到插件"
+    );
+    assert!(
+        events
+            .wait(Duration::from_secs(5), |e| {
+                e.event_type == EventType::Disconnected && e.device_id == raw_id
+            })
+            .is_some(),
+        "未配对违规包必须断链"
+    );
+    b.stop();
+}
+
+/// P0-2（MSG262）：线程 panic ⇒ 501 ENGINE_PANIC + 连接清理（进程不受影响）。
+#[test]
+fn thread_panic_is_reported_and_cleanup_runs() {
+    let events = Events::new();
+    let dialer_id = device_id('K');
+    let b = Stack::start(config(
+        'M',
+        "panic-target",
+        18099,
+        19199,
+        "/tmp/kdc-rust-e2e-panic",
+    ))
+    .expect("start b");
+
+    kdc_native::panic_guard::panic_on_identity_of_for_test(&dialer_id);
+    let (_stream, _sess) = raw_dialer(b.bound_tcp_port(), 'K');
+
+    let err = events
+        .wait(Duration::from_secs(10), |e| {
+            e.event_type == EventType::Error && e.error_code == kdc_native::errors::ENGINE_PANIC
+        })
+        .expect("线程 panic 必须派发 ENGINE_PANIC(501)");
+    assert!(
+        err.error_message.contains("panic"),
+        "错误消息应含 panic 与线程名：{}",
+        err.error_message
+    );
+    assert!(
+        events
+            .wait(Duration::from_secs(5), |e| {
+                e.event_type == EventType::Disconnected && e.device_id == dialer_id
+            })
+            .is_some(),
+        "panic 后必须清理连接（派发 disconnected）"
     );
     b.stop();
 }
