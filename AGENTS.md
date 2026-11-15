@@ -146,6 +146,20 @@ QEMU 手机镜像跑在宿主（非真机、非 IDE）：镜像/日志放 `~/Wor
 - 取证优先选**零 root 路径**：模拟器走 TCP(`hdc tconn 127.0.0.1:5555`)；真机优先走**无线调试**
   (`hdc tconn <手机IP>:<端口>`)；USB 路线确实需要一次性 udev 规则时，命令交由用户执行。
 
+## AI 参与与上游协作红线（2026-11-15，孵化准备）
+
+依据 KDE 上游 `kdeconnect-kde/AGENTS.md` + `CONTRIBUTING.md`（原文摘录见 `kdeconn1111/docs/kde-collab/05-AI政策红线.md`）：
+
+1. **对外动作人类独占**：向 KDE 上游（invent.kde.org / Bugzilla / 邮件列表）的 `git push`、建 MR、发 issue/邮件，
+   一律由用户本人执行；agent 只准备内容，不代发。
+2. **MR 描述与评审回复人类撰写**：上游明令 AI 代写即关闭 MR，且不欢迎 AI 腔长回复。
+3. **代提交 trailer**：用户逐次批准后，agent 在**上游仓库**代提交须用 `Assisted-by: <agent>`，
+   不得用 `Co-authored-by:`；本仓内部的 `Co-Authored-By: AtomCode` trailer **仅适用于自有仓库**（gitcode / github 镜像）。
+4. **披露**：上游 MR 模板 `Used AI: Yes/No` 如实填写；本项目 AI 参与范围以本文件与 commit trailer 为准。
+5. **代码风格**：对上游提交的代码与提交信息 **ASCII only**（禁 `→`/`…`/`×` 等非 ASCII）；
+   本仓中文 UI 文案不受此限。
+6. **维护责任**：孵化材料里的「长期维护人」必须是真实自然人（用户本人），agent 不得作为担保主体或署名作者。
+
 ## 维护规则
 
 当项目结构、构建/测试命令、架构边界、开发约定，或本文件记录的其他事实发生变化时，必须在同一次改动中同步更新本文件。

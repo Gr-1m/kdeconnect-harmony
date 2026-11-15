@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: CC0-1.0
 Options:
   require-passing-tests-on: [Linux]
-  run-cppcheck: True
+  # C++/BearSSL 原生栈已随 0.8.4 全 Rust 合并删除 ⇒ 不再跑 cppcheck
   commit-checks: ['bug-links', 'missing-since', 'since-version']
 Dependencies:
   - 'on': ['Linux']
