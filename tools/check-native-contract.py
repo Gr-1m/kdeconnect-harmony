@@ -9,11 +9,13 @@ Native 契约门禁 —— `Index.d.ts ↔ napi 导出` / `capabilities ↔ boot
            任一侧新增/改名而另一侧未跟 ⇒ 失败（今天即有效：两者都是**现行**桥面）。
   B（阻塞）`core/src/state.rs` 的 bootstrap caps（`caps_in` / `caps_out` 字面量）必须是
            `contract/capabilities.v1.json` 广告过的 packet type（∪ 协议层 `identity` / `pair`）。
-  C（**仅报告**）冻结契约 `contract/kcbridge.d.ts` 的 `KcApi` 方法 ↔ 现行 napi 导出的差集。
-           桥层阶段 A 落地前**故意不阻塞**：`kcbridge.d.ts` 是**目标** API（见 MSG259 §3①），
-           今天断言「相等」必然为红；本项只打印差距，供阶段 A 排期参考。
+  C（默认**仅报告**，`--c-blocking` 转阻塞）冻结契约 `contract/kcbridge.d.ts` 的 `KcApi` 方法集合
+           ↔ `entry/src/main/ets/net/KcBridge.ets` 的 **static 方法**集合。
+           阶段 A 两者均为 19 ⇒ 现在即可比对；CCR-3 生效（d.ts 增 8 方法 = 27）后，在阶段 B 把 8 个
+           方法实装进 KcBridge 之前它会变红 —— 正是「C 组转阻塞」的时点（MSG264 §2.4）。
+           默认非阻塞的原因：d.ts 是**目标** API，阶段过渡期红是预期，不应打断日常门禁。
 
-用法：`python3 tools/check-native-contract.py`
+用法：`python3 tools/check-native-contract.py [--c-blocking]`
 退出码：0 全通过；1 任一**阻塞**检查失败；2 输入文件缺失（不得静默跳过）。
 """
 
@@ -27,6 +29,7 @@ NAPI_LIB = REPO_ROOT / "entry/src/main/cpp/rust/full/napi/src/lib.rs"
 STATE_RS = REPO_ROOT / "entry/src/main/cpp/rust/full/core/src/state.rs"
 CAPABILITIES = REPO_ROOT / "contract/capabilities.v1.json"
 BRIDGE_DTS = REPO_ROOT / "contract/kcbridge.d.ts"
+KC_BRIDGE_ETS = REPO_ROOT / "entry/src/main/ets/net/KcBridge.ets"
 
 # 协议层类型（非插件能力，恒广告）
 PROTOCOL_TYPES = {"kdeconnect.identity", "kdeconnect.pair"}
@@ -76,6 +79,11 @@ def kcapi_methods(text: str) -> set[str]:
     return out
 
 
+def kcbridge_static_methods(text: str) -> set[str]:
+    """`KcBridge.ets` 里的 `static name(` 方法名（阶段 A/B 的 native 适配层）。"""
+    return set(re.findall(r"^\s*static\s+(?:async\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", text, re.M))
+
+
 def state_bootstrap_caps(text: str) -> tuple[set[str], set[str]]:
     """`state.rs` 里 `caps_in` / `caps_out` 的字面量 packet type。"""
 
@@ -94,12 +102,14 @@ def capability_types(text: str) -> set[str]:
 
 
 def main() -> int:
-    die_missing([INDEX_DTS, NAPI_LIB, STATE_RS, CAPABILITIES, BRIDGE_DTS])
+    c_blocking = "--c-blocking" in sys.argv[1:]
+    die_missing([INDEX_DTS, NAPI_LIB, STATE_RS, CAPABILITIES, BRIDGE_DTS, KC_BRIDGE_ETS])
     index_text = INDEX_DTS.read_text(encoding="utf-8")
     napi_text = NAPI_LIB.read_text(encoding="utf-8")
     state_text = STATE_RS.read_text(encoding="utf-8")
     caps_text = CAPABILITIES.read_text(encoding="utf-8")
     bridge_text = BRIDGE_DTS.read_text(encoding="utf-8")
+    kcbridge_text = KC_BRIDGE_ETS.read_text(encoding="utf-8")
 
     failed = False
 
@@ -137,13 +147,35 @@ def main() -> int:
                 f"PASS[B] bootstrap caps ⊆ 能力契约（in={len(incoming)} out={len(outgoing)}）"
             )
 
-    # ---- C. 冻结 KcApi ↔ 现行导出（仅报告） ----
+    # ---- C. 冻结 KcApi ↔ KcBridge.ets（默认报告；--c-blocking 转阻塞） ----
     frozen = kcapi_methods(bridge_text)
-    gap = sorted(frozen - implemented)
-    print(
-        f"REPORT[C] 冻结 KcApi {len(frozen)} 项 vs 现行 napi {len(implemented)} 项；"
-        f"阶段 A 待落地 {len(gap)} 项（不阻塞）：{gap[:6]}{' …' if len(gap) > 6 else ''}"
-    )
+    adapted = kcbridge_static_methods(kcbridge_text)
+    missing_in_bridge = sorted(frozen - adapted)
+    extra_in_bridge = sorted(adapted - frozen)
+    c_ok = not missing_in_bridge and not extra_in_bridge
+    if c_ok:
+        print(f"PASS[C] 冻结 KcApi ↔ KcBridge.ets 一致（{len(frozen)} 项）")
+    elif c_blocking:
+        failed = True
+        print("FAIL[C] 冻结 KcApi ↔ KcBridge.ets 不一致（--c-blocking）：")
+        if missing_in_bridge:
+            print(f"        KcBridge 未实装：{missing_in_bridge}")
+        if extra_in_bridge:
+            print(f"        KcBridge 多出（契约未登记）：{extra_in_bridge}")
+    else:
+        common = sorted(frozen & adapted)
+        print(
+            f"REPORT[C] 冻结 KcApi {len(frozen)} 项 vs KcBridge.ets {len(adapted)} 项"
+            f"（交集 {len(common)}：{common}）"
+        )
+        print(
+            f"          阶段 B 目标：KcBridge 由「旧导出转发」演进为「冻结 KcApi 全集」；"
+            f"待实装 {len(missing_in_bridge)} 项、待退场 {len(extra_in_bridge)} 项"
+            f"（非阻塞；阶段 B 完成后 run.sh 加 --c-blocking）"
+        )
+    if not frozen:
+        print("FAIL[C]: KcApi 解析为空")
+        failed = True
 
     if failed:
         print("native contract check: FAILED")

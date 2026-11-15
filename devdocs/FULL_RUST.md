@@ -170,10 +170,17 @@ cargo build --release --manifest-path entry/src/main/cpp/rust/full/napi/Cargo.to
 
 1. **架构/构建/差异/风险**：本文件 §2–§7。
 2. **测试与行为对照**：
-   - `cargo test -p kdc_native`（19 unit + 1 双栈 E2E）；
-   - `entry/src/main/cpp/tests/run.sh`（cargo test + NAPI check + 注入契约）；
+   - **统一门禁 `entry/src/main/cpp/tests/run.sh`**（唯一入口；各步失败即整条失败）：
+     ① `cargo test -p kdc_native --lib`（含 errors/state/packet 单测）
+     ② 契约测试 `--test contract_errors`（吃 `contract/errors.v1.json`）+ `--test contract_scenarios`（吃 `contract/scenarios/*` + `kcbridge.d.ts` + `capabilities.v1.json`）
+     ③ 异常输入 `--test hostile_inputs`（畸形 identity/packet/证书/边界）
+     ④ 双栈 E2E `--test stack_e2e`（**允许一次重试**，见下）
+     ⑤ `cargo check -p kdeconnect_napi` + `cargo fmt --all -- --check` + `cargo clippy --workspace --all-targets -D warnings`
+     ⑥ `tools/check-injection-contract.py`（ArkTS 装配契约）+ `tools/check-native-contract.py`（`Index.d.ts ↔ napi` 与 `bootstrap caps ⊆ capabilities` 阻塞；冻结 `KcApi ↔ KcBridge.ets` 默认只报告，阶段 B 用 `--c-blocking` 转阻塞）
+   - **E2E 偶发抖动（MSG264 §3）**：`stack_e2e` 曾出现一次瞬时失败（早退），6 次复跑未复现 ⇒ `run.sh` 对该目标允许**一次**重试；
+     **不要与模拟器冷启（`tools/start-both.sh`）并行跑**——冷启时宿主 CPU/网络负载会放大时序抖动；连续复现 ≥2 次请用 `-- --nocapture` 抓明细。
    - `hvigorw --no-daemon assembleHap`（双 ABI Rust `.so` 进 HAP）；
-   - 设备侧：ohemu 平板 5555 ↔ 真实 KDE——TLS/identity/配对/文件接收（见 §6）；
+   - 设备侧：ohemu 平板 5555 ↔ 真实 KDE——TLS/identity/配对/文件接收（见 §6）；真机可用 `tools/win10-ssh.sh build|install|log` 远程驱动 Win10；
    - 协议纯函数与 C++ 基线的逐字节差分沿用 R1 的 7896 组（`rust/kdc_core`）。
 3. **`Index.d.ts` 契约零改动（前提）**：`git diff main -- entry/src/main/cpp/types/libkdeconnect_napi/Index.d.ts`
    为空；`oh-package.json5` 同为空；ArkTS 侧未修改（设备端 ArkTS 直接用现有契约跑通）。
