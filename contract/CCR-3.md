@@ -2,7 +2,8 @@
 
 - 日期：2026-11-15
 - 提出人：AtomCode（依据用户 2026-11-15 对「阶段 B 三个开放问题」裁决建议的批准）
-- 状态：**草案（待 CodeArts 评审 + Omp-ArkTS / Omp-Native 双方签名确认后生效）**
+- 状态：**Conditional Approved 已按意见修正（2026-11-15）**——CodeArts 评审通过（F1–F5 全部采纳），Omp-ArkTS 已签名；
+  **待 Omp-Native 车道签名后生效**
 - 影响：`contract/kcbridge.d.ts`、`devdocs/MAP_KCApi_PHASEA_20261114.md`、`KcBridge.ets`（阶段 B）、`tools/check-native-contract.py`（C 组转阻塞）
 - 关联：`MSG261`（队列裁决 P1-5 Stage-B）、`MSG263`（映射表骨架/阶段 A 实施）、`MSG262`（阶段 B 排序）
 
@@ -22,13 +23,13 @@
 /** 能力集：直接声明本端 incoming/outgoing（不再由 ArkTS 自拼 identity 能力表） */
 setCapabilities(incoming: string[], outgoing: string[]): void;
 
-/** 配对待确认码（v8：双方公钥 DER 排序拼接 + SHA256 前 8 位 hex；ts 为对端 timestamp，秒） */
-getPairVerificationCode(deviceId: string, ts: number): string;
+/** 配对待确认码（v8：双方公钥 DER 排序拼接 + SHA256 前 8 位 hex；timestamp 为对端 timestamp，秒） */
+getPairVerificationCode(deviceId: string, timestamp: number): string;
 
-/** 信任与证书（配对信任链；pem 为对端叶证书 PEM） */
+/** 信任与证书（配对信任链；certPem 为对端叶证书 PEM） */
 getPeerCertificate(deviceId: string): string;
 getOwnCertificate(): string;
-setTrustedCertificate(deviceId: string, pem: string): void;
+setTrustedCertificate(deviceId: string, certPem: string): void;
 removeTrustedCertificate(deviceId: string): void;
 
 /** 手动连接（Add by IP）；host 为 IPv4/IPv6 字面量，port 为 TCP 端口 */
@@ -39,8 +40,30 @@ disconnect(deviceId: string): void;
 ### 2.2 事件形态（既定，不新增方法）
 
 - 契约层：`setOnEvent(cb: (kind: number, eventJson: string) => void)`（当前 d.ts 已定义，不改）；
-- 实现层：`KcBridge` 内维护 **14 个 `EventKind` → 内部 `NetEvent` 的单映射表**，还原类型化事件；
-  控制器/插件签名零改动；**未知 `kind` ⇒ 丢弃 + 记日志**（不崩），并加宿主单测。
+- `contract/kcbridge.d.ts` 的 `EventKind` 为 **15 项（0–14）**（F1 修正：此前误写 14）；
+- 实现层：`KcBridge` 内维护 **15 行 `EventKind` → 内部 `NetEvent` 对照表**（**多对一折叠**，不是一一对应），
+  控制器/插件签名零改动；**未知 `kind` ⇒ 丢弃 + 记日志**；**已登记 kind 必须全部有处置（不得静默丢弃）**。
+
+| kind | 契约事件 | 内部处置（阶段 B） |
+|---|---|---|
+| 0 | `EngineStarted` | 丢弃 + debug 日志（`start()` 同步返回已覆盖启动结果） |
+| 1 | `EngineInitFailed` | 丢弃 + debug 日志（`start()` 返回 false / toast 已覆盖） |
+| 2 | `EngineStopped` | 丢弃 + debug 日志（`stop()` 幂等，无 UI 依赖） |
+| 3 | `DeviceVisible` | → `deviceDiscovered` |
+| 4 | `DeviceGone` | → `deviceLost` |
+| 5 | `DeviceUpdated` | 丢弃 + debug 日志（名称更新由 `packetReceived`/`connected` 承载） |
+| 6 | `Unpaired` | 丢弃 + debug 日志（以 `kdeconnect.pair{pair:false}` 包为准） |
+| 7 | `PairRequest` | → `pairingRequest` |
+| 8 | `PairResult` | 丢弃 + debug 日志（结果由 `kdeconnect.pair` 包解析） |
+| 9 | `Packet` | → `packetReceived` |
+| 10 | `TransferStarted` | → `payloadTransfer(state='started')` |
+| 11 | `TransferOffer` | 丢弃 + debug 日志（S2 走 spool 模式，不依赖 offer；将来启用 offer 模式再映射） |
+| 12 | `TransferProgress` | → `payloadTransfer(state='progress')` |
+| 13 | `TransferDone` | → `payloadTransfer(state='finished'｜'failed')`（按 success 字段） |
+| 14 | `Log` | → 写入 `LogStore`（不丢；与「不得静默丢弃」一致） |
+
+> 内部 `NetEvent` 现有 8 值（`deviceDiscovered/deviceLost/connected/disconnected/packetReceived/pairingRequest/payloadTransfer/error`），
+> 故 15 kind 中 5 个走折叠、7 个显式丢弃+日志、3 个（Log/DeviceVisible/DeviceGone… 见上表）另有归属；单测须**逐行**覆盖。
 
 ### 2.3 `contractVersion` 校验策略（写入契约注释）
 
@@ -53,12 +76,25 @@ disconnect(deviceId: string): void;
 
 | 方法 | 备注 |
 |---|---|
-| `setSftpRoots` | **声明但 not implemented**（Q3 已裁决不广告 `sftp` 能力）；bridge 内显式返回未实现，避免广告不可用能力 |
-| `setAutoAcceptSec` | 与 S2「自动保存接收文件」是**不同语义**：本方法只影响 `transferOffer` 自动接受超时，**不默认开启**；与 autoSave 的关系在注释写明 |
+| `setSftpRoots` | **声明但 not implemented**（Q3 已裁决不广告 `sftp` 能力）；**napi 无对应导出** ⇒ bridge 提供 stub，返回 `E105 BAD_PARAM`（或等价未实现码）+ 日志，避免广告不可用能力 |
+| `setAutoAcceptSec` | **napi 无对应导出** ⇒ bridge 提供 stub 返回 `E105`（阶段 B 若实现 offer 模式再接入）；与 S2「自动保存接收文件」是**不同语义**，**不默认开启**，注释写明 |
 | `generateIdentity` | **保留 ArkTS 持有私钥**：bridge 内调 `generateCert` + 回填 deviceId，返回形状不变；私钥入 HUKS 属 0.8.x 安全补丁，另走 CCR-4 |
 | `stop` | 幂等；进程级 `shutdown` 作为别名标注，不新增方法 |
 
 ## 3. 兼容性与风险
+
+### 3.1 现有 `KcApi` ↔ napi 导出签名差异（F3 补充；非本 CCR 引入，阶段 B 适配需处理）
+
+| 方法 | `KcApi`（冻结） | napi 现行 | 阶段 B 映射策略 |
+|---|---|---|---|
+| `sendPacket` | `(deviceId, type, bodyJson)` | `(deviceId, packetJson): boolean` | bridge 内拼 `{type, body}` 成 packetJson；返回值转事件/`KCError` |
+| `start` | `(configJson: string)` | `(config: NetConfig): boolean` | bridge 解析 configJson → NetConfig；结果合成 `EngineStarted`/`EngineInitFailed` |
+| `setOnEvent` | `(cb: (kind, json) => void)` | `init(cb: (event: NetEvent) => void)` | bridge 内建 15 行 kind↔NetEvent 映射（§2.2） |
+| `generateIdentity` | `(deviceName): string` | `generateCert(deviceId): CertPair` | bridge 生成/回填 deviceId（证书 CN），返回 `{deviceId, certPem, keyPkcs8Base64}` |
+| `sendFile` | 5 参数（含 filePath+filename） | 无（`sendPayload(deviceId, type, bodyJson, filePath): number`） | bridge 调 `sendPayload`，filename 并入 body；tid 由 `TransferStarted` 回填 |
+| `acceptTransfer/rejectTransfer/cancelTransfer` | 3 方法（void） | `keepPayload/discardPayload/cancelPayload`（boolean/void） | 名称映射；失败走 `KCError`（`kind=throw` 抛、`kind=event` 事件） |
+
+### 3.2 风险与约束
 
 - **只增不减**：8 个方法均为新增；现有 19 个 napi 导出与 `Index.d.ts` 不动，老路径经 `KcBridge` 继续可用；
 - **不做能力广告变化**：`capabilities.v1.json` 与 identity 广告范围不变（`setCapabilities` 只是把既有能力集入口契约化）；
