@@ -1,3 +1,4 @@
+import { KcBridge } from './KcBridge';
 // SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Packet 路由层：从 packetReceived 事件的原始数据中切分 NetworkPacket 帧，
@@ -6,7 +7,6 @@
 //   发送方（本侧）组帧后自带 '\n'；native 自 WP-1a 起保证「一个 packetReceived 事件 = 一个完整帧」，
 //   本层仍保留「缓冲 + 按 '\n' 切分 + 尾段留待下次」的容错逻辑（两种派发粒度都正确）。
 // 配对语义（AP-1）：请求不再自动接受，交由 UI 弹窗确认（用户裁决：与 iOS 一致）。
-import native from 'libkdeconnect_napi.so';
 
 // Android 参考（PairingHandler）：时钟偏差超 30 分钟则拒绝配对请求。
 const MAX_TIMESTAMP_DIFF_SECONDS = 1800;
@@ -81,7 +81,7 @@ export class PacketRouter {
     this.logFn = logFn;
     this.callbacks = callbacks;
     this.sendFn = sendFn !== undefined ? sendFn
-      : (deviceId: string, json: string): boolean => native.sendPacket(deviceId, json);
+      : (deviceId: string, json: string): boolean => KcBridge.sendPacket(deviceId, json);
   }
 
   // ---- 供 UI 调用的配对动作 ----

@@ -1,3 +1,4 @@
+import { KcBridge } from '../net/KcBridge';
 // SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
@@ -9,7 +10,6 @@ import deviceInfo from '@ohos.deviceInfo';
 // .d.ts 上无 @permission（长时任务才需被华为驳回的 KEEP_BACKGROUND_RUNNING）。
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
 // KI-1 ②：停栈迁到本 Ability（页面 aboutToDisappear 不再停栈）。
-import native from 'libkdeconnect_napi.so';
 
 export default class EntryAbility extends UIAbility {
   // KI-1 ①：本次后台会话的短时任务 id（-1 = 未申请）。
@@ -44,7 +44,7 @@ export default class EntryAbility extends UIAbility {
     this.cancelTransientTask();
     // KI-1 ②：进程/Ability 真正销毁时才停栈（页面消失不再断链）。
     try {
-      native.stop();
+      KcBridge.stop();
       hilog.info(0x0000, 'testTag', '%s', 'native.stop on ability destroy');
     } catch (e) {
       hilog.error(0x0000, 'testTag', 'native.stop failed: %{public}s',

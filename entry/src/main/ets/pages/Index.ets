@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
-import native from 'libkdeconnect_napi.so';
-import { NetConfig, CertPair, NetEvent } from 'libkdeconnect_napi.so';
+import { KcBridge, NetConfig, CertPair, NetEvent } from '../net/KcBridge';
 import { util } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
 import { Context, abilityAccessCtrl, Permissions, bundleManager } from '@kit.AbilityKit';
@@ -245,7 +244,7 @@ struct Index {
 
     if (deviceId.length < 32 || certPem === '' || keyPem === '') {
       deviceId = util.generateRandomUUID().replace(/-/g, '');
-      const cert: CertPair = native.generateCert(deviceId);
+      const cert: CertPair = KcBridge.generateCert(deviceId);
       certPem = cert.certPem;
       keyPem = cert.keyPem;
       try {
@@ -272,7 +271,7 @@ struct Index {
       //   · 丢弃优先于保存（`save aborted: … discarded`）
       // ⇒ 因此**不引入串行队列**（参考库 docs1111/02 §12-6 自认其 R5 未解决，此处给出我们的结论与护栏）。
       // 回归用例：`PayloadController.test.ets` 的 lateProgress/lateCancelled/bytesDone/duplicateFinished/saveAfterDiscard。
-      native.init((event: NetEvent): void => {
+      KcBridge.init((event: NetEvent): void => {
         self.deviceController.handleEvent(event);
         // 侧栏数据是 AppStorage 快照；设备状态变化后必须主动刷新，
         // 否则平板常驻侧栏（不经过 onDrawerStateChanged）永远是空列表。
@@ -350,7 +349,7 @@ struct Index {
     };
     this.pairSession.connectToPeer = (id: string, name: string, host: string, port: number): boolean => {
       try {
-        native.connectToPeer(host, port);
+        KcBridge.connectToPeer(host, port);
         return true;
       } catch (e) {
         return false;
@@ -483,7 +482,7 @@ struct Index {
     };
     this.settingsController.restartNative = (): void => {
       try {
-        native.stop();
+        KcBridge.stop();
       } catch (e) {
       }
       this.startNative();
@@ -506,28 +505,28 @@ struct Index {
     this.deviceController.toast = (m: string): void => { this.notify.toast(m); };
     this.deviceController.sendPacket = (deviceId: string, json: string): boolean => {
       try {
-        return native.sendPacket(deviceId, json);
+        return KcBridge.sendPacket(deviceId, json);
       } catch (e) {
         return false;
       }
     };
     this.deviceController.getPairVerificationCode = (deviceId: string, timestamp: number): string => {
       try {
-        return native.getPairVerificationCode(deviceId, timestamp);
+        return KcBridge.getPairVerificationCode(deviceId, timestamp);
       } catch (e) {
         return '';
       }
     };
     this.deviceController.getPeerCertificate = (deviceId: string): string => {
       try {
-        return native.getPeerCertificate(deviceId);
+        return KcBridge.getPeerCertificate(deviceId);
       } catch (e) {
         return '';
       }
     };
     this.deviceController.setTrustedCertificate = (deviceId: string, certPem: string): void => {
       try {
-        native.setTrustedCertificate(deviceId, certPem);
+        KcBridge.setTrustedCertificate(deviceId, certPem);
       } catch (e) {
       }
     };
@@ -535,7 +534,7 @@ struct Index {
     this.deviceController.applyTrustPins();
     this.deviceController.removeTrustedCertificate = (deviceId: string): void => {
       try {
-        native.removeTrustedCertificate(deviceId);
+        KcBridge.removeTrustedCertificate(deviceId);
       } catch (e) {
       }
     };
@@ -544,7 +543,7 @@ struct Index {
     };
     this.deviceController.connectToPeer = (host: string, port: number): void => {
       try {
-        native.connectToPeer(host, port);
+        KcBridge.connectToPeer(host, port);
       } catch (e) {
       }
     };
@@ -822,7 +821,7 @@ struct Index {
         const outgoing: string[] = ['kdeconnect.identity', 'kdeconnect.pair']
           .concat(this.pluginRegistry.outgoingCapabilities());
         this.probeNative('setCapabilities', (): void => {
-          native.setCapabilities(incoming, outgoing);
+          KcBridge.setCapabilities(incoming, outgoing);
         });
         this.notify.log(`caps: in=${incoming.length} out=${outgoing.length}`);
       } catch (e) {
@@ -833,7 +832,7 @@ struct Index {
       // 用户根本看不到失败。返回 false 时置失败态并记日志（原因见日志：port conflict / UDP bind failure）。
       let started: boolean = false;
       this.probeNative('start', (): void => {
-        started = native.start(cfg);
+        started = KcBridge.start(cfg);
       });
       if (!started) {
         this.status = 'start failed';
@@ -874,7 +873,7 @@ struct Index {
   private triggerDiscoveryBroadcast(): void {
     try {
       this.probeNative('triggerBroadcast', (): void => {
-        native.triggerBroadcast();
+        KcBridge.triggerBroadcast();
       });
     } catch (e) {
       this.notify.log('triggerBroadcast unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
@@ -887,7 +886,7 @@ struct Index {
       return;
     }
     this.pluginHost.loadForDevice(deviceId, incoming, outgoing,
-      (dev: string, json: string): boolean => native.sendPacket(dev, json),
+      (dev: string, json: string): boolean => KcBridge.sendPacket(dev, json),
       (dev: string, ev: PluginEvent): void => {
         this.onPluginEvent(dev, ev);
       });
@@ -2083,7 +2082,7 @@ struct Index {
           },
           onUnpairRemembered: (deviceId: string): void => {
             try {
-              native.removeTrustedCertificate(deviceId);
+              KcBridge.removeTrustedCertificate(deviceId);
               this.deviceController.setPairedFlag(deviceId, false);
               this.notify.toast(this.notify.resText($r('app.string.toast_unpair_remembered_ok').id));
               this.rememberedDetail = undefined;

@@ -17,8 +17,7 @@
 //   ③ safeFileName 单一来源（PayloadHistory.safeFileName）；
 //   ④ 终态兜底（failInflightReceives）：控制连接断开 ⇒ 进行中的接收不可能再完成，立即落 failed。
 
-import native from 'libkdeconnect_napi.so';
-import { NetEvent } from 'libkdeconnect_napi.so';
+import { KcBridge, NetEvent } from '../net/KcBridge';
 import { PayloadTransfer, PayloadTransferInit, PayloadDirection, PayloadState, PayloadBatch, PayloadBatchState, DetailActionMode } from '../model/PayloadModels';
 // P0-A2：纯决策下沉到 model/PayloadLogic（零 Kit/native 依赖 ⇒ 宿主 bun 秒级回归；判定点即近期三次真机回归处）
 import {
@@ -1136,7 +1135,7 @@ export class PayloadController {
     }
     let sandboxOk: boolean = false;
     try {
-      sandboxOk = native.keepPayload(p.transferId, dest);
+      sandboxOk = KcBridge.keepPayload(p.transferId, dest);
       this.log(sandboxOk ? `saved(sandbox) -> ${dest}` : 'keepPayload failed');
     } catch (e) {
       this.log('keepPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
@@ -1272,10 +1271,10 @@ export class PayloadController {
       }
     }
     this.clearReceiveWatchdog(p.transferId);
-    // 2026-11-09 用户实测：对「已 keep / 已终态」的条目 native.discardPayload() 返回 false（spool 已不在 native），
+    // 2026-11-09 用户实测：对「已 keep / 已终态」的条目 KcBridge.discardPayload() 返回 false（spool 已不在 native），
     // 旧实现把这当成失败并打 'discardPayload failed' —— 那是**无可丢弃**，不是错误。这里分开表达。
     try {
-      const ok: boolean = native.discardPayload(p.transferId);
+      const ok: boolean = KcBridge.discardPayload(p.transferId);
       this.log(ok ? `discarded #${p.transferId}`
         : `discard: native had nothing to drop (#${p.transferId}, already kept/terminal)`);
     } catch (e) {
@@ -1310,7 +1309,7 @@ export class PayloadController {
       return;
     }
     try {
-      native.cancelPayload(p.transferId);
+      KcBridge.cancelPayload(p.transferId);
       this.log(`payload cancel requested #${p.transferId}`);
     } catch (e) {
       this.log('cancelPayload error: ' + (e instanceof Error ? e.message : 'unknown'));
@@ -1340,7 +1339,7 @@ export class PayloadController {
     const job: SendJob = this.sendQueue[0];
     try {
       const body: SendShareBody = { filename: job.fileName };
-      const tid: number = native.sendPayload(this.sendTarget, 'kdeconnect.share.request',
+      const tid: number = KcBridge.sendPayload(this.sendTarget, 'kdeconnect.share.request',
         JSON.stringify(body), job.cachePath);
       if (tid > 0) {
         this.sendBusyId = tid;

@@ -8,7 +8,7 @@
 //   · 副作用（插件装载/卸载、payload 清理、mpris 清账、会话状态机通知）经注入回调走页面既有实现；
 //   · Context/native/PacketRouter 不在本模块内直接碰。
 
-import { NetEvent } from 'libkdeconnect_napi.so';
+import { NetEvent } from '../net/KcBridge';
 import { Context } from '@kit.AbilityKit';
 import { DeviceItem, RememberedDevice } from '../model/DeviceModels';
 import { TrustedDevice } from '../model/TrustModels';

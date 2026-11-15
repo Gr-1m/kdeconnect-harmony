@@ -48,3 +48,12 @@ if [ ! -f "$CTR" ]; then
     exit 1
 fi
 python3 "$CTR"
+
+# —— ArkTS native 边界（P0-4/P1-1 阶段 A；Omp-ArkTS）：只能 net/KcBridge.ets import native ——
+# 与前面的 injection 契约同口径：脚本缺失或越界都算门禁失败（不得静默跳过）。
+NBI="$PWD/../../../../../tools/check-native-import.py"
+if [ ! -f "$NBI" ]; then
+    echo "native import boundary checker not found: tools/check-native-import.py"
+    exit 1
+fi
+python3 "$NBI"

@@ -60,8 +60,18 @@
 | 验收 | `grep -rl libkdeconnect_napi.so entry/src/main/ets` 只剩 bridge（`EntryAbility` 单列例外并注明理由）；宿主 111 例 + 设备 hypnos 全绿；真机冒烟（连接/收发一图） | `contractVersion` 校验用例 + `d.ts ↔ napi` 门禁脚本（native P1-2）联合验收 |
 | 串行队列（P1-5） | **A 阶段不引入**：P0-A3 审计已证派发链全程同步（见 `PluginEventBus`/`DeviceController`/`Index` 注释） | 若阶段 B 的事件化引入 await 分支，再在 bridge 内加**单写者队列**（统一入口，不散落各控制器） |
 
-> 依据（为什么 A 阶段不引串行队列）：MSG259 §3④ 与统一规划 §5 都要求「P1-5 的 ArkTS 串行队列随 KcBridge 阶段 A 落地」——
-> 但 A 阶段仍是**同步**调用形态（现有 19 导出全同步），加队列会是**无目标复杂度**；本表按「有 await 才排队」给出边界，请总指挥裁决。
+> **裁决已定（MSG261 §2，2026-11-14）**：总指挥**接受**「A 阶段不引串行队列」的判断 —— 队列改为 **P1-5 的 Stage-B 子项**
+> （随阶段 B 事件化引入 await 后，在 bridge 内以**单写者队列**落地，不散落各控制器）。本表 §5 不再作为开放问题。
+
+## 4bis. 阶段 A 实施记录（2026-11-15）
+
+| 项 | 实况 |
+|---|---|
+| 新增 | `entry/src/main/ets/net/KcBridge.ets` —— **唯一 native import 点**；19 个现有导出**同签名**转发，按域分组：生命周期（`init/start/stop/shutdown`）、发现与连接（`triggerBroadcast/connectToPeer/disconnect/setCapabilities`）、配对信任证书（`generateCert/getPairVerificationCode/getPeerCertificate/getOwnCertificate/setTrustedCertificate/removeTrustedCertificate`）、收发包（`sendPacket`）、payload（`sendPayload/keepPayload/discardPayload/cancelPayload`）；类型 `NetConfig/CertPair/NetEvent` 由 bridge 再导出 |
+| 改造调用方（4 文件） | `entryability/EntryAbility.ets`、`net/PacketRouter.ets`、`state/DeviceController.ets`（类型）、`state/PayloadController.ets`、`pages/Index.ets` —— 全部改经 `KcBridge` |
+| 探针（MSG262 §3.2） | bridge 内 `probeNative(name, fn)`：只在 **>100ms** 时 `console.warn('KDC slow native …')`，不阻塞、不吞异常 |
+| 静态门禁（MSG262 §2） | 新增 `tools/check-native-import.py`（唯一允许清单只有 bridge；反向验证：临时违规 ⇒ FAIL/rc=1）；已接入 `entry/src/main/cpp/tests/run.sh`（与既有 injection 契约同口径：**脚本缺失或越界都算失败**） |
+| 验证 | `hvigorw assembleHap` ✅；`run.sh` ✅（含新检查 `[PASS] native import 边界 OK（扫描 67 个 .ets）`）；宿主逻辑 111/111 ✅ |
 
 ## 5. 待评审的三个开放问题
 
