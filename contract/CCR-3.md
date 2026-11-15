@@ -27,7 +27,7 @@ getPairVerificationCode(deviceId: string, ts: number): string;
 
 /** 信任与证书（配对信任链；pem 为对端叶证书 PEM） */
 getPeerCertificate(deviceId: string): string;
-getOwnCertificate(deviceId: string): string;
+getOwnCertificate(): string;
 setTrustedCertificate(deviceId: string, pem: string): void;
 removeTrustedCertificate(deviceId: string): void;
 
