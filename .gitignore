@@ -48,6 +48,10 @@ wecode-cpp.db
 # 临时参考快照（会随演进过期，正本保留在旧工作区 PreDev）
 devdocs/reference/
 
+# 外部参考库 / 第三方评审快照（只读参考，**不入库**；用户 2026-11-15 明确 docs1115 不进 git）
+docs1115/
+kdeconn1111/
+
 # Syncthing 本机忽略配置（机器本地，Win10 侧手动镜像）
 .stignore
 
