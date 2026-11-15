@@ -2,8 +2,8 @@
 
 - 日期：2026-11-15
 - 提出人：AtomCode（依据用户 2026-11-15 对「阶段 B 三个开放问题」裁决建议的批准）
-- 状态：**Conditional Approved 已按意见修正（2026-11-15）**——CodeArts 评审通过（F1–F5 全部采纳），Omp-ArkTS 已签名；
-  **待 Omp-Native 车道签名后生效**
+- 状态：**已生效（2026-11-15）**——CodeArts 评审通过（F1–F5 全部采纳）+ **Omp-ArkTS 签名**（MSG265）+ **Omp-Native 签名**（MSG265）；
+  意见②（`contractVersion` 需 native 来源）已采纳并写入 §2.3（build.rs 对 d.ts 哈希 + 三方一致断言）
 - 影响：`contract/kcbridge.d.ts`、`devdocs/MAP_KCApi_PHASEA_20261114.md`、`KcBridge.ets`（阶段 B）、`tools/check-native-contract.py`（C 组转阻塞）
 - 关联：`MSG261`（队列裁决 P1-5 Stage-B）、`MSG263`（映射表骨架/阶段 A 实施）、`MSG262`（阶段 B 排序）
 
@@ -67,10 +67,15 @@ disconnect(deviceId: string): void;
 
 ### 2.3 `contractVersion` 校验策略（写入契约注释）
 
-1. ArkTS 侧常量 `EXPECTED_CONTRACT_VERSION`（随本文件版本同步的手工常量，改动即评审点）；
-2. 启动早期（`Index.aboutToAppear` 装配控制器前）调用；
-3. 不匹配 ⇒ **拒绝 `start()`** + 日志/状态栏可见（E109 语义），不得静默继续；
-4. 桩测试：注入不同版本 ⇒ 断言「未 start + 已记录」。
+> 采纳 Omp-Native MSG265 §1.3 意见②：**native 必须有版本来源**，否则 ArkTS 自比对恒真、等于没有校验。
+
+1. **native 侧新增导出** `contract_version(): number`：由 `build.rs` 对 `contract/kcbridge.d.ts` 做内容哈希生成
+   （编译期绑定，d.ts 一改即变），经 napi 暴露；
+2. **ArkTS 侧**：`EXPECTED_CONTRACT_VERSION` 为**生成常量**（`tools/gen-contract-version.py` 从同一 d.ts 哈希写出，
+   生成物入库；CI `check-native-contract.py` 断言「ArkTS 常量 == d.ts 哈希 == native 返回值」）；
+3. 启动早期（`Index.aboutToAppear` 装配控制器前）比较两者；
+4. 不匹配 ⇒ **拒绝 `start()`** + 日志/状态栏可见（E109 语义），不得静默继续（典型原因：HAP 与 .so 版本不一致）；
+5. 桩测试：注入不同版本 ⇒ 断言「未 start + 已记录」；CI 侧三方一致断言防手工常量漂移。
 
 ### 2.4 语义备注（不新增方法，但需在 d.ts 注释写明）
 
