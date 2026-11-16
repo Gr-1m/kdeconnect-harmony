@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { KcBridge, NetConfig, CertPair, NetEvent } from '../net/KcBridge';
+import { EXPECTED_CONTRACT_VERSION } from '../common/ContractVersion';
 import { util } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
 import { Context, abilityAccessCtrl, Permissions, bundleManager } from '@kit.AbilityKit';
@@ -669,6 +670,9 @@ struct Index {
     const routeCount: number = this.eventBus.kinds().length;
     this.notify.log(`plugin routes registered: ${routeCount}`);
     hilog.info(0x0001, 'KDEConnectUI', 'plugin routes registered: %{public}d', routeCount);
+    // B-4（CCR-3 §2.3）：契约版本启动校验 —— 先记录**期望值**（`tools/gen-contract-version.py` 生成的常量）。
+    // native 导出 `contractVersion()` 落地后，同处比对 actual：不匹配 ⇒ 状态栏 + **拒绝 start()**（E109 语义）。
+    this.notify.log(`contract version: expected=${EXPECTED_CONTRACT_VERSION}`);
     this.startNative();
     this.netWatcher.register();
     // MSG236 ② / MSG241：历史「文件已不在」一次性迁移 —— 必须在**控制器接线之后**跑：

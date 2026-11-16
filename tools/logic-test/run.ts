@@ -17,6 +17,8 @@ import trustCodecTest from './TrustCodec.test';
 import payloadLogicTest from './PayloadLogic.test';
 import pluginEventBusTest from './PluginEventBus.test';
 import pluginDefaultsTest from './PluginDefaults.test';
+import contractVersionTest from './ContractVersion.test';
+import kcErrorTest from './KcError.test';
 
 mousepadThrottleTest();
 mousepadInputTest();
@@ -27,5 +29,7 @@ trustCodecTest();
 payloadLogicTest();
 pluginEventBusTest();
 pluginDefaultsTest();
+contractVersionTest();
+kcErrorTest();
 
 runAll();

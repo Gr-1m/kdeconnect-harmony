@@ -9,6 +9,8 @@
 //   · Context/native/PacketRouter 不在本模块内直接碰。
 
 import { NetEvent } from '../net/KcBridge';
+// B-3：错误码表 + 分级处置（单一来源 contract/errors.v1.json；门禁 tools/check-error-codes.py）
+import { formatKcError, nameOf, uiNoticeFor } from '../common/KcError';
 import { Context } from '@kit.AbilityKit';
 import { DeviceItem, RememberedDevice } from '../model/DeviceModels';
 import { TrustedDevice } from '../model/TrustModels';
@@ -182,15 +184,21 @@ export class DeviceController {
       }
       case 'error': {
         const em: string = event.errorMessage ?? '';
-        this.onErrorCleanup(event.deviceId ?? '', event.errorCode ?? 0, em);
+        const ec: number = event.errorCode ?? 0;
+        this.onErrorCleanup(event.deviceId ?? '', ec, em);
+        // B-3：统一 `KC_E<code>` 文本 + 按 disposition 分级（FatalLink 才用户可见；其余只记日志）
+        const text: string = formatKcError(ec, em);
         if (em.includes('rate limited')) {
-          this.log('连接过于频繁，请稍后重试（rate limited）');
+          this.log(`连接过于频繁，请稍后重试（${text}）`);
         } else if (em.includes('certificate mismatch')) {
-          this.log('对端证书与登记不符，需重新配对（certificate mismatch）');
+          this.log(`对端证书与登记不符，需重新配对（${text}）`);
         } else {
-          this.log(`error ${event.errorCode}: ${em}`);
+          this.log(`${nameOf(ec)} / ${text}`);
         }
-        this.pairSessionOnError(event.deviceId ?? '', event.errorCode ?? 0, em);
+        if (uiNoticeFor(ec)) {
+          this.showNotice('error', text, true, ec);
+        }
+        this.pairSessionOnError(event.deviceId ?? '', ec, em);
         break;
       }
       default:

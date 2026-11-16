@@ -76,3 +76,19 @@ if [ ! -f "$PDF" ]; then
     exit 1
 fi
 python3 "$PDF"
+
+# —— ArkTS 契约版本常量 ↔ contract/kcbridge.d.ts 哈希（B-4；过期即门禁失败）——
+GCV="$PWD/../../../../../tools/gen-contract-version.py"
+if [ ! -f "$GCV" ]; then
+    echo "contract version generator not found: tools/gen-contract-version.py"
+    exit 1
+fi
+python3 "$GCV" --check
+
+# —— ArkTS 错误码镜像 ↔ contract/errors.v1.json（B-3；码/名/kind/disposition 四项）——
+ECC="$PWD/../../../../../tools/check-error-codes.py"
+if [ ! -f "$ECC" ]; then
+    echo "error code checker not found: tools/check-error-codes.py"
+    exit 1
+fi
+python3 "$ECC"

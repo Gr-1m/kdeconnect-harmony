@@ -16,6 +16,8 @@ import trustCodecTest from './TrustCodec.test';
 import payloadLogicTest from './PayloadLogic.test';
 import pluginEventBusTest from './PluginEventBus.test';
 import pluginDefaultsTest from './PluginDefaults.test';
+import contractVersionTest from './ContractVersion.test';
+import kcErrorTest from './KcError.test';
 
 export default function testsuite(): void {
   packetRouterTest();
@@ -32,4 +34,6 @@ export default function testsuite(): void {
   payloadLogicTest();
   pluginEventBusTest();
   pluginDefaultsTest();
+  contractVersionTest();
+  kcErrorTest();
 }
