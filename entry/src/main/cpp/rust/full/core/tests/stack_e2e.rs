@@ -791,3 +791,211 @@ fn thread_panic_is_reported_and_cleanup_runs() {
     );
     b.stop();
 }
+
+// ---------------------------------------------------------------------------
+// 阶段 B · B-2：配对 / 设备名原语（native 侧构造协议帧）
+// ---------------------------------------------------------------------------
+
+/// 配对原语发出的帧必须符合上游 `kdeconnect.pair` schema（`pair` 布尔；`timestamp` 仅**发起**时带）。
+#[test]
+fn pair_primitives_send_schema_conformant_frames() {
+    let events = Events::new();
+    let a_id = device_id('N');
+    let b_id = device_id('P');
+    let a = Stack::start(config(
+        'N',
+        "pair-a",
+        18100,
+        19200,
+        "/tmp/kdc-rust-e2e-pair-a",
+    ))
+    .expect("start a");
+    let b = Stack::start(config(
+        'P',
+        "pair-b",
+        18101,
+        19201,
+        "/tmp/kdc-rust-e2e-pair-b",
+    ))
+    .expect("start b");
+    assert!(a.connect_to_peer("127.0.0.1".to_owned(), b.bound_tcp_port()));
+    assert!(
+        events
+            .wait(Duration::from_secs(10), |e| {
+                e.event_type == EventType::Connected && e.device_id == b_id
+            })
+            .is_some(),
+        "A 应连上 B"
+    );
+
+    // ① 发起：pair=true + 秒级 timestamp
+    assert!(a.request_pair(&b_id), "requestPair 应发送成功");
+    let req = events
+        .wait(Duration::from_secs(5), |e| {
+            e.event_type == EventType::PacketReceived
+                && e.device_id == a_id
+                && e.packet.contains("kdeconnect.pair")
+                && e.packet.contains("\"pair\":true")
+        })
+        .expect("B 应收到发起帧");
+    let body: serde_json::Value = serde_json::from_str(req.packet.trim()).expect("合法 JSON");
+    assert_eq!(body["type"], "kdeconnect.pair");
+    assert_eq!(body["body"]["pair"], true);
+    assert!(
+        body["body"]["timestamp"].as_u64().unwrap_or(0) > 1_600_000_000,
+        "发起帧必须带秒级 timestamp，实际={}",
+        body["body"]["timestamp"]
+    );
+
+    // ② 接受：pair=true 且**不带** timestamp（schema：仅发起时必需）
+    assert!(a.accept_pair(&b_id));
+    assert!(
+        events
+            .wait(Duration::from_secs(5), |e| {
+                e.event_type == EventType::PacketReceived
+                    && e.device_id == a_id
+                    && e.packet.contains("\"pair\":true")
+                    && !e.packet.contains("timestamp")
+            })
+            .is_some(),
+        "接受帧不应带 timestamp"
+    );
+
+    // ③ 拒绝：pair=false
+    assert!(a.reject_pair(&b_id));
+    assert!(
+        events
+            .wait(Duration::from_secs(5), |e| {
+                e.event_type == EventType::PacketReceived
+                    && e.device_id == a_id
+                    && e.packet.contains("\"pair\":false")
+            })
+            .is_some(),
+        "拒绝帧应为 pair=false"
+    );
+    a.stop();
+    b.stop();
+}
+
+/// `unpair` = 发 `pair:false` **且**清本侧信任（之后对端发 payload 必被拒）。
+#[test]
+fn unpair_sends_false_and_clears_trust() {
+    let events = Events::new();
+    let a_id = device_id('Q');
+    let b_id = device_id('R');
+    let a = Stack::start(config(
+        'Q',
+        "unpair-a",
+        18102,
+        19202,
+        "/tmp/kdc-rust-e2e-unpair-a",
+    ))
+    .expect("start a");
+    let b = Stack::start(config(
+        'R',
+        "unpair-b",
+        18103,
+        19203,
+        "/tmp/kdc-rust-e2e-unpair-b",
+    ))
+    .expect("start b");
+    assert!(a.connect_to_peer("127.0.0.1".to_owned(), b.bound_tcp_port()));
+    assert!(
+        events
+            .wait(Duration::from_secs(10), |e| {
+                e.event_type == EventType::Connected && e.device_id == b_id
+            })
+            .is_some(),
+        "A 应连上 B"
+    );
+    // 先互设信任（等价于「已配对」）
+    let peer_of_a = a.get_peer_certificate(&b_id);
+    let peer_of_b = b.get_peer_certificate(&a_id);
+    a.set_trusted_certificate(&b_id, &peer_of_a);
+    b.set_trusted_certificate(&a_id, &peer_of_b);
+
+    assert!(a.unpair(&b_id), "unpair 应发出 pair:false");
+    assert!(
+        events
+            .wait(Duration::from_secs(5), |e| {
+                e.event_type == EventType::PacketReceived
+                    && e.device_id == a_id
+                    && e.packet.contains("\"pair\":false")
+            })
+            .is_some(),
+        "B 应收到 pair=false"
+    );
+
+    // 信任已清除：B 发 payload ⇒ A 侧按「未配对」拒绝（202）并断链
+    let src = "/tmp/kdc-rust-e2e-unpair-src.bin";
+    std::fs::write(src, vec![7u8; 4096]).unwrap();
+    let id = b.send_payload(
+        &a_id,
+        "kdeconnect.share.request",
+        "{\"filename\":\"x.bin\"}",
+        src,
+    );
+    assert_ne!(id, 0, "sendPayload 应分配 transfer id");
+    let err = events
+        .wait(Duration::from_secs(10), |e| {
+            e.event_type == EventType::Error
+                && e.device_id == b_id
+                && e.error_code == kdc_native::errors::PROTOCOL_VIOLATION
+        })
+        .expect("unpair 后 A 必须拒绝来自 B 的 payload（202）");
+    assert!(
+        err.error_message.contains("not paired/trusted"),
+        "错误消息应指向未配对：{}",
+        err.error_message
+    );
+    a.stop();
+    b.stop();
+}
+
+/// `setDeviceName` 立即向已连接对端重发 identity（对端看到新名字）。
+#[test]
+fn set_device_name_resends_identity_to_peers() {
+    let events = Events::new();
+    let a_id = device_id('S');
+    let b_id = device_id('T');
+    let a = Stack::start(config(
+        'S',
+        "rename-a",
+        18104,
+        19204,
+        "/tmp/kdc-rust-e2e-rename-a",
+    ))
+    .expect("start a");
+    let b = Stack::start(config(
+        'T',
+        "rename-b",
+        18105,
+        19205,
+        "/tmp/kdc-rust-e2e-rename-b",
+    ))
+    .expect("start b");
+    assert!(a.connect_to_peer("127.0.0.1".to_owned(), b.bound_tcp_port()));
+    assert!(
+        events
+            .wait(Duration::from_secs(10), |e| {
+                e.event_type == EventType::Connected && e.device_id == b_id
+            })
+            .is_some(),
+        "A 应连上 B"
+    );
+
+    assert!(a.set_device_name("Harmony Renamed"));
+    assert!(
+        events
+            .wait(Duration::from_secs(5), |e| {
+                e.event_type == EventType::PacketReceived
+                    && e.device_id == a_id
+                    && e.packet.contains("kdeconnect.identity")
+                    && e.packet.contains("Harmony Renamed")
+            })
+            .is_some(),
+        "对端应收到带新名字的 identity 帧"
+    );
+    a.stop();
+    b.stop();
+}

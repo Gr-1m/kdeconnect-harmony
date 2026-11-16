@@ -55,6 +55,21 @@ export interface NetEventBase {
 export type NetEvent = NetEventBase;
 
 // 注册事件回调（必须在 start 之前调用，且仅在主线程调用一次）。
+/** 契约版本（contract/kcbridge.d.ts 内容哈希）；启动时与 ArkTS 期望值比对，不匹配拒绝 start（E109）。 */
+export const contractVersion: () => number;
+
+// —— 阶段 B · B-2：配对 / 设备名原语（native 侧构造协议帧）——
+/** 发起配对（含 v8 验证码所需的 timestamp）。 */
+export const requestPair: (deviceId: string) => boolean;
+/** 接受配对（`{"pair":true}`）。 */
+export const acceptPair: (deviceId: string) => boolean;
+/** 拒绝配对（`{"pair":false}`）。 */
+export const rejectPair: (deviceId: string) => boolean;
+/** 解除配对（`{"pair":false}` + 清本侧信任）。 */
+export const unpair: (deviceId: string) => boolean;
+/** 改本机显示名（重发 identity + 触发广播）。 */
+export const setDeviceName: (name: string) => boolean;
+
 export const init: (eventCallback: (event: NetEvent) => void) => void;
 // 拆除事件桥 + 网络栈（幂等）。ArkTS 页面重建时必须先调它：init 严格拒绝二次初始化
 // （否则抛 "already initialized"、事件桥断裂）。shutdown 之后需重新 init() + start()。

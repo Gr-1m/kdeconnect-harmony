@@ -334,3 +334,69 @@ pub fn remove_trusted_certificate(device_id: String) {
         stack.remove_trusted_certificate(&device_id);
     }
 }
+
+/// 契约版本（`contract/kcbridge.d.ts` 的编译期内容哈希；CCR-3 §1.3 / 任务卡 B-4）。
+///
+/// ArkTS 侧启动早期与 `EXPECTED_CONTRACT_VERSION` 比对，**不匹配 ⇒ 拒绝 `start()`**（E109 语义）。
+#[napi]
+pub fn contract_version() -> u32 {
+    kdc_native::contract::contract_version()
+}
+
+// ==================== 阶段 B · B-2：配对 / 设备名原语（CCR-3 §2.1）====================
+
+fn not_started(what: &str) -> bool {
+    kdc_native::events::emit_error(
+        "",
+        "",
+        0,
+        kdc_native::errors::NOT_STARTED,
+        &format!("net stack not started: {what}"),
+    );
+    false
+}
+
+/// 发起配对（native 侧构造 `kdeconnect.pair` 帧，含 v8 所需 `timestamp`）。
+#[napi]
+pub fn request_pair(device_id: String) -> bool {
+    match stack::current() {
+        Some(stack) => stack.request_pair(&device_id),
+        None => not_started("requestPair"),
+    }
+}
+
+/// 接受配对（发 `{"pair":true}`）。
+#[napi]
+pub fn accept_pair(device_id: String) -> bool {
+    match stack::current() {
+        Some(stack) => stack.accept_pair(&device_id),
+        None => not_started("acceptPair"),
+    }
+}
+
+/// 拒绝配对（发 `{"pair":false}`）。
+#[napi]
+pub fn reject_pair(device_id: String) -> bool {
+    match stack::current() {
+        Some(stack) => stack.reject_pair(&device_id),
+        None => not_started("rejectPair"),
+    }
+}
+
+/// 解除配对（发 `{"pair":false}` + 清本侧信任）。
+#[napi]
+pub fn unpair(device_id: String) -> bool {
+    match stack::current() {
+        Some(stack) => stack.unpair(&device_id),
+        None => not_started("unpair"),
+    }
+}
+
+/// 改本机显示名：更新内存态 → 向已连接设备重发 identity → 触发 UDP 广播。
+#[napi]
+pub fn set_device_name(name: String) -> bool {
+    match stack::current() {
+        Some(stack) => stack.set_device_name(&name),
+        None => not_started("setDeviceName"),
+    }
+}

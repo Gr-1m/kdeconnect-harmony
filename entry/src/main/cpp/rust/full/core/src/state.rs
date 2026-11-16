@@ -89,6 +89,8 @@ pub struct Shared {
     /// host → 验证过的对端 TCP 端口（UDP identity / 出向建链成功才写）。
     pub port_cache: Mutex<HashMap<String, u16>>,
     pub jobs: Mutex<HashMap<u64, Arc<PayloadJob>>>,
+    /// 本机对外显示名（`setDeviceName` 可变；identity 帧/UDP 广播都从这里取）。
+    device_name: Mutex<String>,
     pub next_conn_id: AtomicU64,
     pub shutdown: AtomicBool,
     pub force_broadcast: AtomicBool,
@@ -96,6 +98,8 @@ pub struct Shared {
 
 impl Shared {
     pub fn new(config: NetConfig, tls: TlsContext, bound_tcp_port: u16) -> Arc<Self> {
+        // 先取名字（config 随后被移动进结构体）
+        let initial_device_name = config.device_name.clone();
         // 先按持久化文件抬高 transferId 分配器（需借 config.spool_dir，必须在 config 被移动前）。
         seed_transfer_id(&config.spool_dir);
         Arc::new(Self {
@@ -117,10 +121,45 @@ impl Shared {
             last_seen: Mutex::new(HashMap::new()),
             port_cache: Mutex::new(HashMap::new()),
             jobs: Mutex::new(HashMap::new()),
+            device_name: Mutex::new(initial_device_name),
             next_conn_id: AtomicU64::new(1),
             shutdown: AtomicBool::new(false),
             force_broadcast: AtomicBool::new(false),
         })
+    }
+
+    /// 本机对外显示名（锁失败 ⇒ 取被投毒值；空 ⇒ 回退启动配置）。
+    pub fn device_name(&self) -> String {
+        let name = match self.device_name.lock() {
+            Ok(n) => n.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        if name.is_empty() {
+            self.config.device_name.clone()
+        } else {
+            name
+        }
+    }
+
+    /// 改名（`setDeviceName`）：只改内存态；identity 帧在下一帧/广播时自然生效
+    /// （`packet::build_identity` 会按协议做 `sanitize_device_name`）。
+    pub fn set_device_name(&self, name: &str) {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        match self.device_name.lock() {
+            Ok(mut current) => *current = trimmed.to_owned(),
+            Err(poisoned) => *poisoned.into_inner() = trimmed.to_owned(),
+        }
+    }
+
+    /// 当前已建立控制链路的 deviceId 列表（改名后逐个重发 identity 用）。
+    pub fn connected_device_ids(&self) -> Vec<String> {
+        self.device_conn
+            .lock()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
     }
 
     pub fn alloc_conn_id(&self) -> u64 {
@@ -141,7 +180,7 @@ impl Shared {
         let outgoing = self.caps_out.lock().map(|c| c.clone()).unwrap_or_default();
         crate::packet::build_identity(
             &self.config.device_id,
-            &self.config.device_name,
+            &self.device_name(),
             &self.config.device_type,
             self.bound_tcp_port.load(Ordering::Relaxed),
             &incoming,
@@ -549,6 +588,35 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::create_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn device_name_change_is_reflected_in_identity_frame() {
+        let dir = tmp_dir("name");
+        let spool = dir.to_string_lossy().to_string();
+        let shared = Shared::new(config_with_spool(&spool), ctx(), 0);
+        assert!(
+            shared.identity_frame().contains("seq-test"),
+            "初始名应来自配置"
+        );
+        shared.set_device_name("Harmony Renamed");
+        let frame = shared.identity_frame();
+        assert!(
+            frame.contains("Harmony Renamed"),
+            "改名后 identity 帧应变化: {frame}"
+        );
+        shared.set_device_name("   ");
+        assert!(
+            shared.identity_frame().contains("Harmony Renamed"),
+            "空白名应被忽略（不得清空）"
+        );
+        shared.set_device_name("bad\nname");
+        let sanitized = shared.identity_frame();
+        assert!(
+            !sanitized.contains("bad\nname"),
+            "出向名仍须过 sanitize_device_name: {sanitized}"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

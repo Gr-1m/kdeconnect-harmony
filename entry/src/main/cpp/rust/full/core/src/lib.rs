@@ -21,6 +21,7 @@
 pub mod cert_ext;
 pub mod cert_gen;
 pub mod connection;
+pub mod contract;
 pub mod discovery;
 pub mod errors;
 pub mod events;

@@ -176,7 +176,7 @@ cargo build --release --manifest-path entry/src/main/cpp/rust/full/napi/Cargo.to
      ③ 异常输入 `--test hostile_inputs`（畸形 identity/packet/证书/边界）
      ④ 双栈 E2E `--test stack_e2e`（**允许一次重试**，见下）
      ⑤ `cargo check -p kdeconnect_napi` + `cargo fmt --all -- --check` + `cargo clippy --workspace --all-targets -D warnings`
-     ⑥ `tools/check-injection-contract.py`（ArkTS 装配契约）+ `tools/check-native-contract.py`（`Index.d.ts ↔ napi` 与 `bootstrap caps ⊆ capabilities` 阻塞；冻结 `KcApi ↔ KcBridge.ets` 默认只报告，阶段 B 用 `--c-blocking` 转阻塞）
+     ⑥ `tools/check-injection-contract.py`（ArkTS 装配契约）+ `tools/check-native-contract.py`（`Index.d.ts ↔ napi`（A）与 `bootstrap caps ⊆ capabilities`（B）与**契约版本**（D：`contract/kcbridge.d.ts` 内容哈希 == Rust/ArkTS 常量，复用 `tools/gen-contract-version.py`）均阻塞；冻结 `KcApi ↔ KcBridge.ets`（C）默认只报告，阶段 B 完成后加 `--c-blocking` 转阻塞）
    - **E2E 偶发抖动（MSG264 §3）**：`stack_e2e` 曾出现一次瞬时失败（早退），6 次复跑未复现 ⇒ `run.sh` 对该目标允许**一次**重试；
      **不要与模拟器冷启（`tools/start-both.sh`）并行跑**——冷启时宿主 CPU/网络负载会放大时序抖动；连续复现 ≥2 次请用 `-- --nocapture` 抓明细。
    - `hvigorw --no-daemon assembleHap`（双 ABI Rust `.so` 进 HAP）；

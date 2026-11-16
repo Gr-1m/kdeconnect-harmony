@@ -9,6 +9,8 @@ Native 契约门禁 —— `Index.d.ts ↔ napi 导出` / `capabilities ↔ boot
            任一侧新增/改名而另一侧未跟 ⇒ 失败（今天即有效：两者都是**现行**桥面）。
   B（阻塞）`core/src/state.rs` 的 bootstrap caps（`caps_in` / `caps_out` 字面量）必须是
            `contract/capabilities.v1.json` 广告过的 packet type（∪ 协议层 `identity` / `pair`）。
+  D（阻塞）`contract/kcbridge.d.ts` 的**内容哈希**必须与各吊床点一致（Rust 常量 / ArkTS 常量）——
+           直接复用 `tools/gen-contract-version.py`（同一算法唯一实现，避免两处 FNV 漂移）。
   C（默认**仅报告**，`--c-blocking` 转阻塞）冻结契约 `contract/kcbridge.d.ts` 的 `KcApi` 方法集合
            ↔ `entry/src/main/ets/net/KcBridge.ets` 的 **static 方法**集合。
            阶段 A 两者均为 19 ⇒ 现在即可比对；CCR-3 生效（d.ts 增 8 方法 = 27）后，在阶段 B 把 8 个
@@ -20,6 +22,7 @@ Native 契约门禁 —— `Index.d.ts ↔ napi 导出` / `capabilities ↔ boot
 """
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -146,6 +149,22 @@ def main() -> int:
             print(
                 f"PASS[B] bootstrap caps ⊆ 能力契约（in={len(incoming)} out={len(outgoing)}）"
             )
+
+    # ---- D. 契约版本（d.ts 内容哈希 ↔ Rust/ArkTS 常量）----
+    gen = REPO_ROOT / "tools/gen-contract-version.py"
+    if not gen.is_file():
+        print("FAIL[D]: tools/gen-contract-version.py 缺失")
+        failed = True
+    else:
+        proc = subprocess.run([sys.executable, str(gen)], capture_output=True, text=True)
+        tail = (proc.stdout + proc.stderr).strip().splitlines()
+        if proc.returncode == 0:
+            print(f"PASS[D] {tail[-1] if tail else '契约版本一致'}")
+        else:
+            failed = True
+            print("FAIL[D] 契约版本不一致（d.ts 已改但未 --update）：")
+            for line in tail:
+                print(f"        {line}")
 
     # ---- C. 冻结 KcApi ↔ KcBridge.ets（默认报告；--c-blocking 转阻塞） ----
     frozen = kcapi_methods(bridge_text)

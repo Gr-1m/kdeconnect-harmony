@@ -133,6 +133,67 @@ impl Stack {
         logi!("net stack stopped");
     }
 
+    // ==================== 阶段 B · B-2：配对/设备名原语（CCR-3 §2.1）====================
+    // 与旧路径（ArkTS 自拼 JSON 调 sendPacket）等价，只是把**协议细节**收进 native：
+    // 帧格式按上游 schema `kdeconnect.pair`（`body.pair` 必填；`timestamp` 仅在**发起**配对时需要）。
+
+    /// 构造 pair 帧（`timestamp` 仅在**发起**配对时需要，见上游 schema `kdeconnect.pair`）。
+    fn pair_frame(pair: bool, timestamp: Option<u64>) -> String {
+        let body = match timestamp {
+            Some(ts) => serde_json::json!({ "pair": pair, "timestamp": ts }),
+            None => serde_json::json!({ "pair": pair }),
+        };
+        let packet = serde_json::json!({
+            "id": 0,
+            "type": "kdeconnect.pair",
+            "body": body,
+        });
+        let mut frame = packet.to_string();
+        frame.push('\n');
+        frame
+    }
+
+    /// 发起配对：`{"pair":true,"timestamp":<now_secs>}`（timestamp 供 v8 验证码计算）。
+    pub fn request_pair(&self, device_id: &str) -> bool {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.send_packet(device_id, &Self::pair_frame(true, Some(ts)))
+    }
+
+    /// 接受配对：`{"pair":true}`（schema：timestamp 仅发起时必需）。
+    pub fn accept_pair(&self, device_id: &str) -> bool {
+        self.send_packet(device_id, &Self::pair_frame(true, None))
+    }
+
+    /// 拒绝配对：`{"pair":false}`。
+    pub fn reject_pair(&self, device_id: &str) -> bool {
+        self.send_packet(device_id, &Self::pair_frame(false, None))
+    }
+
+    /// 解除配对：发 `{"pair":false}` **并**清掉本侧信任（AGENTS：解除配对 = unpair + 本侧置未配对）。
+    /// 返回「对端是否收到 unpair」（本侧清理总是执行）。
+    pub fn unpair(&self, device_id: &str) -> bool {
+        let sent = self.reject_pair(device_id);
+        self.remove_trusted_certificate(device_id);
+        sent
+    }
+
+    /// 改本机显示名：更新内存态 → 向**所有已连接设备**重发 identity（对端立即看到新名字）→ 触发 UDP 广播。
+    pub fn set_device_name(&self, name: &str) -> bool {
+        if name.trim().is_empty() {
+            return false;
+        }
+        self.shared.set_device_name(name);
+        let frame = self.shared.identity_frame();
+        for device_id in self.shared.connected_device_ids() {
+            let _ = self.shared.send_to_device(&device_id, &frame);
+        }
+        self.trigger_broadcast();
+        true
+    }
+
     pub fn send_packet(&self, device_id: &str, packet_json: &str) -> bool {
         self.shared.send_to_device(device_id, packet_json)
     }
