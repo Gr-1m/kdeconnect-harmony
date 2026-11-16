@@ -47,6 +47,26 @@ export interface KcApi {
   rejectTransfer(transferId: number): void;
   cancelTransfer(transferId: number): void;
 
+  /** CCR-3：能力集直接声明本端 incoming/outgoing（不再由 ArkTS 自拼 identity 能力表）。 */
+  setCapabilities(incoming: string[], outgoing: string[]): void;
+
+  /** CCR-3：配对待确认码（v8：双方公钥 DER 排序拼接 + SHA256 前 8 位 hex；timestamp 为对端 timestamp，秒）。 */
+  getPairVerificationCode(deviceId: string, timestamp: number): string;
+
+  /** CCR-3：对端叶证书 PEM。 */
+  getPeerCertificate(deviceId: string): string;
+  /** CCR-3：本端叶证书 PEM（无参，与现行导出一致）。 */
+  getOwnCertificate(): string;
+  /** CCR-3：写入对端信任证书（配对信任链）。 */
+  setTrustedCertificate(deviceId: string, certPem: string): void;
+  /** CCR-3：移除对端信任证书（解除配对）。 */
+  removeTrustedCertificate(deviceId: string): void;
+
+  /** CCR-3：手动连接（Add by IP）；host 为 IP 字面量，port 为 TCP 端口。 */
+  connectToPeer(host: string, port: number): void;
+  /** CCR-3：主动断开该设备连接（不解除配对）。 */
+  disconnect(deviceId: string): void;
+
   /** JSON: {roots:string[]}; empty roots disables SFTP browsing. */
   setSftpRoots(roots: string): void;
   /** transferOffer auto-accept timeout; default 10 seconds. */
