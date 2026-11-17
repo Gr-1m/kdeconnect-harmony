@@ -90,4 +90,10 @@ export const EventKind: {
   readonly TransferProgress: 12;
   readonly TransferDone: 13;
   readonly Log: 14;
+  /** CCR-3a：连接建立（含设备名/角色）。 */
+  readonly Connected: 15;
+  /** CCR-3a：连接断开。 */
+  readonly Disconnected: 16;
+  /** CCR-3a：错误（按 errors.v1.json 处置）。 */
+  readonly Error: 17;
 };
