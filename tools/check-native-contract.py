@@ -11,6 +11,8 @@ Native 契约门禁 —— `Index.d.ts ↔ napi 导出` / `capabilities ↔ boot
            `contract/capabilities.v1.json` 广告过的 packet type（∪ 协议层 `identity` / `pair`）。
   D（阻塞）`contract/kcbridge.d.ts` 的**内容哈希**必须与各吊床点一致（Rust 常量 / ArkTS 常量）——
            直接复用 `tools/gen-contract-version.py`（同一算法唯一实现，避免两处 FNV 漂移）。
+  E（阻塞）冻结 `KcApi` 的每个方法都必须有**明确归属**：直接对应 napi 导出 / 桥层适配 / 显式 stub。
+           契约新增方法而没登记归属 ⇒ 变红（防「27 项里有 5 项没人管」这类漂移）。
   C（默认**仅报告**，`--c-blocking` 转阻塞）冻结契约 `contract/kcbridge.d.ts` 的 `KcApi` 方法集合
            ↔ `entry/src/main/ets/net/KcBridge.ets` 的 **static 方法**集合。
            阶段 A 两者均为 19 ⇒ 现在即可比对；CCR-3 生效（d.ts 增 8 方法 = 27）后，在阶段 B 把 8 个
@@ -33,6 +35,23 @@ STATE_RS = REPO_ROOT / "entry/src/main/cpp/rust/full/core/src/state.rs"
 CAPABILITIES = REPO_ROOT / "contract/capabilities.v1.json"
 BRIDGE_DTS = REPO_ROOT / "contract/kcbridge.d.ts"
 KC_BRIDGE_ETS = REPO_ROOT / "entry/src/main/ets/net/KcBridge.ets"
+
+# 冻结 KcApi 方法的归属登记（MSG275 审计结果；新增契约方法必须在此登记）
+ADAPTER_METHODS = {
+    "generateIdentity": "generateCert + 回填 deviceId（CCR-3 §2.4）",
+    "refreshDiscovery": "triggerBroadcast",
+    "sendFile": "sendPayload",
+    "cancelTransfer": "cancelPayload",
+}
+
+# 无 native 后端、由 bridge 以 stub（E105 + 日志）承接（CCR-3 §2.4 + MSG275 建议）
+STUB_METHODS = {
+    "setSftpRoots",
+    "setAutoAcceptSec",
+    "networkChanged",
+    "acceptTransfer",
+    "rejectTransfer",
+}
 
 # 协议层类型（非插件能力，恒广告）
 PROTOCOL_TYPES = {"kdeconnect.identity", "kdeconnect.pair"}
@@ -195,6 +214,23 @@ def main() -> int:
     if not frozen:
         print("FAIL[C]: KcApi 解析为空")
         failed = True
+
+    # ---- E. 冻结 KcApi 每个方法的归属（直接导出 / 适配 / stub） ----
+    names = set(frozen)
+    covered = implemented | set(ADAPTER_METHODS) | STUB_METHODS
+    uncovered = sorted(name for name in names if name not in covered)
+    if uncovered:
+        failed = True
+        print(f"FAIL[E] 冻结 KcApi 方法无归属（既非 napi 导出、也未登记适配/stub）：{uncovered}")
+    else:
+        direct = len([n for n in names if n in implemented])
+        print(
+            f"PASS[E] 冻结 KcApi {len(names)} 项均有归属：直接 {direct} / 适配 {len(set(ADAPTER_METHODS) & names)}"
+            f" / stub {len(set(STUB_METHODS) & names)}"
+        )
+    stale = sorted((set(ADAPTER_METHODS) | STUB_METHODS) - names)
+    if stale:
+        print(f"NOTE[E] 登记表里有已不存在的契约方法（可清理）：{stale}")
 
     if failed:
         print("native contract check: FAILED")

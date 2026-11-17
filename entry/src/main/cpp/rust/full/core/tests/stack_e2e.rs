@@ -193,6 +193,8 @@ fn two_stacks_connect_pair_and_transfer_payload() {
             e.event_type == EventType::PayloadTransfer
                 && e.payload_state == "finished"
                 && !e.payload_direction_send
+                // 并行用例共享进程级事件汇 ⇒ 必须按 deviceId 过滤（否则会取到别的用例的 finished）
+                && e.device_id == a_id
         })
         .expect("B should finish receiving payload");
     assert_eq!(finished.payload_bytes_done, data.len() as i64);
@@ -828,8 +830,9 @@ fn pair_primitives_send_schema_conformant_frames() {
         "A 应连上 B"
     );
 
-    // ① 发起：pair=true + 秒级 timestamp
-    assert!(a.request_pair(&b_id), "requestPair 应发送成功");
+    // ① 发起：pair=true + **调用方给定的** timestamp（MSG273 §2：验证码与会话 ts 必须一致）
+    const SESSION_TS: i64 = 1_762_000_000;
+    assert!(a.request_pair(&b_id, SESSION_TS), "requestPair 应发送成功");
     let req = events
         .wait(Duration::from_secs(5), |e| {
             e.event_type == EventType::PacketReceived
@@ -841,10 +844,10 @@ fn pair_primitives_send_schema_conformant_frames() {
     let body: serde_json::Value = serde_json::from_str(req.packet.trim()).expect("合法 JSON");
     assert_eq!(body["type"], "kdeconnect.pair");
     assert_eq!(body["body"]["pair"], true);
-    assert!(
-        body["body"]["timestamp"].as_u64().unwrap_or(0) > 1_600_000_000,
-        "发起帧必须带秒级 timestamp，实际={}",
-        body["body"]["timestamp"]
+    assert_eq!(
+        body["body"]["timestamp"].as_i64(),
+        Some(SESSION_TS),
+        "发起帧必须原样使用调用方的会话 timestamp（否则两端验证码不一致）"
     );
 
     // ② 接受：pair=true 且**不带** timestamp（schema：仅发起时必需）
@@ -996,6 +999,109 @@ fn set_device_name_resends_identity_to_peers() {
             .is_some(),
         "对端应收到带新名字的 identity 帧"
     );
+    a.stop();
+    b.stop();
+}
+
+/// 阶段 B · B-1 依赖：kind 通道（`setOnEvent`）在**真实链路**上按冻结 `EventKind` 投递。
+#[test]
+fn kind_channel_emits_frozen_kinds_on_real_link() {
+    use std::sync::{Arc, Mutex};
+
+    let seen: Arc<Mutex<Vec<(i32, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    events::set_kind_callback(Some(Arc::new(move |kind: i32, json: String| {
+        if let Ok(mut guard) = sink.lock() {
+            guard.push((kind, json));
+        }
+    })));
+
+    let events_sink = Events::new();
+    let a_id = device_id('U');
+    let b_id = device_id('V');
+    let a = Stack::start(config(
+        'U',
+        "kind-a",
+        18106,
+        19206,
+        "/tmp/kdc-rust-e2e-kind-a",
+    ))
+    .expect("start a");
+    let b = Stack::start(config(
+        'V',
+        "kind-b",
+        18107,
+        19207,
+        "/tmp/kdc-rust-e2e-kind-b",
+    ))
+    .expect("start b");
+    assert!(a.connect_to_peer("127.0.0.1".to_owned(), b.bound_tcp_port()));
+    assert!(
+        events_sink
+            .wait(Duration::from_secs(10), |e| {
+                e.event_type == EventType::Connected && e.device_id == b_id
+            })
+            .is_some(),
+        "A 应连上 B"
+    );
+    // payload 门禁要求「已配对」⇒ 先互设信任（与主用例同口径）
+    let peer_of_a = a.get_peer_certificate(&b_id);
+    let peer_of_b = b.get_peer_certificate(&a_id);
+    a.set_trusted_certificate(&b_id, &peer_of_a);
+    b.set_trusted_certificate(&a_id, &peer_of_b);
+
+    let ping = "{\"id\":1,\"type\":\"kdeconnect.ping\",\"body\":{}}\n";
+    assert!(b.send_packet(&a_id, ping));
+
+    // payload：走 10/13（12 是否出现取决于分片时序，不作硬断言）
+    let src = "/tmp/kdc-rust-e2e-kind-src.bin";
+    std::fs::write(src, vec![3u8; 256 * 1024]).unwrap();
+    let id = a.send_payload(
+        &b_id,
+        "kdeconnect.share.request",
+        "{\"filename\":\"kind.bin\"}",
+        src,
+    );
+    assert_ne!(id, 0);
+    assert!(
+        events_sink
+            .wait(Duration::from_secs(20), |e| {
+                e.event_type == EventType::PayloadTransfer
+                    && e.payload_state == "finished"
+                    && !e.payload_direction_send
+                    && e.device_id == a_id
+            })
+            .is_some(),
+        "B 应完成接收"
+    );
+
+    let kinds: Vec<i32> = seen
+        .lock()
+        .map(|g| g.iter().map(|(k, _)| *k).collect())
+        .unwrap_or_default();
+    for expected in [7, 9, 10, 13] {
+        assert!(
+            kinds.contains(&expected),
+            "kind {expected} 应出现，实际={kinds:?}"
+        );
+    }
+    // json 形态：Packet(9) 的载荷应含 type=device 与 deviceId
+    let packet_json = seen
+        .lock()
+        .ok()
+        .and_then(|g| g.iter().find(|(k, _)| *k == 9).map(|(_, j)| j.clone()))
+        .expect("应有 kind=9 的 json");
+    let v: serde_json::Value = serde_json::from_str(&packet_json).expect("合法 JSON");
+    assert_eq!(v["type"], "packetReceived");
+    assert_eq!(v["deviceId"].as_str().map(str::len), Some(32));
+
+    // 缺口记录：connected 无 kind（继续走类型化通道）
+    assert!(
+        !kinds.contains(&3) || !kinds.contains(&4),
+        "本用例只连一台设备，不应出现 DeviceVisible/Gone：{kinds:?}"
+    );
+
+    events::set_kind_callback(None);
     a.stop();
     b.stop();
 }

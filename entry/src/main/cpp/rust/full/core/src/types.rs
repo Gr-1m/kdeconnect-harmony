@@ -122,6 +122,64 @@ pub struct NetEvent {
     pub payload_bytes_done: i64,
 }
 
+/// 事件的 JSON 形态（字段名与冻结契约/桥层 JS 对象一致；空字符串字段省略，与 NAPI 侧 `NetEventJs` 同口径）。
+///
+/// 供 `setOnEvent(kind, eventJson)` 的 kind 通道使用（阶段 B · B-1）。
+pub fn net_event_json(ev: &NetEvent) -> String {
+    use serde_json::{json, Map, Value};
+    let mut obj = Map::new();
+    let mut put = |k: &str, v: Value| {
+        obj.insert(k.to_owned(), v);
+    };
+    put("type", json!(ev.event_type.as_str()));
+    if !ev.device_id.is_empty() {
+        put("deviceId", json!(ev.device_id));
+    }
+    if !ev.device_name.is_empty() {
+        put("deviceName", json!(ev.device_name));
+    }
+    if !ev.device_type.is_empty() {
+        put("deviceType", json!(ev.device_type));
+    }
+    if !ev.host.is_empty() {
+        put("host", json!(ev.host));
+    }
+    put("tcpPort", json!(ev.tcp_port));
+    if ev.event_type == EventType::Connected {
+        put("role", json!(ev.role.as_str()));
+    }
+    if !ev.packet.is_empty() {
+        put("packet", json!(ev.packet));
+    }
+    if ev.event_type == EventType::Error {
+        put("errorCode", json!(ev.error_code));
+        if !ev.error_message.is_empty() {
+            put("errorMessage", json!(ev.error_message));
+        }
+    }
+    if ev.event_type == EventType::PayloadTransfer {
+        put(
+            "payloadDirection",
+            json!(if ev.payload_direction_send {
+                "send"
+            } else {
+                "receive"
+            }),
+        );
+        put("payloadState", json!(ev.payload_state));
+        put("payloadTransferId", json!(ev.payload_transfer_id));
+        put("payloadSize", json!(ev.payload_size));
+        put("payloadBytesDone", json!(ev.payload_bytes_done));
+        if !ev.payload_file_name.is_empty() {
+            put("payloadFileName", json!(ev.payload_file_name));
+        }
+        if !ev.payload_file_path.is_empty() {
+            put("payloadFilePath", json!(ev.payload_file_path));
+        }
+    }
+    Value::Object(obj).to_string()
+}
+
 pub type EventCallback = Arc<dyn Fn(NetEvent) + Send + Sync + 'static>;
 
 /// 用于日志/错误消息的 errno 文本。

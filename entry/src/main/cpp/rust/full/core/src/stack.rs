@@ -153,12 +153,20 @@ impl Stack {
         frame
     }
 
-    /// 发起配对：`{"pair":true,"timestamp":<now_secs>}`（timestamp 供 v8 验证码计算）。
-    pub fn request_pair(&self, device_id: &str) -> bool {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+    /// 发起配对：`{"pair":true,"timestamp":<调用方给定>}`。
+    ///
+    /// **timestamp 由调用方提供**（MSG273 §2 裁决：ArkTS 的验证码用「弹窗打开时固定」的会话 ts，
+    /// 若 native 自取 `now()` 会与展示/校验用 ts 不同 ⇒ 两端验证码不一致）。
+    /// `<= 0` 时回退当前秒级时间（防御式，正常调用不会走到）。
+    pub fn request_pair(&self, device_id: &str, timestamp: i64) -> bool {
+        let ts = if timestamp > 0 {
+            timestamp as u64
+        } else {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        };
         self.send_packet(device_id, &Self::pair_frame(true, Some(ts)))
     }
 

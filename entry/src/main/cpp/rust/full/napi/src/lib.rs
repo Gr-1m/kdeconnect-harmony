@@ -135,10 +135,14 @@ impl From<NetEvent> for NetEventJs {
 /// ArkTS 的 `(event) => ...` 就会拿到 null（实测崩溃：`Cannot read property packet of null`）。
 type EventTsfn = ThreadsafeFunction<NetEventJs, Unknown<'static>, NetEventJs, Status, false>;
 
+/// `setOnEvent(kind, eventJson)` 的 kind 通道 TSFN（两个实参）。
+type KindTsfn = ThreadsafeFunction<(u32, String), Unknown<'static>, (u32, String), Status, false>;
+
 /// 启动前回灌的 capabilities（incoming, outgoing）。
 type PendingCaps = LazyLock<Mutex<Option<(Vec<String>, Vec<String>)>>>;
 
 static BRIDGE: LazyLock<Mutex<Option<EventTsfn>>> = LazyLock::new(|| Mutex::new(None));
+static KIND_BRIDGE: LazyLock<Mutex<Option<KindTsfn>>> = LazyLock::new(|| Mutex::new(None));
 static PENDING_CAPS: PendingCaps = LazyLock::new(|| Mutex::new(None));
 static PENDING_TRUST: LazyLock<Mutex<HashMap<String, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -174,9 +178,42 @@ pub fn init(callback: Function<'static>) -> Result<()> {
     Ok(())
 }
 
+/// 冻结契约 `setOnEvent(cb(kind, eventJson))`（阶段 B · B-1 的事件通道）。
+///
+/// 与 `init(cb(NetEvent))` 的类型化通道**并存**：本通道只送**有冻结 kind** 的事件
+/// （`contract/kcbridge.d.ts` 的 `EventKind`）；`connected`/`disconnected`/`error` 暂无 kind，
+/// 继续走类型化通道（见 `events::kind_of` 的缺口注记）。
+#[napi]
+pub fn set_on_event(callback: Function<'static>) -> Result<()> {
+    let mut bridge = KIND_BRIDGE
+        .lock()
+        .map_err(|_| err("setOnEvent: kind bridge poisoned"))?;
+    if bridge.is_some() {
+        return Err(err("setOnEvent: kind bridge already initialized"));
+    }
+    let tsfn: KindTsfn = callback
+        .build_threadsafe_function::<(u32, String)>()
+        .callee_handled::<false>()
+        .build_callback(|ctx: ThreadsafeCallContext<(u32, String)>| Ok(ctx.value))
+        .map_err(|e| Error::new(Status::GenericFailure, format!("create kind tsfn: {e}")))?;
+    *bridge = Some(tsfn);
+    events::set_kind_callback(Some(std::sync::Arc::new(|kind: i32, json: String| {
+        if let Ok(bridge) = KIND_BRIDGE.lock() {
+            if let Some(tsfn) = bridge.as_ref() {
+                let _ = tsfn.call((kind as u32, json), ThreadsafeFunctionCallMode::NonBlocking);
+            }
+        }
+    })));
+    Ok(())
+}
+
 #[napi]
 pub fn shutdown() {
     events::set_callback(None);
+    events::set_kind_callback(None);
+    if let Ok(mut kind) = KIND_BRIDGE.lock() {
+        let _ = kind.take();
+    }
     stack::stop_global();
     if let Ok(mut bridge) = BRIDGE.lock() {
         let _ = bridge.take();
@@ -358,9 +395,9 @@ fn not_started(what: &str) -> bool {
 
 /// 发起配对（native 侧构造 `kdeconnect.pair` 帧，含 v8 所需 `timestamp`）。
 #[napi]
-pub fn request_pair(device_id: String) -> bool {
+pub fn request_pair(device_id: String, timestamp: i64) -> bool {
     match stack::current() {
-        Some(stack) => stack.request_pair(&device_id),
+        Some(stack) => stack.request_pair(&device_id, timestamp),
         None => not_started("requestPair"),
     }
 }

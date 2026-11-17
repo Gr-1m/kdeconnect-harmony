@@ -58,9 +58,15 @@ export type NetEvent = NetEventBase;
 /** 契约版本（contract/kcbridge.d.ts 内容哈希）；启动时与 ArkTS 期望值比对，不匹配拒绝 start（E109）。 */
 export const contractVersion: () => number;
 
+/**
+ * 冻结契约的 kind 事件通道（阶段 B · B-1）：回调收 `(kind, eventJson)`，kind 见 `contract/kcbridge.d.ts` 的 `EventKind`。
+ * 与 `init(cb(NetEvent))` 并存：本通道只送**有冻结 kind** 的事件；`connected/disconnected/error` 暂无 kind，走类型化通道。
+ */
+export const setOnEvent: (cb: (kind: number, eventJson: string) => void) => void;
+
 // —— 阶段 B · B-2：配对 / 设备名原语（native 侧构造协议帧）——
-/** 发起配对（含 v8 验证码所需的 timestamp）。 */
-export const requestPair: (deviceId: string) => boolean;
+/** 发起配对；`timestamp` 由调用方给定（须与展示/校验验证码用的会话 ts 一致，见 MSG273 §2）。 */
+export const requestPair: (deviceId: string, timestamp: number) => boolean;
 /** 接受配对（`{"pair":true}`）。 */
 export const acceptPair: (deviceId: string) => boolean;
 /** 拒绝配对（`{"pair":false}`）。 */
