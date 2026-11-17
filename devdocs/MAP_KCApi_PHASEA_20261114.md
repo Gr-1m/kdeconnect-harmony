@@ -80,3 +80,23 @@
 3. **契约缺口**（#17–#20 + `setCapabilities`）：信任/证书/手动连接/能力集在 `KcApi` 无对应。CCR-3 需要「补进 KcApi」还是「明确留在 native 内部、不暴露」？我方倾向**补方法**（否则 ArkTS 无法完成配对信任与手动连接）。
 
 —— Omp-ArkTS（骨架，等评审）
+
+## 6. 阶段 B 收口记录（2026-11-17）
+
+| 项 | 状态 |
+|---|---|
+| **B-4 `contractVersion`** | ✅ 完成：native `contract.rs`（`include_str!` 契约 + FNV-1a 32）+ `contract_version()` 导出；ArkTS `ContractVersion.ets`（生成常量 + `contractVersionOk`）；启动不匹配 ⇒ **拒绝 start + E109**（真机双向实证）；契约版本 **0x986fec77** |
+| **B-2 配对/设备名原语** | ✅ 完成：native 5 原语（`requestPair(deviceId, timestamp)` 用调用方 ts / accept / reject / unpair + 清信任 / setDeviceName 重发 identity）；ArkTS 全部经注入式 seam 调用（`pairRequest/pairAccept/pairReject`），不再自拼 body；改名不再 stop/start 原生栈 |
+| **B-3 `KCError` 化** | ✅ 完成：`KcError.ets` 20 码镜像 + disposition 分级；`DeviceController` 统一 `KC_E<code>` 文本，仅 FatalLink 用户可见；`check-error-codes.py` 四字段门禁 |
+| **C 组转阻塞** | ✅ 完成（`36f480d`）：`KcBridge` 暴露冻结 KcApi **28/28**（适配 4 + stub 6）；`run.sh` 打开 `--c-blocking`；阻塞语义 = **包含**（stage-A 旧别名 9 项计入「待退场」过渡，不阻塞） |
+| **CCR-3a** | ✅ 生效：`Connected=15`/`Disconnected=16`/`Error=17`；native `kind_of` 8 事件全覆盖，`EVENT_KIND_NAMES` 18 项 |
+| **CCR-1a** | ✅ 生效：补登记 `setAcceptMode`；默认 **spool**（实况），`offer` ⇒ bridge stub `E105` |
+| **B-1 事件映射（kind 通道消费）** | **延后（有理由，非静默跳过）**：native 现在**双通道**（类型化 `init` + kind `setOnEvent`），ArkTS 侧类型化通道已验证稳定；kind 通道的**消费/解码**在类型化通道退场时再做（单独任务），避免为「当前无消费者」引入死代码或双派发风险。`KcBridge.setOnEvent` 转发已就绪，契约面已由 C 组锁定 |
+| **B-5 Stage-B 队列** | **不执行**：现有桥层与事件派发全程**同步**（P0-A3 审计结论）；kind 通道消费延后后，无 await 分支可排在队列上。将来若引入异步解码，在 bridge 内加单写者队列（不散落控制器） |
+
+### 遗留（进入 P1/P2 跟踪）
+
+1. **kind 通道消费**：与「退类型化通道」同一批（需真机 soak 后评估），届时同时补单写者队列（如引入 await）；
+2. **stage-A 旧别名退场 9 项**（`init/shutdown/generateCert/triggerBroadcast/sendPayload/keepPayload/discardPayload/cancelPayload/setCurrentDeviceId`）：待调用点全量迁移后 C 组可收窄为「集合相等」；
+3. **`setAcceptMode('offer')`**：offer 模式未实装（P2），当前 stub E105；
+4. **真机复验**：连接/断开/错误三事件在 kind 通道可见（待 B-1 消费落地后一并验）。
