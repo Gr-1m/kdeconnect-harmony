@@ -393,6 +393,30 @@
       "value": "Direction"
     },
     {
+      "name": "file_attr_location",
+      "value": "Location"
+    },
+    {
+      "name": "file_location_album",
+      "value": "Albums (system gallery)"
+    },
+    {
+      "name": "file_location_app",
+      "value": "App private directory"
+    },
+    {
+      "name": "file_location_pending",
+      "value": "Pending (in app storage)"
+    },
+    {
+      "name": "file_location_gone",
+      "value": "No longer available"
+    },
+    {
+      "name": "file_location_hint",
+      "value": "Use Save as / Export to put it where you can find it (Files app)"
+    },
+    {
       "name": "file_dir_receive",
       "value": "Received"
     },

@@ -7,7 +7,8 @@
 // 约定：命名 `Test<对象>_<场景>`；断言只依赖入参（IO 通过注入的布尔/回调模拟）。
 import { describe, it, expect } from '@ohos/hypium';
 import {
-  sanitizeFileName, compactTimeText, detailActionModeOf, canDisposeOf, batchCountsOf, expiryActionFor, BatchCounts
+  sanitizeFileName, compactTimeText, detailActionModeOf, canDisposeOf, batchCountsOf, expiryActionFor, BatchCounts,
+  fileLocationOf, FileLocation
 } from '../../../main/ets/model/PayloadLogic';
 import { PayloadTransfer, PayloadBatch, PayloadBatchState } from '../../../main/ets/model/PayloadModels';
 
@@ -178,6 +179,16 @@ export default function payloadLogicTest(): void {
     });
     it('Test_expiryActionFor_failedStateUntouched', 0, () => {
       expect(expiryActionFor(transfer('receive', 'failed', false, false), false)).assertEqual('none');
+    });
+
+    // ---------- 文件位置（P1-9） ----------
+    it('Test_fileLocation_fourStates', 0, () => {
+      expect(fileLocationOf(transfer('receive', 'finished', false, false))).assertEqual('pending');
+      expect(fileLocationOf(transfer('receive', 'finished', true, false))).assertEqual('album');
+      const sandbox: PayloadTransfer = transfer('receive', 'finished', true, false);
+      sandbox.sandboxOnly = true;
+      expect(fileLocationOf(sandbox)).assertEqual('app');
+      expect(fileLocationOf(transfer('receive', 'finished', false, true))).assertEqual('gone');
     });
 
     // ---------- 紧凑时间 ----------

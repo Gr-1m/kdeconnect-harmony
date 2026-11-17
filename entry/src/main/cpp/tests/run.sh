@@ -92,3 +92,11 @@ if [ ! -f "$ECC" ]; then
     exit 1
 fi
 python3 "$ECC"
+
+# —— ArkTS UI 命中规则（P1-3）：HitTestMode.Block 所在块必须自带 onClick ——
+UHT="$PWD/../../../../../tools/check-ui-hittest.py"
+if [ ! -f "$UHT" ]; then
+    echo "UI hit-test checker not found: tools/check-ui-hittest.py"
+    exit 1
+fi
+python3 "$UHT"

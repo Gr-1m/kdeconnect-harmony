@@ -52,6 +52,10 @@ class Recorder implements RouterCallbacks {
   lastOutgoing: number = 0;
   pluginTypes: string[] = [];
   handleTypes: string[] = [];
+  // B-2：原语 seam 调用记录（接受/拒绝不再由 ArkTS 拼帧 ⇒ 断言改为「走了哪条原语」）
+  acceptCalls: number = 0;
+  rejectCalls: number = 0;
+  requestCalls: number = 0;
 
   onPairRequest(deviceId: string, timestamp: number): void {
     this.pairRequests++;
@@ -90,8 +94,24 @@ function makeRouter(rec: Recorder): PacketRouter {
       rec.sent.push(json);
       return true;
     };
-  return new PacketRouter(SELF_ID, 'TestPhone', 'phone',
+  const r: PacketRouter = new PacketRouter(SELF_ID, 'TestPhone', 'phone',
     (msg: string) => { rec.logs.push(msg); }, rec, fakeSend);
+  // B-2：注入原语替身（生产由 Index 注入 KcBridge.acceptPair/rejectPair）
+  r.pairAccept = (_deviceId: string): boolean => {
+    rec.acceptCalls++;
+    return true;
+  };
+  r.pairReject = (_deviceId: string): boolean => {
+    rec.rejectCalls++;
+    return true;
+  };
+  // B-2：本侧发起也走原语；替身把 native 会发出的帧记进 rec.sent，保留「帧内带 timestamp」的断言口径。
+  r.pairRequest = (_deviceId: string, timestamp: number): boolean => {
+    rec.requestCalls++;
+    rec.sent.push(pairFrame(true, timestamp));
+    return true;
+  };
+  return r;
 }
 
 function hasLog(rec: Recorder, needle: string): boolean {
@@ -198,14 +218,15 @@ export default function packetRouterTest(): void {
       expect(rec.sent[0].includes('"timestamp"')).assertTrue();
     });
 
-    it('TestPacketRouter_pair_acceptFrameMustNotCarryTimestamp', 0, () => {
+    it('TestPacketRouter_pair_acceptGoesThroughPrimitive', 0, () => {
       const rec: Recorder = new Recorder();
       const r: PacketRouter = makeRouter(rec);
       const ok: boolean = r.acceptPair(PEER_ID);
       expect(ok).assertTrue();
       expect(rec.paired).assertEqual(1);
-      // MSG77 §3 不变量：接受帧不带 timestamp（带了会被对端当"新请求"⇒ 配对循环）
-      expect(rec.sent[0].includes('"timestamp"')).assertFalse();
+      // B-2：接受改走 native 原语（`{pair:true}` **不带 timestamp** 的保证由 native 侧承担，见 stack.rs pair_frame(true, None)）
+      expect(rec.acceptCalls).assertEqual(1);
+      expect(rec.sent.length).assertEqual(0);        // ArkTS 不再拼接受帧
     });
 
     it('TestPacketRouter_pair_raceWithPeerIsAutoAccepted', 0, () => {
@@ -219,7 +240,8 @@ export default function packetRouterTest(): void {
       expect(rec.paired).assertEqual(1);
       expect(rec.pairRequests).assertEqual(0);
       expect(hasLog(rec, 'pair race')).assertTrue();
-      expect(rec.sent.length).assertEqual(2);
+      expect(rec.acceptCalls).assertEqual(1);        // B-2：自动接受走原语
+      expect(rec.sent.length).assertEqual(1);        // 只剩本侧请求帧（接受帧由 native 发）
     });
 
     it('TestPacketRouter_pair_clockSkewRejected', 0, () => {
@@ -230,8 +252,9 @@ export default function packetRouterTest(): void {
       expect(rec.pairRequests).assertEqual(0);
       expect(rec.paired).assertEqual(0);
       expect(hasLog(rec, 'clock skew')).assertTrue();
-      // 主动回 {pair:false}
-      expect(rec.sent.length).assertEqual(1);
+      // B-2：主动回 {pair:false} 改走 native 原语（ArkTS 不再拼帧）
+      expect(rec.rejectCalls).assertEqual(1);
+      expect(rec.sent.length).assertEqual(0);
     });
 
     it('TestPacketRouter_pair_falseTriggersUnpair', 0, () => {

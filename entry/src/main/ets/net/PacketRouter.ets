@@ -88,13 +88,14 @@ export class PacketRouter {
 
   // 本侧发起配对请求（返回是否真的发出；MSG77 §2：发送失败不能让 UI 停在「等待对端确认」）。
   // timestamp 由 UI 传入：弹窗里显示的验证码必须用同一个值计算（native getPairVerificationCode）。
+  // B-2：帧由 native `requestPair(deviceId, timestamp)` 原语构造（不再由 ArkTS 拼 body）；
+  // ts 仍由本类传给原语 ⇒ 与弹窗验证码同源（native 侧仅在 ts<=0 时才回退 now）。
   requestPair(deviceId: string, timestamp: number): boolean {
     let ts: number = timestamp;
     if (ts <= 0) {
       ts = Math.floor(Date.now() / 1000);
     }
-    const body: PairBody = { pair: true, timestamp: ts };
-    const ok: boolean = this.sendFrame(deviceId, PACKET_PAIR, body);
+    const ok: boolean = this.pairRequest(deviceId, ts);
     if (ok) {
       this.requestedPeers.set(deviceId, Date.now());
     }
@@ -106,8 +107,8 @@ export class PacketRouter {
   // 注意（MSG77 §3）：接受帧**不带 timestamp** —— 带 timestamp 在 v8 里表示「新请求」，
   // 会让对端把它当成又一次请求（KDE 源码注释：accepting 双方互发会造成循环）。
   acceptPair(deviceId: string): boolean {
-    const body: PairBody = { pair: true };
-    const ok: boolean = this.sendFrame(deviceId, PACKET_PAIR, body);
+    // B-2：接受帧由 native 原语发出（`{pair:true}` 不带 timestamp —— 带 ts 在 v8 里表示「新请求」会造成配对循环）
+    const ok: boolean = this.pairAccept(deviceId);
     this.logFn('pairing accepted with ' + deviceId + ' ok=' + ok);
     if (ok) {
       this.callbacks.onPaired(deviceId);
@@ -117,10 +118,18 @@ export class PacketRouter {
 
   // UI 拒绝对端请求
   rejectPair(deviceId: string): void {
-    const body: PairBody = { pair: false };
-    this.sendFrame(deviceId, PACKET_PAIR, body);
-    this.logFn('pairing rejected for ' + deviceId);
+    // B-2：拒绝/解除走 native 原语
+    const ok: boolean = this.pairReject(deviceId);
+    this.logFn('pairing rejected for ' + deviceId + ' ok=' + ok);
   }
+
+  // B-2 原语 seam：接受/拒绝**不再由 ArkTS 拼 body**，改走 native 原语（Index 注入 `KcBridge.acceptPair/rejectPair`）。
+  // 注入式（而非直连 bridge）是为了保住本类**可单测**：测试注入记录型替身即可断言「走了哪条原语」。
+  // 默认 no-op（未装配时绝不误发帧）；本侧**发起**仍用下方 `requestPair`（需带弹窗固定的 timestamp）。
+  pairAccept: (deviceId: string) => boolean = () => false;
+  pairReject: (deviceId: string) => boolean = () => false;
+  // B-2：本侧发起配对也走 native 原语（`requestPair(deviceId, timestamp)`；ts 来自弹窗，保证验证码同源）。
+  pairRequest: (deviceId: string, timestamp: number) => boolean = () => false;
 
   // 断链/主动解除时清理本侧等待态与帧缓冲
   forgetPeer(deviceId: string): void {
@@ -213,14 +222,15 @@ export class PacketRouter {
         const now: number = Math.floor(Date.now() / 1000);
         if (Math.abs(ts - now) > MAX_TIMESTAMP_DIFF_SECONDS) {
           this.logFn('pair rejected: clock skew ' + (now - ts) + 's from ' + deviceId);
-          const reject: PairBody = { pair: false };
-          this.sendFrame(deviceId, PACKET_PAIR, reject);
+          // B-2：拒绝帧走注入原语（不再自拼 body）
+          const rejected: boolean = this.pairReject(deviceId);
+          this.logFn('pair rejected sent=' + rejected + ' (clock skew)');
           return;
         }
         if (this.requestedPeers.has(deviceId)) {
           this.requestedPeers.delete(deviceId);
-          const accept: PairBody = { pair: true };
-          const ok: boolean = this.sendFrame(deviceId, PACKET_PAIR, accept);
+          // B-2：接受帧走注入原语（`{pair:true}` 不带 timestamp，与 schema 一致）
+          const ok: boolean = this.pairAccept(deviceId);
           this.logFn('pair race with ' + deviceId + ': sent accept ok=' + ok);
           this.callbacks.onPaired(deviceId);
           return;

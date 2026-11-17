@@ -122,6 +122,40 @@ export class KcBridge {
     return probeNative('sendPacket', (): boolean => native.sendPacket(deviceId, packetJson));
   }
 
+  // ==================== 契约版本（B-4）====================
+
+  /** 预冻结契约版本（native 由 `contract/kcbridge.d.ts` 内容哈希生成）；启动校验用 */
+  static contractVersion(): number {
+    return probeNative('contractVersion', (): number => native.contractVersion());
+  }
+
+  // ==================== 配对 / 设备名原语（B-2：native 侧构造协议帧）====================
+
+  /** 我方发起配对请求（timestamp 由 UI 弹窗固定，保证两端验证码一致；对端回请走 `acceptPair`） */
+  static requestPair(deviceId: string, timestamp: number): boolean {
+    return probeNative('requestPair', (): boolean => native.requestPair(deviceId, timestamp));
+  }
+
+  /** 接受对端配对请求（**不带** timestamp，避免被对端当成又一次请求） */
+  static acceptPair(deviceId: string): boolean {
+    return probeNative('acceptPair', (): boolean => native.acceptPair(deviceId));
+  }
+
+  /** 拒绝对端配对请求 */
+  static rejectPair(deviceId: string): boolean {
+    return probeNative('rejectPair', (): boolean => native.rejectPair(deviceId));
+  }
+
+  /** 解除配对（native 侧**同时清信任**；本侧仍需回写本地状态） */
+  static unpair(deviceId: string): boolean {
+    return probeNative('unpair', (): boolean => native.unpair(deviceId));
+  }
+
+  /** 改设备名（native 更新 + 重发 identity；不再需要整体重启 native 栈） */
+  static setDeviceName(name: string): boolean {
+    return probeNative('setDeviceName', (): boolean => native.setDeviceName(name));
+  }
+
   // ==================== payload（文件传输）====================
   static sendPayload(deviceId: string, packetType: string, bodyJson: string, filePath: string): number {
     return probeNative('sendPayload', (): number =>

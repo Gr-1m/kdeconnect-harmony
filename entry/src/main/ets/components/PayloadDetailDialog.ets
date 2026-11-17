@@ -12,6 +12,9 @@ export struct PayloadDetailDialog {
   @Prop timeText: string = '';
   @Prop stateText: string = '';
   @Prop dirText: string = '';
+  // P1-9（roadmap §8.3 折中口径）：文件位置 + 引导（「打开文件管理器并定位」无公开契约，不做）
+  @Prop locationText: string = '';
+  @Prop locationHint: string = '';
   // MSG240 §4.2：按状态给按钮 —— 'saveAs'（已保存：可另存副本）/ 'saveDiscard'（待处置）/ 'none'（已结束/发送）
   @Prop actionMode: string = 'none';
   onSave: () => void = () => {
@@ -57,6 +60,13 @@ export struct PayloadDetailDialog {
         this.attrRow($r('app.string.file_attr_time'), this.timeText)
         this.attrRow($r('app.string.file_attr_state'), this.stateText)
         this.attrRow($r('app.string.file_attr_dir'), this.dirText)
+        this.attrRow($r('app.string.file_attr_location'), this.locationText)
+        if (this.locationHint.length > 0) {
+          Text(this.locationHint)
+            .fontSize(10)
+            .fontColor($r('app.color.text_muted'))
+            .width('100%')
+        }
         Row({ space: 10 }) {
           if (this.actionMode === 'openSaveAs') {
             // MSG243：已保存条目 = 打开 + 另存为（**无丢弃**，避免误删已存文件）

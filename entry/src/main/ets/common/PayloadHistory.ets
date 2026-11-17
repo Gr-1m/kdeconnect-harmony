@@ -26,6 +26,9 @@ interface HistoryEntry {
   settled: boolean;
   // MSG236 ②：一次性迁移结果要落盘（重启后保持一致）
   expired?: boolean;
+  // 2026-11-17 修复（P1-9 发现）：`sandboxOnly` 此前**未持久化** ⇒ 重启后「已保存到应用内」退化为「已保存」、
+  // 详情弹窗也无法区分「相册」与「应用内目录」（文件其实只在沙箱）。与 settled/expired 同级落盘。
+  sandboxOnly?: boolean;
   timeMs?: number;
 }
 
@@ -53,6 +56,7 @@ export class PayloadHistory {
           filePath: e.filePath,
           settled: e.settled,
           expired: e.expired === true,
+          sandboxOnly: e.sandboxOnly === true,
           timeMs: e.timeMs ?? 0
         }));
       }
@@ -96,6 +100,7 @@ export class PayloadHistory {
             filePath: p.filePath,
             settled: p.settled,
             expired: p.expired === true,
+            sandboxOnly: p.sandboxOnly === true,
             timeMs: p.timeMs ?? 0
           });
           if (entries.length >= MAX_ENTRIES) {

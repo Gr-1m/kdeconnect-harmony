@@ -373,6 +373,30 @@
       "value": "方向"
     },
     {
+      "name": "file_attr_location",
+      "value": "位置"
+    },
+    {
+      "name": "file_location_album",
+      "value": "相册（系统图库）"
+    },
+    {
+      "name": "file_location_app",
+      "value": "应用内目录"
+    },
+    {
+      "name": "file_location_pending",
+      "value": "待处置（仍在应用内）"
+    },
+    {
+      "name": "file_location_gone",
+      "value": "文件已不存在"
+    },
+    {
+      "name": "file_location_hint",
+      "value": "可用「另存为 / 导出」放到系统「文件」App 可见的位置"
+    },
+    {
       "name": "file_dir_receive",
       "value": "接收"
     },

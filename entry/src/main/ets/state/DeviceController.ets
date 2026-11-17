@@ -8,24 +8,13 @@
 //   · 副作用（插件装载/卸载、payload 清理、mpris 清账、会话状态机通知）经注入回调走页面既有实现；
 //   · Context/native/PacketRouter 不在本模块内直接碰。
 
-import { NetEvent } from '../net/KcBridge';
+import { KcBridge, NetEvent } from '../net/KcBridge';
 // B-3：错误码表 + 分级处置（单一来源 contract/errors.v1.json；门禁 tools/check-error-codes.py）
 import { formatKcError, nameOf, uiNoticeFor } from '../common/KcError';
 import { Context } from '@kit.AbilityKit';
 import { DeviceItem, RememberedDevice } from '../model/DeviceModels';
 import { TrustedDevice } from '../model/TrustModels';
 import { TrustStore } from '../common/TrustStore';
-
-interface PairRequestBody {
-  pair: boolean;
-  timestamp?: number;
-}
-
-interface PairRequestPacket {
-  id: number;
-  type: string;
-  body: PairRequestBody;
-}
 
 @Observed
 export class DeviceController {
@@ -318,13 +307,12 @@ export class DeviceController {
 
   unpairDevice(d: DeviceItem): void {
     this.log(`unpair ${d.id}`);
-    const unpairBody: PairRequestBody = { pair: false };
-    const unpairPkt: PairRequestPacket = { id: Date.now(), type: 'kdeconnect.pair', body: unpairBody };
+    // B-2：改走 native 原语 —— native 侧发 `{pair:false}` **并清本侧信任**（AGENTS：解除配对 = unpair + 本侧置未配对）
     try {
-      const ok: boolean = this.sendPacket(d.id, JSON.stringify(unpairPkt) + '\n');
-      this.log(ok ? 'unpair sent' : 'unpair not sent (conn not encrypted?)');
+      const ok: boolean = KcBridge.unpair(d.id);
+      this.log(ok ? 'unpair sent (native primitive; trust cleared)' : 'unpair: peer unreached (trust cleared locally)');
     } catch (e) {
-      this.log('unpair send failed: ' + (e instanceof Error ? e.message : 'unknown'));
+      this.log('unpair failed: ' + (e instanceof Error ? e.message : 'unknown'));
     }
     this.handleUnpaired(d.id);
     this.routerForgetPeer(d.id);

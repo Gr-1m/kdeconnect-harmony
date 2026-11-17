@@ -94,6 +94,27 @@ export function batchCountsOf(b: PayloadBatch,
 }
 
 /**
+ * 文件位置判定（P1-9 / roadmap §8.3「打开所在位置」）：
+ *   `album`   = 已保存且入相册（媒体，用户在系统图库可见）
+ *   `app`     = 已保存但只在应用沙箱（非媒体；需「导出/另存为」到用户可见位置）
+ *   `pending` = 已收完待用户处置（spool/待保存）
+ *   `gone`    = 启动迁移已确认文件不在（expired）
+ * 说明：「打开文件管理器并定位到该文件」在 OpenHarmony 无公开可靠契约（普通应用无法唤起文件管理器并定位），
+ * 故按 roadmap §8.3 的折中口径交付：**详情弹窗展示位置 + 引导用户到系统『文件』App 自行定位**。
+ */
+export type FileLocation = 'album' | 'app' | 'pending' | 'gone';
+
+export function fileLocationOf(p: PayloadTransfer): FileLocation {
+  if (p.expired) {
+    return 'gone';
+  }
+  if (!p.settled) {
+    return 'pending';
+  }
+  return p.sandboxOnly === true ? 'app' : 'album';
+}
+
+/**
  * 启动期历史「文件已不在」迁移的单条判定（MSG236 §2② / MSG242 根因与自愈）：
  *   `mark`  = 待处置条目且副本/spool 都不存在 ⇒ 标 `expired`
  *   `clear` = 已标 `expired` 但副本其实存在 ⇒ 撤销（救回被误标的缓存）

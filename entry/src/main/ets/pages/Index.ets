@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 KDE Connect HarmonyOS contributors
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { KcBridge, NetConfig, CertPair, NetEvent } from '../net/KcBridge';
-import { EXPECTED_CONTRACT_VERSION } from '../common/ContractVersion';
+import { EXPECTED_CONTRACT_VERSION, contractVersionOk } from '../common/ContractVersion';
+import { formatKcError } from '../common/KcError';
+import { fileLocationOf } from '../model/PayloadLogic';
 import { util } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
 import { Context, abilityAccessCtrl, Permissions, bundleManager } from '@kit.AbilityKit';
@@ -331,6 +333,12 @@ struct Index {
       (msg: string): void => {
         this.notify.log(msg);
       }, callbacks);
+    // B-2：配对原语的 native 实现（router 只做协议状态机，帧由 native 构造）
+    if (this.router !== undefined) {
+      this.router.pairAccept = (deviceId: string): boolean => KcBridge.acceptPair(deviceId);
+      this.router.pairReject = (deviceId: string): boolean => KcBridge.rejectPair(deviceId);
+      this.router.pairRequest = (deviceId: string, ts: number): boolean => KcBridge.requestPair(deviceId, ts);
+    }
     // 阶段 2 接线：把会话状态机的副作用接回页面既有实现（状态机自身不碰 I/O/UI/持久化）。
     this.pairSession.onLog = (m: string): void => { this.notify.log(m); };
     this.pairSession.onNotice = (kind: string, detail: string, isError: boolean, code: number): void => {
@@ -342,12 +350,14 @@ struct Index {
       if (this.router === undefined) {
         return false;
       }
+      // B-2：三条路径都经 router 的原语 seam（Index 只负责装配，不拼 body）
       if (!pair) {
         this.router.rejectPair(id);
         return true;
       }
       if (withTs) {
-        // 用状态机里**固定**的时间戳（弹窗打开时确定）——保证与展示的验证码一致
+        // 本侧发起：带弹窗固定 timestamp 的请求帧（native `requestPair(deviceId)` 自选 ts ⇒ 验证码会不一致，
+        // 待 native 提供 `requestPair(deviceId, timestamp)` 后改走 seam；见 PacketRouter.requestPair 注释）
         return this.router.requestPair(id, this.pairSession.timestamp);
       }
       return this.router.acceptPair(id);
@@ -486,11 +496,15 @@ struct Index {
       }
     };
     this.settingsController.restartNative = (): void => {
+      // B-2：改名改用 native 原语（native 更新内存名 + 向已连设备重发 identity + 触发广播），
+      // 不再整体 stop/start 原生栈（旧实现会短暂断链）。
       try {
-        KcBridge.stop();
+        const ok: boolean = KcBridge.setDeviceName(this.settingsController.deviceName);
+        this.notify.log(ok ? 'device name updated (identity re-sent)'
+          : 'device name update rejected (empty name?)');
       } catch (e) {
+        this.notify.log('setDeviceName failed: ' + (e instanceof Error ? e.message : 'unknown'));
       }
-      this.startNative();
     };
     this.pluginHandlers.log = (m: string): void => { this.notify.log(m); };
     this.pluginHandlers.toast = (m: string): void => { this.notify.toast(m); };
@@ -670,9 +684,24 @@ struct Index {
     const routeCount: number = this.eventBus.kinds().length;
     this.notify.log(`plugin routes registered: ${routeCount}`);
     hilog.info(0x0001, 'KDEConnectUI', 'plugin routes registered: %{public}d', routeCount);
-    // B-4（CCR-3 §2.3）：契约版本启动校验 —— 先记录**期望值**（`tools/gen-contract-version.py` 生成的常量）。
-    // native 导出 `contractVersion()` 落地后，同处比对 actual：不匹配 ⇒ 状态栏 + **拒绝 start()**（E109 语义）。
-    this.notify.log(`contract version: expected=${EXPECTED_CONTRACT_VERSION}`);
+    // B-4（CCR-3 §2.3）：契约版本启动校验 —— 比对 native 实际值；不匹配 **拒绝 start()**（E109 语义，不得静默继续）
+    let contractActual: number = 0;
+    let contractOk: boolean = false;
+    try {
+      contractActual = KcBridge.contractVersion();
+      contractOk = contractVersionOk(contractActual);
+    } catch (e) {
+      this.notify.log('contractVersion unavailable: ' + (e instanceof Error ? e.message : 'unknown'));
+    }
+    this.notify.log(`contract version: expected=${EXPECTED_CONTRACT_VERSION} actual=${contractActual} ok=${contractOk}`);
+    if (!contractOk) {
+      const detail: string = formatKcError(109,
+        `contract mismatch expected=${EXPECTED_CONTRACT_VERSION} actual=${contractActual}`);
+      this.status = detail;
+      this.notify.showNotice('error', detail, true, 109);
+      this.notify.log(`start refused (${detail})`);
+      return;                      // 拒绝启动：不进入 startNative()
+    }
     this.startNative();
     this.netWatcher.register();
     // MSG236 ② / MSG241：历史「文件已不在」一次性迁移 —— 必须在**控制器接线之后**跑：
@@ -1143,6 +1172,20 @@ struct Index {
     } catch (e) {
       this.notify.log('permission request failed: ' + (e instanceof Error ? e.message : 'unknown'));
       return false;
+    }
+  }
+
+  /** P1-9：详情弹窗「位置」文案（判定在 model/PayloadLogic.fileLocationOf，纯函数可回归） */
+  private locationTextOf(p: PayloadTransfer): string {
+    switch (fileLocationOf(p)) {
+      case 'album':
+        return this.notify.resText($r('app.string.file_location_album').id);
+      case 'app':
+        return this.notify.resText($r('app.string.file_location_app').id);
+      case 'gone':
+        return this.notify.resText($r('app.string.file_location_gone').id);
+      default:
+        return this.notify.resText($r('app.string.file_location_pending').id);
     }
   }
 
@@ -1957,6 +2000,10 @@ struct Index {
           stateText: this.payloadController.payloadStateText(this.payloadController.payloadDetail()),
           dirText: this.notify.resText(this.payloadController.payloadDetail().direction === 'receive'
             ? $r('app.string.file_dir_receive').id : $r('app.string.file_dir_send').id),
+          locationText: this.locationTextOf(this.payloadController.payloadDetail()),
+          locationHint: this.payloadController.payloadDetail().settled
+            && this.payloadController.payloadDetail().sandboxOnly === true
+            ? this.notify.resText($r('app.string.file_location_hint').id) : '',
           actionMode: this.payloadController.detailActionMode(this.payloadController.payloadDetail()),
           onOpen: (): void => {
             this.payloadController.openPayload(this.payloadController.payloadDetail());

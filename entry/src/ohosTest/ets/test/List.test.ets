@@ -18,6 +18,7 @@ import pluginEventBusTest from './PluginEventBus.test';
 import pluginDefaultsTest from './PluginDefaults.test';
 import contractVersionTest from './ContractVersion.test';
 import kcErrorTest from './KcError.test';
+import kcBridgeContractTest from './KcBridgeContract.test';
 
 export default function testsuite(): void {
   packetRouterTest();
@@ -36,4 +37,5 @@ export default function testsuite(): void {
   pluginDefaultsTest();
   contractVersionTest();
   kcErrorTest();
+  kcBridgeContractTest();
 }
