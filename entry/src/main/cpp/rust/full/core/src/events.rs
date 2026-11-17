@@ -27,29 +27,30 @@ pub fn set_kind_callback(cb: Option<KindCallback>) {
     }
 }
 
-/// 内部事件 → 冻结 `EventKind`（`contract/kcbridge.d.ts` 的 15 项）。
+/// 内部事件 → 冻结 `EventKind`（`contract/kcbridge.d.ts` 的 18 项，CCR-3a 后 0–17）。
 ///
-/// ⚠️ 契约缺口（已上报，待裁决）：`Connected` / `Disconnected` / `Error` **在 15 个 kind 中没有对应项**
-/// ⇒ 本函数对它们返回 `None`，这些事件继续走类型化通道（`init(cb(NetEvent))`），
-/// 避免「有 kind 就丢类型化信息」或有损折叠。裁决后（建议只增 kind 15/16/17）在此补 3 行。
+/// CCR-3a（2026-11-17）已为 `Connected`/`Disconnected`/`Error` 增补 15/16/17，
+/// 故 8 个内部事件**全部**有 kind；类型化通道暂并存过渡，待桥层 18 行映射全量接线后由两车道确认退场。
 pub fn kind_of(event: &NetEvent) -> Option<i32> {
     match event.event_type {
         EventType::DeviceDiscovered => Some(3), // DeviceVisible
         EventType::DeviceLost => Some(4),       // DeviceGone
         EventType::PairingRequest => Some(7),   // PairRequest
         EventType::PacketReceived => Some(9),   // Packet
+        EventType::Connected => Some(15),       // Connected（CCR-3a）
+        EventType::Disconnected => Some(16),    // Disconnected（CCR-3a）
+        EventType::Error => Some(17),           // Error（CCR-3a）
         EventType::PayloadTransfer => match event.payload_state.as_str() {
             "started" => Some(10),                           // TransferStarted
             "progress" => Some(12),                          // TransferProgress
             "finished" | "failed" | "cancelled" => Some(13), // TransferDone（状态在 JSON 里）
             _ => None,
         },
-        EventType::Connected | EventType::Disconnected | EventType::Error => None,
     }
 }
 
 /// 冻结契约里 kind 的稳定名单（用于测试与文档；与 `kcbridge.d.ts` 的 `EventKind` 对齐）。
-pub const EVENT_KIND_NAMES: [(i32, &str); 15] = [
+pub const EVENT_KIND_NAMES: [(i32, &str); 18] = [
     (0, "EngineStarted"),
     (1, "EngineInitFailed"),
     (2, "EngineStopped"),
@@ -65,6 +66,9 @@ pub const EVENT_KIND_NAMES: [(i32, &str); 15] = [
     (12, "TransferProgress"),
     (13, "TransferDone"),
     (14, "Log"),
+    (15, "Connected"),
+    (16, "Disconnected"),
+    (17, "Error"),
 ];
 
 pub fn emit(event: NetEvent) {
@@ -138,12 +142,12 @@ mod tests {
     fn kind_table_matches_frozen_eventkind() {
         assert_eq!(
             EVENT_KIND_NAMES.len(),
-            15,
-            "冻结 EventKind 为 15 项（0–14）"
+            18,
+            "冻结 EventKind 为 18 项（0–17；CCR-3a 增补 15–17）"
         );
         let mut codes: Vec<i32> = EVENT_KIND_NAMES.iter().map(|(k, _)| *k).collect();
         codes.sort_unstable();
-        assert_eq!(codes, (0..=14).collect::<Vec<i32>>());
+        assert_eq!(codes, (0..=17).collect::<Vec<i32>>());
         assert_eq!(kind_of(&ev(EventType::DeviceDiscovered)), Some(3));
         assert_eq!(kind_of(&ev(EventType::DeviceLost)), Some(4));
         assert_eq!(kind_of(&ev(EventType::PairingRequest)), Some(7));
@@ -169,11 +173,11 @@ mod tests {
     }
 
     #[test]
-    fn kinds_absent_for_connected_disconnected_error() {
-        // 契约缺口（已上报）：这 3 个内部事件在冻结 EventKind 里没有对应项
-        assert_eq!(kind_of(&ev(EventType::Connected)), None);
-        assert_eq!(kind_of(&ev(EventType::Disconnected)), None);
-        assert_eq!(kind_of(&ev(EventType::Error)), None);
+    fn connected_disconnected_error_have_ccr3a_kinds() {
+        // CCR-3a（2026-11-17）：这 3 个内部事件已获得 kind 15/16/17，不再走「无 kind」旁路
+        assert_eq!(kind_of(&ev(EventType::Connected)), Some(15));
+        assert_eq!(kind_of(&ev(EventType::Disconnected)), Some(16));
+        assert_eq!(kind_of(&ev(EventType::Error)), Some(17));
     }
 
     #[test]
