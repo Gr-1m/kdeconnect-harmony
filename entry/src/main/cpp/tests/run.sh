@@ -58,7 +58,8 @@ if [ ! -f "$CTR" ]; then
     echo "native contract checker not found: tools/check-native-contract.py"
     exit 1
 fi
-python3 "$CTR"
+# C 组已转阻塞（阶段 B：`KcBridge` 已覆盖冻结 KcApi 全集 28/28，见 CCR-3 §4.3）
+python3 "$CTR" --c-blocking
 
 # —— ArkTS native 边界（P0-4/P1-1 阶段 A；Omp-ArkTS）：只能 net/KcBridge.ets import native ——
 # 与前面的 injection 契约同口径：脚本缺失或越界都算门禁失败（不得静默跳过）。

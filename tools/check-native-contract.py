@@ -191,16 +191,20 @@ def main() -> int:
     adapted = kcbridge_static_methods(kcbridge_text)
     missing_in_bridge = sorted(frozen - adapted)
     extra_in_bridge = sorted(adapted - frozen)
-    c_ok = not missing_in_bridge and not extra_in_bridge
+    # 阻塞语义 = **包含**（冻结 KcApi 的每个方法 KcBridge 都暴露），
+    # 旧的 stage-A 转发别名（init/shutdown/generateCert/triggerBroadcast/sendPayload/keepPayload/
+    # discardPayload/cancelPayload）+ 内部辅助（setCurrentDeviceId）属**待退场**过渡项，不阻塞。
+    c_ok = not missing_in_bridge
     if c_ok:
-        print(f"PASS[C] 冻结 KcApi ↔ KcBridge.ets 一致（{len(frozen)} 项）")
+        suffix = (
+            f"（另 {len(extra_in_bridge)} 项待退场过渡别名：{extra_in_bridge}）"
+            if extra_in_bridge else ""
+        )
+        print(f"PASS[C] 冻结 KcApi ↔ KcBridge.ets 覆盖 {len(frozen)} 项{suffix}")
     elif c_blocking:
         failed = True
-        print("FAIL[C] 冻结 KcApi ↔ KcBridge.ets 不一致（--c-blocking）：")
-        if missing_in_bridge:
-            print(f"        KcBridge 未实装：{missing_in_bridge}")
-        if extra_in_bridge:
-            print(f"        KcBridge 多出（契约未登记）：{extra_in_bridge}")
+        print("FAIL[C] 冻结 KcApi 有方法未在 KcBridge.ets 暴露（--c-blocking）：")
+        print(f"        KcBridge 未实装：{missing_in_bridge}")
     else:
         common = sorted(frozen & adapted)
         print(
