@@ -48,6 +48,7 @@ ADAPTER_METHODS = {
 STUB_METHODS = {
     "setSftpRoots",
     "setAutoAcceptSec",
+    "setAcceptMode",
     "networkChanged",
     "acceptTransfer",
     "rejectTransfer",

@@ -71,6 +71,12 @@ export interface KcApi {
   setSftpRoots(roots: string): void;
   /** transferOffer auto-accept timeout; default 10 seconds. */
   setAutoAcceptSec(sec: number): void;
+  /**
+   * 接收模式（CCR-1 符号；CCR-1a 认定当前实现只支持 spool）：
+   * - "spool"：先落盘，完成后 keep/discard（**当前默认，实装**）；
+   * - "offer"：transferOffer 后 acceptTransfer(destPath)（**未实装**，bridge 返回 E105 + 日志）。
+   */
+  setAcceptMode(mode: "offer" | "spool"): void;
 }
 
 /** Event kinds (payload shape is documented in docs/kdeconnect-oh/08 §3). */

@@ -26,7 +26,7 @@ pub fn contract_version_of(bytes: &[u8]) -> u32 {
 }
 
 /// 期望值：由 `tools/gen-contract-version.py --update` 写入（**不要手改**）。
-pub const CONTRACT_VERSION_EXPECTED: u32 = 0x6fb0ad7f;
+pub const CONTRACT_VERSION_EXPECTED: u32 = 0x986fec77;
 
 /// 运行期契约版本（= 嵌入契约的内容哈希）。
 pub fn contract_version() -> u32 {

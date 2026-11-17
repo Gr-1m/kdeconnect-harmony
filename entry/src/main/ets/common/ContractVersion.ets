@@ -6,7 +6,7 @@
 // 契约任何改动 ⇒ 本常量必须重生成（`run.sh` 内有 `--check` 门禁；CI 另比对 native 返回值）。
 
 /** 契约哈希（`contract/kcbridge.d.ts`）；改动即评审点 */
-export const EXPECTED_CONTRACT_VERSION: number = 1873849727;
+export const EXPECTED_CONTRACT_VERSION: number = 2557471863;
 
 /**
  * 启动校验判定（纯函数，便于宿主单测）：native 返回的契约版本与本常量一致才允许 `start()`。
