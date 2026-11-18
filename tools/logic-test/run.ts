@@ -19,6 +19,7 @@ import pluginEventBusTest from './PluginEventBus.test';
 import pluginDefaultsTest from './PluginDefaults.test';
 import contractVersionTest from './ContractVersion.test';
 import kcErrorTest from './KcError.test';
+import eventKindTest from './EventKind.test';
 
 mousepadThrottleTest();
 mousepadInputTest();
@@ -31,5 +32,6 @@ pluginEventBusTest();
 pluginDefaultsTest();
 contractVersionTest();
 kcErrorTest();
+eventKindTest();
 
 runAll();
