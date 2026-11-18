@@ -263,3 +263,28 @@ fn pairing_scenario_keeps_its_golden_event_sequence() {
         "pairing-in 的黄金事件序列被改动"
     );
 }
+
+#[test]
+fn native_event_kind_table_matches_frozen_eventkind() {
+    // 把 native 的 kind 常量表与冻结契约 `kcbridge.d.ts` 的 EventKind **逐条**对齐：
+    // 任一侧增删/改名/改号 ⇒ 本测试变红（配合 check-native-contract E 组形成两道锁）。
+    let frozen = event_kinds();
+    let native: std::collections::BTreeMap<i64, String> = kdc_native::events::EVENT_KIND_NAMES
+        .iter()
+        .map(|(code, name)| (*code as i64, (*name).to_owned()))
+        .collect();
+    assert_eq!(
+        native.len(),
+        frozen.len(),
+        "native 常量表项数 {} != 契约 {}",
+        native.len(),
+        frozen.len()
+    );
+    for (code, name) in &frozen {
+        assert_eq!(
+            native.get(code),
+            Some(name),
+            "kind {code} 的名称不一致（契约 {name}）"
+        );
+    }
+}

@@ -1079,7 +1079,8 @@ fn kind_channel_emits_frozen_kinds_on_real_link() {
         .lock()
         .map(|g| g.iter().map(|(k, _)| *k).collect())
         .unwrap_or_default();
-    for expected in [7, 9, 10, 13] {
+    // CCR-3a 之后 connected/disconnected/error 也有 kind ⇒ 本链路至少应出现 15（Connected）
+    for expected in [7, 9, 10, 13, 15] {
         assert!(
             kinds.contains(&expected),
             "kind {expected} 应出现，实际={kinds:?}"
@@ -1095,7 +1096,7 @@ fn kind_channel_emits_frozen_kinds_on_real_link() {
     assert_eq!(v["type"], "packetReceived");
     assert_eq!(v["deviceId"].as_str().map(str::len), Some(32));
 
-    // 缺口记录：connected 无 kind（继续走类型化通道）
+    // CCR-3a 后缺口已消除；本用例只连一台设备（无发现流程）⇒ 不应出现 3/4
     assert!(
         !kinds.contains(&3) || !kinds.contains(&4),
         "本用例只连一台设备，不应出现 DeviceVisible/Gone：{kinds:?}"

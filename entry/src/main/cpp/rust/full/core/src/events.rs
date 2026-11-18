@@ -139,6 +139,35 @@ mod tests {
     }
 
     #[test]
+    fn error_kind_payload_carries_code_and_message() {
+        let mut e = ev(EventType::Error);
+        e.device_id = "b".repeat(32);
+        e.error_code = 402;
+        e.error_message = "sandbox spool write failed".to_owned();
+        assert_eq!(kind_of(&e), Some(17), "Error 必须是 CCR-3a 的 17");
+        let v: serde_json::Value = serde_json::from_str(&event_json(&e)).expect("合法 JSON");
+        assert_eq!(v["type"], "error");
+        assert_eq!(v["errorCode"], 402);
+        assert_eq!(v["errorMessage"], "sandbox spool write failed");
+    }
+
+    #[test]
+    fn connected_kind_payload_carries_role() {
+        let mut e = ev(EventType::Connected);
+        e.device_id = "c".repeat(32);
+        e.role = TlsRole::Client;
+        assert_eq!(kind_of(&e), Some(15));
+        let v: serde_json::Value = serde_json::from_str(&event_json(&e)).unwrap();
+        assert_eq!(v["type"], "connected");
+        assert_eq!(v["role"], "client");
+
+        let d = ev(EventType::Disconnected);
+        assert_eq!(kind_of(&d), Some(16));
+        let dv: serde_json::Value = serde_json::from_str(&event_json(&d)).unwrap();
+        assert_eq!(dv["type"], "disconnected");
+    }
+
+    #[test]
     fn kind_table_matches_frozen_eventkind() {
         assert_eq!(
             EVENT_KIND_NAMES.len(),
