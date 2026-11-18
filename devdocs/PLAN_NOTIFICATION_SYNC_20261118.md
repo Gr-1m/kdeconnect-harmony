@@ -58,6 +58,16 @@
 - 门禁：`hvigorw` + `run.sh` + 宿主通道；
 - 真机（待设备）：桌面 `notify-send` → 手机通知栏出现（含 appName/正文）→ 关闭桌面通知 ⇒ 手机通知栏同步消失；断链 ⇒ 该设备通知全部消失。
 
+## 4bis. 实施记录（2026-11-18）
+
+| 项 | 状态 |
+|---|---|
+| N1 解析扩字段 + 取消同步 | ✅ 入库 `e4430ad`：`parseNotification`（item/cancel/drop 三分）+ `NotificationCancelPayload` + Index 消费；宿主 +7 例 |
+| N2 系统通知栏 | ✅ 入库 `74a8755` / `4e845be`：`NotificationPublishPlan`（零 Kit：稳定 id/分组/文案/可发判定）+ `PeerNotificationPublisher`（唯一 Kit 层：授权一次、publish/cancel/cancelDevice、按设备追踪已发 id）+ Index 接线（发布/取消/断链/清理/插件开关）；宿主 +5 例 |
+| 插件级用例 | ✅ 入库 `2ae4367`：`isCancel` ⇒ `notificationCancel`（带 deviceId+id）、无 id 丢弃、title/text/ticker 映射 |
+| 设备侧（ohemu） | ✅ 218 例 / 0 失败（含上述新增；`aa test` 需先 `aa start` 应用，见 EMULATOR_NOTES §7） |
+| **真机通知栏行为** | ⏳ **待设备**：桌面 `notify-send` → 手机通知栏出现（`KDC-Notif published`）→ 桌面关闭 ⇒ 同步消失（`cancelDevice`）→ 断链清空；hilog 判据已加（`KDC-Notif system notifications enabled=… / published id=… / cancelDevice dev=… count=…`） |
+
 ## 5. 明确不做
 
 - 手机通知 → 桌面（平台系统接口，三方不可用）；
