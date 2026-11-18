@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { KcBridge, NetConfig, CertPair, NetEvent } from '../net/KcBridge';
 import { EXPECTED_CONTRACT_VERSION, contractVersionOk } from '../common/ContractVersion';
+import { setEventLogSink } from '../common/EventKind';
 import { formatKcError } from '../common/KcError';
 import { fileLocationOf } from '../model/PayloadLogic';
 import { util } from '@kit.ArkTS';
@@ -276,7 +277,9 @@ struct Index {
       //   · 丢弃优先于保存（`save aborted: … discarded`）
       // ⇒ 因此**不引入串行队列**（参考库 docs1111/02 §12-6 自认其 R5 未解决，此处给出我们的结论与护栏）。
       // 回归用例：`PayloadController.test.ets` 的 lateProgress/lateCancelled/bytesDone/duplicateFinished/saveAfterDiscard。
-      KcBridge.init((event: NetEvent): void => {
+      // B-1 生产切换（MSG279 §2 批准）：走 kind 通道（`setOnEvent` 解码 18 项 kind → 类型化事件）。
+      // 与 `init` **运行期二选一**（native 单次注册）⇒ 回滚 = 把本行改回 `KcBridge.init(...)` 即可（类型化通道代码保留）。
+      KcBridge.setDecodedListener((event: NetEvent): void => {
         self.deviceController.handleEvent(event);
         // 侧栏数据是 AppStorage 快照；设备状态变化后必须主动刷新，
         // 否则平板常驻侧栏（不经过 onDrawerStateChanged）永远是空列表。
@@ -518,6 +521,8 @@ struct Index {
     this.pluginHandlers.getBatteryItems = (): BatteryItem[] => this.batteryItems;
     // 阶段 3 批次 4 装配：DeviceController 注入
     this.deviceController.log = (m: string): void => { this.notify.log(m); };
+    // B-1：kind 通道的丢弃/Log(14) 出口进应用日志（真机可查「契约漂移是否在吞事件」）
+    setEventLogSink((m: string): void => { this.notify.log(m); });
     this.deviceController.showNotice = (kind: string, detail: string, isError: boolean, code: number): void => {
       this.notify.showNotice(kind, detail, isError);
     };
