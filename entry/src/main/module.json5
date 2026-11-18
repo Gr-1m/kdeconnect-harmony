@@ -73,6 +73,19 @@
             "actions": [
               "action.system.home"
             ]
+          },
+          // 系统分享面板入口（S0/S2；DESIGN_SYSTEM_SHARE §3.4 官方口径）：
+          // action 必须是 `ohos.want.action.sendData`；uris 用 **UTD**（无 content scheme；maxFileSupported=0 表示不支持该类）。
+          // 不加 READ_IMAGEVIDEO/READ_AUDIO —— 分享方经 want 授予临时读权限（受限权限会引入上架审查风险）。
+          {
+            "actions": [
+              "ohos.want.action.sendData"
+            ],
+            "uris": [
+              { "scheme": "file", "utd": "general.image", "maxFileSupported": 10 },
+              { "scheme": "file", "utd": "general.text", "maxFileSupported": 1 },
+              { "scheme": "file", "utd": "general.file", "maxFileSupported": 10 }
+            ]
           }
         ]
       }

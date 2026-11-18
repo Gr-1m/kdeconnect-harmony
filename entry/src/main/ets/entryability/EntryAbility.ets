@@ -9,6 +9,10 @@ import deviceInfo from '@ohos.deviceInfo';
 // 的 requestSuspendDelay 属 SystemCapability.ResourceSchedule.BackgroundTaskManager.TransientTask，
 // .d.ts 上无 @permission（长时任务才需被华为驳回的 KEEP_BACKGROUND_RUNNING）。
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
+// S0/S2（系统分享）：分享方经 want 授予**临时**读权限 ⇒ 必须在 Ability 内立刻复制到沙箱。
+import { systemShare } from '@kit.ShareKit';
+import { fileIo } from '@kit.CoreFileKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 // KI-1 ②：停栈迁到本 Ability（页面 aboutToDisappear 不再停栈）。
 
 export default class EntryAbility extends UIAbility {
@@ -37,6 +41,71 @@ export default class EntryAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(0x0000, 'testTag', '%s', 'Ability onCreate');
+    // S0/S2：冷启动即可能带着分享来（分享面板 → 本应用）
+    this.consumeShareWant(want);
+  }
+
+  onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    hilog.info(0x0000, 'testTag', '%s', 'Ability onNewWant');
+    // S0/S2：应用已在运行时的新分享
+    this.consumeShareWant(want);
+  }
+
+  /**
+   * 系统分享入口（DESIGN_SYSTEM_SHARE §3.5）。
+   * S0 目标：确认面板出现 + 抓 `SharedRecord` 真实形状 + 验证「复制到沙箱」的权限是否够。
+   * S2 目标：复制完成后把意图写进 `AppStorage('pendingShareData')` 供页面消费（本轮已带上，页面消费属 S3）。
+   */
+  private consumeShareWant(want: Want): void {
+    if (want.action !== 'ohos.want.action.sendData') {
+      return;                                   // 普通启动/其它 want：不处理
+    }
+    hilog.info(0x0000, 'KDC-Share', '%s', 'share want received');
+    systemShare.getSharedData(want).then((data: systemShare.SharedData): void => {
+      const records: systemShare.SharedRecord[] = data.getRecords();
+      hilog.info(0x0000, 'KDC-Share', 'records=%{public}d', records.length);
+      const texts: string[] = [];
+      const files: string[] = [];
+      const dir: string = `${this.context.cacheDir}/share`;
+      try {
+        fileIo.mkdirSync(dir);
+      } catch (e) {
+        // 已存在即可
+      }
+      let index: number = 0;
+      for (const r of records) {
+        index++;
+        // S0 取证：逐条记录真实字段（uri/content/utd/title/label/description）
+        hilog.info(0x0000, 'KDC-Share',
+          'rec#%{public}d utd=%{public}s uri=%{public}s content=%{public}s title=%{public}s label=%{public}s',
+          index, r.utd, r.uri ?? '-', (r.content ?? '-').substring(0, 40), r.title ?? '-', r.label ?? '-');
+        if (r.content !== undefined && r.content.length > 0 && (r.uri === undefined || r.uri.length === 0)) {
+          texts.push(r.content);
+          continue;
+        }
+        if (r.uri !== undefined && r.uri.length > 0) {
+          const ext: string = r.uri.includes('.') ? r.uri.substring(r.uri.lastIndexOf('.')) : '';
+          const dest: string = `${dir}/share_${Date.now()}_${index}${ext}`;
+          try {
+            // 分享方授予的临时 URI：立即复制（授权不跨 Ability/进程）
+            fileIo.copyFileSync(r.uri, dest);
+            const size: number = fileIo.statSync(dest).size;
+            hilog.info(0x0000, 'KDC-Share', 'copied ok size=%{public}d -> %{public}s', size, dest);
+            files.push(dest);
+          } catch (e) {
+            const err = e as BusinessError;
+            hilog.error(0x0000, 'KDC-Share', 'copy failed code=%{public}d msg=%{public}s uri=%{public}s',
+              err.code, err.message, r.uri);
+          }
+        }
+      }
+      // S2：写意图（页面消费属 S3；此处只落 AppStorage，未接 UI 时也不丢数据）
+      AppStorage.setOrCreate('pendingShareData', JSON.stringify({ texts: texts, files: files }));
+      hilog.info(0x0000, 'KDC-Share', 'pendingShareData texts=%{public}d files=%{public}d',
+        texts.length, files.length);
+    }).catch((e: BusinessError): void => {
+      hilog.error(0x0000, 'KDC-Share', 'getSharedData failed: %{public}d %{public}s', e.code, e.message);
+    });
   }
 
   onDestroy(): void {
