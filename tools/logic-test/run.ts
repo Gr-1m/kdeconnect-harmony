@@ -20,6 +20,7 @@ import pluginDefaultsTest from './PluginDefaults.test';
 import contractVersionTest from './ContractVersion.test';
 import kcErrorTest from './KcError.test';
 import eventKindTest from './EventKind.test';
+import shareIntentTest from './ShareIntent.test';
 
 mousepadThrottleTest();
 mousepadInputTest();
@@ -33,5 +34,6 @@ pluginDefaultsTest();
 contractVersionTest();
 kcErrorTest();
 eventKindTest();
+shareIntentTest();
 
 runAll();

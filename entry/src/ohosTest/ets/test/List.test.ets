@@ -19,6 +19,7 @@ import pluginDefaultsTest from './PluginDefaults.test';
 import contractVersionTest from './ContractVersion.test';
 import kcErrorTest from './KcError.test';
 import eventKindTest from './EventKind.test';
+import shareIntentTest from './ShareIntent.test';
 import kcBridgeContractTest from './KcBridgeContract.test';
 
 export default function testsuite(): void {
@@ -39,5 +40,6 @@ export default function testsuite(): void {
   contractVersionTest();
   kcErrorTest();
   eventKindTest();
+  shareIntentTest();
   kcBridgeContractTest();
 }

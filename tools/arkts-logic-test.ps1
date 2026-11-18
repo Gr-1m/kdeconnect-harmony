@@ -71,6 +71,7 @@ $copies = @(
   @{ from = "$commonDir\KcError.ets";          to = 'KcError.ts' },
   @{ from = "$commonDir\EventKind.ets";         to = 'EventKind.ts' },
   @{ from = "$commonDir\EventShapes.ets";       to = 'EventShapes.ts' },
+  @{ from = "$commonDir\ShareIntent.ets";      to = 'ShareIntent.ts' },
   @{ from = "$repo\entry\src\main\ets\plugins\PluginRegistry.ets"; to = 'PluginRegistry.ts' },
   @{ from = "$repo\entry\src\main\ets\plugins\PluginHost.ets";     to = 'PluginHost.ts' },
   @{ from = "$repo\entry\src\main\ets\state\PluginEventBus.ets"; to = 'PluginEventBus.ts' },
@@ -85,7 +86,8 @@ $copies = @(
   @{ from = "$testDir\PluginDefaults.test.ets";   to = 'PluginDefaults.test.ts' },
   @{ from = "$testDir\ContractVersion.test.ets";  to = 'ContractVersion.test.ts' },
   @{ from = "$testDir\KcError.test.ets";         to = 'KcError.test.ts' },
-  @{ from = "$testDir\EventKind.test.ets";      to = 'EventKind.test.ts' }
+  @{ from = "$testDir\EventKind.test.ets";      to = 'EventKind.test.ts' },
+  @{ from = "$testDir\ShareIntent.test.ets";    to = 'ShareIntent.test.ts' }
 )
 
 foreach ($c in $copies) {

@@ -12,6 +12,8 @@ import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
 // S0/S2（系统分享）：分享方经 want 授予**临时**读权限 ⇒ 必须在 Ability 内立刻复制到沙箱。
 import { systemShare } from '@kit.ShareKit';
 import { fileIo } from '@kit.CoreFileKit';
+// S1：分享意图的纯逻辑（零 Kit；宿主可测）
+import { buildShareIntent, ShareIntent, SharedRecordLike } from '../common/ShareIntent';
 import { BusinessError } from '@kit.BasicServicesKit';
 // KI-1 ②：停栈迁到本 Ability（页面 aboutToDisappear 不再停栈）。
 
@@ -64,7 +66,16 @@ export default class EntryAbility extends UIAbility {
     systemShare.getSharedData(want).then((data: systemShare.SharedData): void => {
       const records: systemShare.SharedRecord[] = data.getRecords();
       hilog.info(0x0000, 'KDC-Share', 'records=%{public}d', records.length);
-      const texts: string[] = [];
+      // S1：Kit 对象 → 纯镜像（ArkTS 禁结构化类型 ⇒ 必须逐字段显式构造）
+      const likes: SharedRecordLike[] = [];
+      for (const r of records) {
+        const like: SharedRecordLike = {
+          utd: r.utd, uri: r.uri, content: r.content, title: r.title, label: r.label
+        };
+        likes.push(like);
+      }
+      const plan: ShareIntent = buildShareIntent(likes);
+      const texts: string[] = plan.texts;
       const files: string[] = [];
       const dir: string = `${this.context.cacheDir}/share`;
       try {
@@ -86,6 +97,7 @@ export default class EntryAbility extends UIAbility {
         if (r.uri !== undefined && r.uri.length > 0) {
           const ext: string = r.uri.includes('.') ? r.uri.substring(r.uri.lastIndexOf('.')) : '';
           const dest: string = `${dir}/share_${Date.now()}_${index}${ext}`;
+          // 显示名（发给对端的 filename）在 plan 里已按记录顺序算好；这里只保证沙箱名唯一
           try {
             // 分享方授予的临时 URI：立即复制（授权不跨 Ability/进程）
             fileIo.copyFileSync(r.uri, dest);
@@ -100,9 +112,16 @@ export default class EntryAbility extends UIAbility {
         }
       }
       // S2：写意图（页面消费属 S3；此处只落 AppStorage，未接 UI 时也不丢数据）
-      AppStorage.setOrCreate('pendingShareData', JSON.stringify({ texts: texts, files: files }));
-      hilog.info(0x0000, 'KDC-Share', 'pendingShareData texts=%{public}d files=%{public}d',
-        texts.length, files.length);
+      // 显示名按 `plan.fileNames` 下标对齐（files 里此时是**沙箱路径**，名字来自 title/label/uri 清洗）
+      const names: string[] = plan.fileNames.slice(0, files.length);
+      AppStorage.setOrCreate('pendingShareData',
+        JSON.stringify({ texts: texts, files: files, fileNames: names }));
+      hilog.info(0x0000, 'KDC-Share',
+        'pendingShareData kind=%{public}s texts=%{public}d files=%{public}d dropped=%{public}d',
+        plan.kind, texts.length, files.length, plan.dropped.length);
+      for (const d of plan.dropped) {
+        hilog.warn(0x0000, 'KDC-Share', 'share record dropped: %{public}s', d);
+      }
     }).catch((e: BusinessError): void => {
       hilog.error(0x0000, 'KDC-Share', 'getSharedData failed: %{public}d %{public}s', e.code, e.message);
     });
