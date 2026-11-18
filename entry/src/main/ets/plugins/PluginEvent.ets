@@ -23,9 +23,17 @@ export interface PluginEvent {
   runOutput?: RunOutputPayload;
   // 阶段4 方向C（A2）：对端通知（单条；每个 kdeconnect.notification 包 = 一条）
   notification?: NotificationItem;
+  // N1：对端关闭通知（isCancel）⇒ 本侧移除同 (deviceId,id)
+  notificationCancel?: NotificationCancelPayload;
   // S2：多文件分享的总量预告（kdeconnect.share.request.update 或带 numberOfFiles 的 request）
   shareBatch?: ShareBatchPayload;
   text?: string;
+}
+
+// 通知取消载荷（N1）
+export interface NotificationCancelPayload {
+  deviceId: string;
+  id: string;
 }
 
 // 多文件批次预告（S2 契约 v0.2 §2/§3）

@@ -15,7 +15,7 @@ import uiMaterial from '@ohos.arkui.uiMaterial';
 import deviceInfo from '@ohos.deviceInfo';
 import { PacketRouter, RouterCallbacks } from '../net/PacketRouter';
 import { PluginBase } from '../plugins/PluginBase';
-import { PluginEvent, ShareBatchPayload } from '../plugins/PluginEvent';
+import { NotificationCancelPayload, PluginEvent, ShareBatchPayload } from '../plugins/PluginEvent';
 import { PluginRegistry } from '../plugins/PluginRegistry';
 import { PluginHost } from '../plugins/PluginHost';
 import { PingPlugin } from '../plugins/PingPlugin';
@@ -417,6 +417,14 @@ struct Index {
         return;   // 前向兼容：缺字段不抛
       }
       this.notificationStore.put(n);
+    });
+    // N1 取消同步：对端关闭通知 ⇒ 本侧移除（系统通知栏取消随 N2 落地）
+    this.eventBus.on('notificationCancel', (id: string, ev: PluginEvent): void => {
+      const c: NotificationCancelPayload | undefined = ev.notificationCancel;
+      if (c === undefined || c.id.length === 0) {
+        return;
+      }
+      this.notificationStore.remove(c.deviceId, c.id);
     });
 
     // 阶段 3 批次 1 装配（步骤 5c/5d）：把页面能力注入抽出的模块（模块自身不碰 Context/UI/native）。

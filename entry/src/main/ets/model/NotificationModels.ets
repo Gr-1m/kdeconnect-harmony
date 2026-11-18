@@ -17,8 +17,18 @@
 export interface NotificationBody {
   id?: string;
   appName?: string;
+  /** 标题（桌面端 sendnotifications 提供；缺则用 ticker） */
+  title?: string;
+  /** 正文 */
+  text?: string;
   ticker?: string;
+  /** true = 对端已关闭该通知（取消同步，N1） */
+  isCancel?: boolean;
   isClearable?: boolean;
+  /** 动作列表（本期只读展示，桌面端不支持回传） */
+  actions?: string[];
+  /** 可回复通知的 UUID（本期不使用，桌面 sendnotifications 不支持 reply 回传） */
+  requestReplyId?: string;
   /** 双兼容：number（秒或毫秒）或 ISO8601 字符串 */
   time?: number | string;
 }
@@ -27,9 +37,17 @@ export interface NotificationItem {
   /** 对端通知标识；同 id 再次到达 = 更新同一条 */
   id: string;
   appName: string;
+  /** 标题（缺省空串） */
+  title: string;
+  /** 正文（缺省空串） */
+  text: string;
   /** 主文本（标题/摘要，对端已合成） */
   ticker: string;
   isClearable: boolean;
+  /** 动作列表（只读展示） */
+  actions: string[];
+  /** 可回复 UUID（本期不使用） */
+  requestReplyId?: string;
   /** 规整为 epoch ms */
   timeMs: number;
   /** 来自哪台设备（多设备区分） */
@@ -55,20 +73,63 @@ function normalizeTime(raw: number | string | undefined, nowMs: number): number 
   return isNaN(parsed) ? nowMs : parsed;
 }
 
-/** 对端 body → 我方条目；不可用时返回 undefined（调用方丢弃） */
-export function normalizeNotification(deviceId: string, body: NotificationBody, nowMs: number): NotificationItem | undefined {
+/** 解析结果（N1）：条目 / 取消 / 丢弃三分，**丢弃必须给原因**（不静默） */
+export interface NotificationParse {
+  kind: 'item' | 'cancel' | 'drop';
+  item?: NotificationItem;
+  cancelId?: string;
+  reason?: string;
+}
+
+/** 动作列表清洗：非字符串忽略（前向兼容），最多保留 8 条 */
+function normalizeActions(raw: string[] | undefined): string[] {
+  if (raw === undefined || !Array.isArray(raw)) {
+    return [];
+  }
+  const out: string[] = [];
+  for (const a of raw) {
+    if (typeof a === 'string' && a.length > 0 && out.length < 8) {
+      out.push(a);
+    }
+  }
+  return out;
+}
+
+/**
+ * 对端 body → 解析结果（N1 起的主入口）：
+ *   · `isCancel:true` ⇒ `cancel`（带 id；无 id ⇒ drop，防脏取消）；
+ *   · 正常 ⇒ `item`（title/text 缺省空串，actions 清洗，未知字段忽略）；
+ *   · 空 id / 空 deviceId ⇒ `drop` + reason。
+ */
+export function parseNotification(deviceId: string, body: NotificationBody, nowMs: number): NotificationParse {
   const id: string = body.id ?? '';
-  if (id.length === 0 || deviceId.length === 0) {
-    return undefined;
+  if (deviceId.length === 0) {
+    return { kind: 'drop', reason: 'empty deviceId' };
+  }
+  if (id.length === 0) {
+    return { kind: 'drop', reason: 'empty id' };
+  }
+  if (body.isCancel === true) {
+    return { kind: 'cancel', cancelId: id };
   }
   const item: NotificationItem = {
     id: id,
     appName: body.appName ?? '',
+    title: body.title ?? '',
+    text: body.text ?? body.ticker ?? '',
     ticker: body.ticker ?? '',
     isClearable: body.isClearable !== false,
+    actions: normalizeActions(body.actions),
+    requestReplyId: body.requestReplyId,
     timeMs: normalizeTime(body.time, nowMs),
     deviceId: deviceId,
     receivedAtMs: nowMs
   };
-  return item;
+  return { kind: 'item', item: item };
+}
+
+/** 兼容入口：仅返回条目（取消/丢弃 → undefined） */
+export function normalizeNotification(deviceId: string, body: NotificationBody, nowMs: number): NotificationItem | undefined {
+  const parsed: NotificationParse = parseNotification(deviceId, body, nowMs);
+  return parsed.kind === 'item' ? parsed.item : undefined;
 }

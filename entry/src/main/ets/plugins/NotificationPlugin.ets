@@ -11,7 +11,7 @@
 //   （存储由页面持有的 NotificationStore 负责，与 systemvolume.sinks 同构）。
 // 字段名取自任务书既定清单（id/appName/ticker/isClearable/time）；**未知字段忽略**（前向兼容）。
 import { PluginBase } from './PluginBase';
-import { NotificationBody, NotificationItem, normalizeNotification } from '../model/NotificationModels';
+import { NotificationBody, NotificationItem, NotificationParse, parseNotification } from '../model/NotificationModels';
 import { PluginEvent } from './PluginEvent';
 
 const PACKET_NOTIFICATION: string = 'kdeconnect.notification';
@@ -31,15 +31,30 @@ export class NotificationPlugin extends PluginBase {
       return false;
     }
     const b: NotificationBody = body as NotificationBody;
-    const item: NotificationItem | undefined = normalizeNotification(this.deviceId, b, Date.now());
+    const parsed: NotificationParse = parseNotification(this.deviceId, b, Date.now());
+    if (parsed.kind === 'drop') {
+      // 空 id / 空 deviceId ⇒ 丢弃（记原因，不静默）；已"处理"该包（返回 true），不让上层记 unhandled
+      this.log(`notification dropped: ${parsed.reason ?? 'unknown'}`);
+      return true;
+    }
+    if (parsed.kind === 'cancel') {
+      // N1 取消同步：对端关闭通知 ⇒ 本侧移除同 (deviceId,id)
+      const cancelEv: PluginEvent = {
+        kind: 'notificationCancel',
+        notificationCancel: { deviceId: this.deviceId, id: parsed.cancelId ?? '' }
+      };
+      this.notifyEvent(cancelEv);
+      this.log(`notification cancelled: ${parsed.cancelId ?? ''}`);
+      return true;
+    }
+    const item: NotificationItem | undefined = parsed.item;
     if (item === undefined) {
-      // 空 id / 空 deviceId ⇒ 归一化拒绝；已"处理"该包（返回 true），不让上层记 unhandled
-      this.log('notification dropped: missing id');
+      this.log('notification dropped: item missing');
       return true;
     }
     const ev: PluginEvent = { kind: 'notification', notification: item };
     this.notifyEvent(ev);
-    this.log(`notification [${item.appName}] ${item.ticker}`);
+    this.log(`notification [${item.appName}] ${item.title.length > 0 ? item.title : item.text}`);
     return true;
   }
 }

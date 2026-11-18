@@ -4,7 +4,7 @@
 // 通知归一化 + 存储 单测（阶段4 方向C / A2 的 C1+C2）。
 // **零 Kit 依赖纯逻辑** ⇒ 经 tools/arkts-logic-test.ps1 在宿主跑（无需设备）。
 import { describe, it, expect } from '@ohos/hypium';
-import { NotificationItem, NotificationBody, normalizeNotification } from '../../../main/ets/model/NotificationModels';
+import { NotificationItem, NotificationBody, NotificationParse, normalizeNotification, parseNotification } from '../../../main/ets/model/NotificationModels';
 import { NotificationStore, MAX_PER_DEVICE } from '../../../main/ets/common/NotificationStore';
 
 const DEV: string = 'aaaa1111111111111111111111111111';
@@ -13,8 +13,8 @@ const NOW: number = 1700000000000;
 
 function item(id: string, deviceId: string, ticker: string): NotificationItem {
   const out: NotificationItem = {
-    id: id, appName: 'app', ticker: ticker, isClearable: true,
-    timeMs: NOW, deviceId: deviceId, receivedAtMs: NOW
+    id: id, appName: 'app', title: '', text: ticker, ticker: ticker, isClearable: true,
+    actions: [], timeMs: NOW, deviceId: deviceId, receivedAtMs: NOW
   };
   return out;
 }
@@ -83,6 +83,63 @@ export default function notificationTest(): void {
       const body: NotificationBody = { id: 'n1', isClearable: false };
       expect(normalizeNotification(DEV, body, NOW)?.isClearable).assertFalse();
     });
+
+    // ---- N1：title/text/actions/取消语义 ----
+
+    it('TestNotificationParse_mapsTitleTextAndKeepsTicker', 0, () => {
+      const body: NotificationBody = { id: 'n1', appName: 'Telegram', title: 'T', text: 'body', ticker: 'T body' };
+      const r: NotificationParse = parseNotification(DEV, body, NOW);
+      expect(r.kind).assertEqual('item');
+      expect(r.item?.title).assertEqual('T');
+      expect(r.item?.text).assertEqual('body');
+      expect(r.item?.ticker).assertEqual('T body');
+    });
+
+    it('TestNotificationParse_textFallsBackToTicker', 0, () => {
+      const body: NotificationBody = { id: 'n1', ticker: 'only ticker' };
+      const r: NotificationParse = parseNotification(DEV, body, NOW);
+      expect(r.item?.text).assertEqual('only ticker');
+    });
+
+    it('TestNotificationParse_cancelYieldsCancelWithId', 0, () => {
+      const body: NotificationBody = { id: 'n7', isCancel: true };
+      const r: NotificationParse = parseNotification(DEV, body, NOW);
+      expect(r.kind).assertEqual('cancel');
+      expect(r.cancelId).assertEqual('n7');
+      expect(r.item === undefined).assertTrue();
+    });
+
+    it('TestNotificationParse_cancelWithoutIdIsDroppedWithReason', 0, () => {
+      const body: NotificationBody = { isCancel: true };
+      const r: NotificationParse = parseNotification(DEV, body, NOW);
+      expect(r.kind).assertEqual('drop');
+      expect(r.reason).assertEqual('empty id');
+    });
+
+    it('TestNotificationParse_actionsCleanedAndCapped', 0, () => {
+      const raw: string[] = ['a', '', 'b'];
+      for (let i = 0; i < 10; i++) {
+        raw.push(`x${i}`);
+      }
+      const body: NotificationBody = { id: 'n1', actions: raw };
+      const r: NotificationParse = parseNotification(DEV, body, NOW);
+      expect(r.item?.actions.length).assertEqual(8);
+      expect(r.item?.actions[0]).assertEqual('a');
+    });
+
+    it('TestNotificationParse_requestReplyIdPreservedButUnused', 0, () => {
+      const body: NotificationBody = { id: 'n1', requestReplyId: 'uuid-1' };
+      const r: NotificationParse = parseNotification(DEV, body, NOW);
+      expect(r.item?.requestReplyId).assertEqual('uuid-1');
+    });
+
+    it('TestNotificationParse_isCancelFalseIsNormalItem', 0, () => {
+      const body: NotificationBody = { id: 'n1', isCancel: false, text: 'x' };
+      const r: NotificationParse = parseNotification(DEV, body, NOW);
+      expect(r.kind).assertEqual('item');
+      expect(r.item?.text).assertEqual('x');
+    });
+
   });
 
   describe('NotificationStoreTest', () => {
