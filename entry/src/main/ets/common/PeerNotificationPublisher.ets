@@ -15,6 +15,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { NotificationItem } from '../model/NotificationModels';
 import { publishBodyOf, publishGroupOf, publishKeyOf, publishTitleOf, shouldPublish } from './NotificationPublishPlan';
 import { LogStore } from './LogStore';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 
 export class PeerNotificationPublisher {
   /** 注入：日志（页面持有 LogStore） */
@@ -55,6 +56,8 @@ export class PeerNotificationPublisher {
       }
     }
     this.known = true;
+    // 真机取证：授权状态一行（只打一次）
+    hilog.info(0x0000, 'KDC-Notif', 'system notifications enabled=%{public}s', `${this.systemEnabled}`);
     if (!this.systemEnabled) {
       this.log('peer notification: system notifications unavailable — app 内列表仍可用');
     }
@@ -81,7 +84,9 @@ export class PeerNotificationPublisher {
       };
       notificationManager.publish(request).then((): void => {
         this.track(item.deviceId, id);
+        hilog.info(0x0000, 'KDC-Notif', 'published id=%{public}d dev=%{public}s', id, item.deviceId);
       }).catch((e: BusinessError): void => {
+        hilog.error(0x0000, 'KDC-Notif', 'publish failed %{public}d %{public}s', e.code, e.message);
         this.log(`peer notification publish failed ${e.code} ${e.message}`);
       });
     }).catch((e: BusinessError): void => {
@@ -101,6 +106,7 @@ export class PeerNotificationPublisher {
     if (ids === undefined) {
       return;
     }
+    hilog.info(0x0000, 'KDC-Notif', 'cancelDevice dev=%{public}s count=%{public}d', deviceId, ids.length);
     for (const id of ids) {
       notificationManager.cancel(id).catch((e: BusinessError): void => {
         this.log(`peer notification cancel failed ${e.code} ${e.message}`);
