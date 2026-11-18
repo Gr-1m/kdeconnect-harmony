@@ -13,6 +13,7 @@ import mousepadInputTest from './MousepadInput.test';
 import remoteInputKeymapTest from './RemoteInputKeymap.test';
 import remoteInputPluginTest from './RemoteInputPlugin.test';
 import notificationTest from './Notification.test';
+import notificationPublishPlanTest from './NotificationPublishPlan.test';
 import trustCodecTest from './TrustCodec.test';
 import payloadLogicTest from './PayloadLogic.test';
 import pluginEventBusTest from './PluginEventBus.test';

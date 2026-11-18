@@ -10,6 +10,7 @@ import mousepadInputTest from './MousepadInput.test';
 import remoteInputKeymapTest from './RemoteInputKeymap.test';
 import remoteInputPluginTest from './RemoteInputPlugin.test';
 import notificationTest from './Notification.test';
+import notificationPublishPlanTest from './NotificationPublishPlan.test';
 import notificationPluginTest from './NotificationPlugin.test';
 import payloadControllerTest from './PayloadController.test';
 import trustCodecTest from './TrustCodec.test';
@@ -31,6 +32,7 @@ export default function testsuite(): void {
   remoteInputKeymapTest();
   remoteInputPluginTest();
   notificationTest();
+  notificationPublishPlanTest();
   notificationPluginTest();
   payloadControllerTest();
   trustCodecTest();

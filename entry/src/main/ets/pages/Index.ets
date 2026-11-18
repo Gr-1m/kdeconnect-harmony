@@ -7,7 +7,7 @@ import { formatKcError } from '../common/KcError';
 import { fileLocationOf } from '../model/PayloadLogic';
 import { util } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
-import { Context, abilityAccessCtrl, Permissions, bundleManager } from '@kit.AbilityKit';
+import { Context, abilityAccessCtrl, common, Permissions, bundleManager } from '@kit.AbilityKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { display, LengthMetrics, SymbolGlyphModifier, promptAction } from '@kit.ArkUI';
 import { HdsTabs, HdsTabsController, hdsMaterial, HdsNavigation, HdsNavigationTitleMode, ScrollEffectType, HdsNavigationMenuContentOptions, HdsNavigationMenuItemOptions, HdsNavigationTitleBarOptions, HdsSideBar } from '@kit.UIDesignKit';
@@ -16,6 +16,7 @@ import deviceInfo from '@ohos.deviceInfo';
 import { PacketRouter, RouterCallbacks } from '../net/PacketRouter';
 import { PluginBase } from '../plugins/PluginBase';
 import { NotificationCancelPayload, PluginEvent, ShareBatchPayload } from '../plugins/PluginEvent';
+import { PeerNotificationPublisher } from '../common/PeerNotificationPublisher';
 import { PluginRegistry } from '../plugins/PluginRegistry';
 import { PluginHost } from '../plugins/PluginHost';
 import { PingPlugin } from '../plugins/PingPlugin';
@@ -129,6 +130,8 @@ struct Index {
   // 通知读取（阶段4 方向C / A2）：store 由**页面持有**（插件只上抛类型化事件，不持 UI 状态）。
   // 会话内存储、不持久化、每设备上限 50 条（见 common/NotificationStore.ets）。
   private notificationStore: NotificationStore = new NotificationStore();
+  // N2：对端通知 → 系统通知栏（发布/取消；Kit 调用集中在 Publisher 内）
+  private peerNotifier: PeerNotificationPublisher = new PeerNotificationPublisher();
   // 顶部临时提示（连接中/连接成功/连接失败/配对成功…）
   @State noticeKey: string = '';
   // 手机窄屏侧栏抽屉：**必须在根 Stack（全屏）渲染**——放在内容区会因 padding(16) 内缩，
@@ -211,6 +214,11 @@ struct Index {
       return;
     }
     const ctx: Context = hostCtx;
+
+    // N2：系统通知栏发布器（授权只请求一次；插件开关关 ⇒ 不发）
+    this.peerNotifier.setContext(ctx as common.UIAbilityContext);
+    this.peerNotifier.logStore = this.notify.logStore;
+    this.peerNotifier.pluginEnabled = (): boolean => this.settingsController.isPacketEnabled('kdeconnect.notification');
 
     let deviceId: string = '';
     let certPem: string = '';
@@ -417,6 +425,8 @@ struct Index {
         return;   // 前向兼容：缺字段不抛
       }
       this.notificationStore.put(n);
+      // N2：对端通知进系统通知栏（未授权时 Publisher 内部只记日志，app 内列表不受影响）
+      this.peerNotifier.publish(n);
     });
     // N1 取消同步：对端关闭通知 ⇒ 本侧移除（系统通知栏取消随 N2 落地）
     this.eventBus.on('notificationCancel', (id: string, ev: PluginEvent): void => {
@@ -425,6 +435,7 @@ struct Index {
         return;
       }
       this.notificationStore.remove(c.deviceId, c.id);
+      this.peerNotifier.cancel(c.deviceId, c.id);
     });
 
     // 阶段 3 批次 1 装配（步骤 5c/5d）：把页面能力注入抽出的模块（模块自身不碰 Context/UI/native）。
@@ -609,6 +620,7 @@ struct Index {
       this.payloadController.forgetSendQueue(deviceId);
       // 6. 通知读取（A2）：断链即清该设备通知，避免列表残留死设备条目
       this.notificationStore.clearDevice(deviceId);
+      this.peerNotifier.cancelDevice(deviceId);
     };
     this.deviceController.onDeviceLostCleanup = (deviceId: string): void => {
       this.mprisController.forget(deviceId);
@@ -1557,9 +1569,11 @@ struct Index {
       notifications: this.notificationStore.listOf(this.deviceController.selectedDeviceId),
       onDismissNotification: (deviceId: string, id: string): void => {
         this.notificationStore.remove(deviceId, id);
+        this.peerNotifier.cancel(deviceId, id);   // N2：同步取消系统通知
       },
       onClearNotifications: (deviceId: string): void => {
         this.notificationStore.clearDevice(deviceId);
+        this.peerNotifier.cancelDevice(deviceId); // N2：同步取消该设备系统通知
       },
       controller: this.deviceController,
       onUnpairDevice: (d: DeviceItem): void => {
