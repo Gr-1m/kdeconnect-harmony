@@ -68,6 +68,36 @@ export default function notificationPluginTest(): void {
       expect(cap.events.length).assertEqual(0);
     });
 
+    it('TestNotificationPlugin_isCancelEmitsCancelEvent', 0, () => {
+      const cap: Cap = new Cap();
+      const cancel: NotificationBody = { id: 'n7', isCancel: true };
+      const handled: boolean = bound(cap).onPacketReceived(PACKET, cancel);
+      expect(handled).assertTrue();
+      expect(cap.events.length).assertEqual(1);
+      expect(cap.events[0].kind).assertEqual('notificationCancel');
+      expect(cap.events[0].notificationCancel?.deviceId).assertEqual(DEVICE);
+      expect(cap.events[0].notificationCancel?.id).assertEqual('n7');
+      // 取消包不产出条目事件
+      expect(cap.events[0].notification === undefined).assertTrue();
+    });
+
+    it('TestNotificationPlugin_isCancelWithoutIdDropsWithoutEvent', 0, () => {
+      const cap: Cap = new Cap();
+      const cancel: NotificationBody = { isCancel: true };
+      const handled: boolean = bound(cap).onPacketReceived(PACKET, cancel);
+      expect(handled).assertTrue();
+      expect(cap.events.length).assertEqual(0);
+    });
+
+    it('TestNotificationPlugin_titleAndTextMapped', 0, () => {
+      const cap: Cap = new Cap();
+      const b: NotificationBody = { id: 'n1', appName: 'Telegram', title: 'T', text: 'body', ticker: 'T body' };
+      bound(cap).onPacketReceived(PACKET, b);
+      expect(cap.lastNotification()?.title).assertEqual('T');
+      expect(cap.lastNotification()?.text).assertEqual('body');
+      expect(cap.lastNotification()?.ticker).assertEqual('T body');
+    });
+
     it('TestNotificationPlugin_otherPacketTypeNotHandled', 0, () => {
       const cap: Cap = new Cap();
       expect(bound(cap).onPacketReceived('kdeconnect.ping', body('n1', 'a', 't'))).assertFalse();
