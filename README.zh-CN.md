@@ -24,7 +24,7 @@
 | 远程命令 | ✅ 可用 | `kdeconnect.runcommand` |
 | 媒体控制（控制方） | ✅ 可用 | `kdeconnect.mpris`, `kdeconnect.mpris.request` |
 | 远程输入（触摸板） | ✅ 可用 | `kdeconnect.mousepad.*` |
-| 通知 | ✅ 展示（平台不支持回复/操作） | `kdeconnect.notification.*` |
+| 通知 | ✅ 接收并在应用内 + 系统通知栏展示（本机通知转发需系统接口，三方应用不可用；平台不支持回复/操作） | `kdeconnect.notification.*` |
 
 ## 架构
 

@@ -24,7 +24,7 @@ A HarmonyOS (OpenHarmony API 26) port of [KDE Connect](https://kdeconnect.kde.or
 | Remote commands | ✅ Working | `kdeconnect.runcommand` |
 | Media control (controller) | ✅ Working | `kdeconnect.mpris`, `kdeconnect.mpris.request` |
 | Remote input (mousepad) | ✅ Working | `kdeconnect.mousepad.*` |
-| Notifications | ✅ Display (reply/action not supported by platform) | `kdeconnect.notification.*` |
+| Notifications | ✅ Receive & display in app + system notification bar (sending local notifications requires a system API; reply/action not supported by platform) | `kdeconnect.notification.*` |
 
 ## Architecture
 
