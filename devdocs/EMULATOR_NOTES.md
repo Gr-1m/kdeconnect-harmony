@@ -367,6 +367,11 @@ hdc shell "aa test -b org.kde.kdeconnect -m entry_test -s unittest OpenHarmonyTe
 > ② 本流程**不需要 uinput**（不依赖点按），是 ohemu 上少见的"真执行"通道；
 > ③ `ohosTest/resources/.../icon.png` 等二进制必须按 blob 提交（勿经文本化钩子改写）。
 
+> **2026-11-18 实测补充（套件起不来时先看这条）**：`aa test … OpenHarmonyTestRunner` 需要**应用已在运行**
+> （先 `aa start -b org.kde.kdeconnect -a EntryAbility`，等 ~8s）。否则常返回
+> `TestFinished-ResultCode: -2 / TestAbility onDestroy unexpectedly!`（仅 3 行输出、0 用例）——
+> 这不是测试代码问题，也不是内存压力：清装、重启模拟器都不解决，**启动应用后同一条命令即得 216/0**。
+
 ---
 
 ## 8. 日常操作速查

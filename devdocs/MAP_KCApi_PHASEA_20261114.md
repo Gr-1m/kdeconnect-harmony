@@ -73,6 +73,14 @@
 | 静态门禁（MSG262 §2） | 新增 `tools/check-native-import.py`（唯一允许清单只有 bridge；反向验证：临时违规 ⇒ FAIL/rc=1）；已接入 `entry/src/main/cpp/tests/run.sh`（与既有 injection 契约同口径：**脚本缺失或越界都算失败**） |
 | 验证 | `hvigorw assembleHap` ✅；`run.sh` ✅（含新检查 `[PASS] native import 边界 OK（扫描 67 个 .ets）`）；宿主逻辑 111/111 ✅ |
 
+## 4ter. 阶段 B 实施记录（2026-11-18）
+
+| 项 | 实况 |
+|---|---|
+| **B-1（kind→NetEvent）** | 落地：`common/EventKind.ets`（18 项 `EVENT_KIND_NAMES` + `EVENT_KIND_TO_TYPE` 单映射 + `decodeEvent`）+ `common/EventShapes.ets`（`NetEvent` 纯镜像，供宿主回归）；`KcBridge.setDecodedListener()` = 解码适配层（**契约原样 `setOnEvent(cb(kind,json))` 保留**，C 组 28 项不受影响）；`Log(14)` → LogStore、未知 kind / 无内部事件 kind / 坏 JSON / kind≠type ⇒ **显式丢弃 + 日志 + 计数**（不静默）；门禁 `tools/check-event-kinds.py`（18 项 + 17 字段） |
+| **B-5（单写者队列）** | **不执行**（理由）：`decodeEvent` 为**纯同步**（`JSON.parse` + 字段校验），事件派发链全同步（P0-A3 审计已证：`PacketRouter`/`DeviceController`/`PluginEventBus` 均无 await 分支）⇒ 无重排窗口，加队列是无目标复杂度。**若将来某 kind 的处理引入 await（如异步落盘），再在 `KcBridge` 内加单写者队列**（统一入口，不散落控制器）。 |
+| 生产切换（退类型化通道） | 未执行：`init(cb(NetEvent))` 仍是活动路径；按 MSG276 §2/§3.2「届时单独确认」等待总指挥确认后切换（切换后 `setDecodedListener` 即成为唯一事件入口） |
+
 ## 5. 待评审的三个开放问题
 
 1. **身份生成归属**（#2）：KcApi 的 `generateIdentity` 期望 native 产出 deviceId + 私钥 base64；我方现状是 ArkTS 持私钥（含 HUKS backlog）。是否在 CCR-3 里改归属，或保留 ArkTS 归属并在契约里改签名？（涉及安全与重装不丢身份的既有验证）

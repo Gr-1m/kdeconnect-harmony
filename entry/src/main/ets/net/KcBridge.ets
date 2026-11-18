@@ -17,6 +17,8 @@
 
 import native from 'libkdeconnect_napi.so';
 import { NetConfig, CertPair, NetEvent } from 'libkdeconnect_napi.so';
+// B-1：kind→NetEvent 单映射表（纯逻辑；门禁 tools/check-event-kinds.py）
+import { decodeEvent } from '../common/EventKind';
 
 // 类型再导出：其余文件从这里取类型，不再直接 import .so
 export { NetConfig, CertPair, NetEvent };
@@ -266,12 +268,32 @@ export class KcBridge {
     KcBridge.notImplemented(`setAcceptMode('${mode}'): 当前只支持 spool（CCR-1a）`);
   }
 
-  /** 契约事件通道（CCR-3 §2.2）：与类型化 `init` 并存过渡；kind/JSON 映射待 B-1 */
+  /**
+   * 契约事件通道（CCR-3 §2.2）。
+   * ⚠️ **进程内单次注册**（native 侧 `set_on_event` 二次调用抛 `kind bridge already initialized`）⇒
+   * 与类型化 `init(cb)` 是**运行期二选一**：「并存过渡」指两条代码路径都在，但同一进程只能注册其中一条；
+   * 生产切换（退类型化通道）需与 `init` 的注册点一起改（由总指挥确认后执行，MSG276 §2/§3.2）。
+   */
   static setOnEvent(cb: (kind: number, eventJson: string) => void): void {
     probeNative('setOnEvent', (): void => {
       native.setOnEvent(cb);
     });
   }
+  /**
+   * **B-1 适配层**：把冻结契约的 kind 通道解码为类型化事件（18 行映射见 `common/EventKind.ets`）。
+   * ⚠️ 内部会调用 `setOnEvent` ⇒ 同样受「进程内单次注册」约束（与 `init` 二选一）。
+   * 与 `init(cb(NetEvent))` 并存过渡；解码失败的 kind 已按契约处置（`Log(14)` 入 LogStore、其余丢弃 + 日志），
+   * 不会把错形状喂给控制器/插件。生产切换（退类型化通道）由总指挥单独确认后执行（MSG276 §2/§3.2）。
+   */
+  static setDecodedListener(eventCallback: (event: NetEvent) => void): void {
+    KcBridge.setOnEvent((kind: number, json: string): void => {
+      const decoded: NetEvent | undefined = decodeEvent(kind, json) as NetEvent | undefined;
+      if (decoded !== undefined) {
+        eventCallback(decoded);
+      }
+    });
+  }
+
 
   /** stub 统一出口：`KC_E105` 语义（BAD_PARAM）+ 明确原因，禁止静默成功 */
   private static notImplemented(reason: string): void {

@@ -101,3 +101,11 @@ if [ ! -f "$UHT" ]; then
     exit 1
 fi
 python3 "$UHT"
+
+# —— ArkTS 事件 kind/形状镜像 ↔ 契约（B-1）——
+EVK="$PWD/../../../../../tools/check-event-kinds.py"
+if [ ! -f "$EVK" ]; then
+    echo "event kind checker not found: tools/check-event-kinds.py"
+    exit 1
+fi
+python3 "$EVK"

@@ -55,6 +55,8 @@ copy "$C/TrustCodec.ets"         TrustCodec.ts
 copy "$C/PluginDefaults.ets"     PluginDefaults.ts
 copy "$C/ContractVersion.ets"    ContractVersion.ts
 copy "$C/KcError.ets"           KcError.ts
+copy "$C/EventKind.ets"         EventKind.ts
+copy "$C/EventShapes.ets"       EventShapes.ts
 copy "$REPO/entry/src/main/ets/state/PluginEventBus.ets" PluginEventBus.ts
 copy "$REPO/entry/src/main/ets/plugins/PluginRegistry.ets" PluginRegistry.ts
 copy "$REPO/entry/src/main/ets/plugins/PluginHost.ets" PluginHost.ts
@@ -69,6 +71,7 @@ copy "$T/PluginEventBus.test.ets"    PluginEventBus.test.ts
 copy "$T/PluginDefaults.test.ets"    PluginDefaults.test.ts
 copy "$T/ContractVersion.test.ets"   ContractVersion.test.ts
 copy "$T/KcError.test.ets"           KcError.test.ts
+copy "$T/EventKind.test.ets"         EventKind.test.ts
 
 cp "$REPO/tools/logic-test/hypium.ts"    "$SRC/hypium.ts"
 cp "$REPO/tools/logic-test/arkui-shim.ts" "$SRC/arkui-shim.ts"
