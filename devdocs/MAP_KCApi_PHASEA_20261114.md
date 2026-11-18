@@ -99,10 +99,14 @@
 | **C 组转阻塞** | ✅ 完成（`36f480d`）：`KcBridge` 暴露冻结 KcApi **28/28**（适配 4 + stub 6）；`run.sh` 打开 `--c-blocking`；阻塞语义 = **包含**（stage-A 旧别名 9 项计入「待退场」过渡，不阻塞） |
 | **CCR-3a** | ✅ 生效：`Connected=15`/`Disconnected=16`/`Error=17`；native `kind_of` 8 事件全覆盖，`EVENT_KIND_NAMES` 18 项 |
 | **CCR-1a** | ✅ 生效：补登记 `setAcceptMode`；默认 **spool**（实况），`offer` ⇒ bridge stub `E105` |
-| **B-1 事件映射（kind 通道消费）** | **延后（有理由，非静默跳过）**：native 现在**双通道**（类型化 `init` + kind `setOnEvent`），ArkTS 侧类型化通道已验证稳定；kind 通道的**消费/解码**在类型化通道退场时再做（单独任务），避免为「当前无消费者」引入死代码或双派发风险。`KcBridge.setOnEvent` 转发已就绪，契约面已由 C 组锁定 |
+| **B-1 事件映射（kind 通道消费）** | ✅ **已落地（2026-11-18）**：`common/EventKind.ets`（18 项 kind 单映射 + `decodeEvent`，未知/无映射/坏 JSON/kind≠type ⇒ 显式丢弃+日志+计数）+ `EventShapes.ets`（17 字段镜像，宿主可测）；**生产已切换**：`Index` 注册点 `init` → `setDecodedListener`（`f8159f8` + `2a9bc6d`），`setEventLogSink` 接 `notify.log`；回滚 = 改回 `KcBridge.init` 一行（类型化通道代码保留）。门禁：`check-event-kinds.py`（契约 kind 18 项 ↔ 镜像 + 字段存在性）。**真机四类事件冒烟未做**（设备通道不可用，见遗留 5） |
 | **B-5 Stage-B 队列** | **不执行**：现有桥层与事件派发全程**同步**（P0-A3 审计结论）；kind 通道消费延后后，无 await 分支可排在队列上。将来若引入异步解码，在 bridge 内加单写者队列（不散落控制器） |
 
 ### 遗留（进入 P1/P2 跟踪）
+
+5. **真机冒烟未完成（2026-11-18）**：B-1 切换与系统分享 S0 已入库，但「连接/断开/收包/传输」四类事件与分享三类场景需要真机（Qt/KDE 对端 + 分享面板交互）：
+   Win10 `hdc` 侧当前不可用（`tools/win10-ssh.sh devices` rc=1）、本机 ohemu 为 OpenHarmony 镜像且无活对端；
+   判别口径：连接后应用日志无 `native event dropped:`（`droppedEvents`=0）即解码全通。
 
 1. **kind 通道消费**：与「退类型化通道」同一批（需真机 soak 后评估），届时同时补单写者队列（如引入 await）；
 2. **stage-A 旧别名退场 9 项**（`init/shutdown/generateCert/triggerBroadcast/sendPayload/keepPayload/discardPayload/cancelPayload/setCurrentDeviceId`）：待调用点全量迁移后 C 组可收窄为「集合相等」；
